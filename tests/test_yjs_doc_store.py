@@ -283,6 +283,43 @@ async def test_ystore_request_runtime_compaction_collapses_runtime_log(monkeypat
         reset_ystore_for_webspace(webspace_id)
 
 
+async def test_evict_ystore_for_webspace_releases_runtime_memory_and_preserves_snapshot() -> None:
+    webspace_id = _webspace_id("evict-store")
+    store = get_ystore_for_webspace(webspace_id)
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ydoc.get_map("data").set(txn, "flag", "persisted")
+
+        before = store.runtime_snapshot()
+        assert before["update_log_entries"] == 1
+
+        result = await ystore_module.evict_ystore_for_webspace(
+            webspace_id,
+            persist_snapshot=True,
+            compact_runtime=True,
+            backup_kind="test_evict",
+        )
+
+        assert result["ystore_found"] is True
+        assert result["persisted"] is True
+        assert result["released_update_entries"] >= 1
+        assert webspace_id not in ystore_module._YSTORE_CACHE
+
+        after = store.runtime_snapshot()
+        assert after["update_log_entries"] == 0
+        assert after["running"] is False
+
+        restored = get_ystore_for_webspace(webspace_id)
+        assert restored is not store
+        assert restored.runtime_snapshot()["update_log_entries"] == 0
+
+        async with async_read_ydoc(webspace_id) as ydoc:
+            assert ydoc.get_map("data").get("flag") == "persisted"
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
 async def test_async_get_ydoc_reuses_cached_state_vector_for_compacted_store(monkeypatch) -> None:
     webspace_id = _webspace_id("cached-state-vector")
     store = get_ystore_for_webspace(webspace_id)

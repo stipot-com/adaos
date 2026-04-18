@@ -82,10 +82,14 @@ from adaos.services.yjs import observers as yjs_observers
 class _FakeYDoc:
     def __init__(self) -> None:
         self.observe_after_transaction_calls = []
+        self.unobserve_after_transaction_calls = []
 
     def observe_after_transaction(self, callback):
         self.observe_after_transaction_calls.append(callback)
         return len(self.observe_after_transaction_calls)
+
+    def unobserve_after_transaction(self, sub_id):
+        self.unobserve_after_transaction_calls.append(sub_id)
 
 
 def _reset_yjs_observer_state(monkeypatch) -> None:
@@ -147,7 +151,47 @@ def test_attach_room_observers_retries_after_failed_attach(monkeypatch) -> None:
     assert attempts == 2
 
 
+def test_forget_room_observers_calls_detach_callbacks(monkeypatch) -> None:
+    _reset_yjs_observer_state(monkeypatch)
+    detached: list[tuple[str, int]] = []
+
+    def _observer(webspace_id: str, ydoc):
+        def _detach() -> None:
+            detached.append((webspace_id, id(ydoc)))
+
+        return _detach
+
+    ydoc = object()
+    yjs_observers.register_room_observer(_observer)
+
+    yjs_observers.attach_room_observers("default", ydoc)
+    yjs_observers.forget_room_observers("default", ydoc)
+
+    assert detached == [("default", id(ydoc))]
+
+
+def test_attach_room_observers_detaches_previous_doc(monkeypatch) -> None:
+    _reset_yjs_observer_state(monkeypatch)
+    detached: list[int] = []
+
+    def _observer(_webspace_id: str, ydoc):
+        def _detach() -> None:
+            detached.append(id(ydoc))
+
+        return _detach
+
+    first_doc = object()
+    second_doc = object()
+    yjs_observers.register_room_observer(_observer)
+
+    yjs_observers.attach_room_observers("default", first_doc)
+    yjs_observers.attach_room_observers("default", second_doc)
+
+    assert detached == [id(first_doc)]
+
+
 def test_weather_observer_reattaches_for_new_doc(monkeypatch) -> None:
+    _reset_yjs_observer_state(monkeypatch)
     monkeypatch.setattr(weather_observer, "_YDOC_OBSERVERS", {})
     monkeypatch.setattr(weather_observer, "_YDOC_LOOPS", {})
     monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
@@ -159,11 +203,14 @@ def test_weather_observer_reattaches_for_new_doc(monkeypatch) -> None:
     first_doc = _FakeYDoc()
     second_doc = _FakeYDoc()
 
-    weather_observer._ensure_city_observer("default", first_doc)
-    weather_observer._ensure_city_observer("default", first_doc)
-    weather_observer._ensure_city_observer("default", second_doc)
+    yjs_observers.register_room_observer(weather_observer._room_observer)
+
+    yjs_observers.attach_room_observers("default", first_doc)
+    yjs_observers.attach_room_observers("default", first_doc)
+    yjs_observers.attach_room_observers("default", second_doc)
 
     assert len(first_doc.observe_after_transaction_calls) == 1
+    assert first_doc.unobserve_after_transaction_calls == [1]
     assert len(second_doc.observe_after_transaction_calls) == 1
     assert weather_observer._YDOC_OBSERVERS["default"][0] == id(second_doc)
 

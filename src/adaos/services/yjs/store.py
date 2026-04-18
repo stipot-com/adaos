@@ -6,6 +6,7 @@ import time
 import contextlib
 import contextvars
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Tuple
 
@@ -282,6 +283,32 @@ class AdaosMemoryYStore(BaseYStore):
 
     def stop(self) -> None:
         self._running = False
+
+    def _clear_runtime_state_locked(self) -> tuple[int, int]:
+        released_entries = len(self._updates)
+        released_bytes = sum(len(update) for update, _meta, _ts in self._updates)
+        self._updates.clear()
+        self._base_snapshot_present = False
+        self._loaded_from_disk = False
+        self._running = False
+        self._auto_backup_inflight = False
+        self._generation = 0
+        self._persisted_generation = -1
+        self._persisted_snapshot_bytes = 0
+        self._base_state_vector = None
+        self._last_apply_update_total = 0
+        self._last_apply_bytes = 0
+        self._last_apply_mode = ""
+        self._last_loaded_from_disk_at = 0.0
+        return released_entries, released_bytes
+
+    async def evict_runtime_state(self) -> dict[str, int]:
+        async with self._lock:
+            released_entries, released_bytes = self._clear_runtime_state_locked()
+        return {
+            "released_update_entries": int(released_entries),
+            "released_update_bytes": int(released_bytes),
+        }
 
     async def write(self, data: bytes) -> None:  # type: ignore[override]
         """
@@ -832,7 +859,7 @@ def reset_ystore_for_webspace(webspace_id: str) -> None:
         except Exception:
             pass
         try:
-            store._updates.clear()  # type: ignore[attr-defined]
+            store._clear_runtime_state_locked()  # type: ignore[attr-defined]
         except Exception:
             pass
     try:
@@ -867,7 +894,7 @@ async def restore_ystore_for_webspace(webspace_id: str) -> dict[str, Any]:
         except Exception:
             pass
         try:
-            store._updates.clear()  # type: ignore[attr-defined]
+            store._clear_runtime_state_locked()  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -891,6 +918,102 @@ async def restore_ystore_for_webspace(webspace_id: str) -> dict[str, Any]:
         "webspace_id": key,
         "snapshot_path": str(path),
         "runtime": restored.runtime_snapshot(),
+    }
+
+
+async def evict_ystore_for_webspace(
+    webspace_id: str,
+    *,
+    store: AdaosMemoryYStore | None = None,
+    persist_snapshot: bool = True,
+    compact_runtime: bool = True,
+    backup_kind: str = "evict",
+    delete_snapshot: bool = False,
+) -> dict[str, Any]:
+    key = str(webspace_id or "").strip() or "default"
+    cached = _YSTORE_CACHE.pop(key, None)
+    extra_target = cached if cached is not None and cached is not store else None
+    target = store or cached
+    if target is None:
+        removed_snapshot = False
+        if delete_snapshot:
+            try:
+                path = ystore_path_for_webspace(key)
+                if path.exists():
+                    path.unlink()
+                    removed_snapshot = True
+            except Exception:
+                _log.warning("failed to remove YStore snapshot for webspace=%s", key, exc_info=True)
+        return {
+            "ok": True,
+            "webspace_id": key,
+            "ystore_found": False,
+            "persisted": False,
+            "snapshot_deleted": removed_snapshot,
+            "released_update_entries": 0,
+            "released_update_bytes": 0,
+        }
+
+    persisted = False
+    backup_skipped = False
+    backup_error: str | None = None
+    if persist_snapshot:
+        try:
+            await target.backup_to_disk(
+                compact_runtime=compact_runtime,
+                backup_kind=backup_kind,
+            )
+            snapshot = target.runtime_snapshot()
+            persisted = bool(snapshot.get("snapshot_file_exists"))
+            backup_skipped = bool(snapshot.get("persisted_up_to_date"))
+        except Exception as exc:
+            backup_error = f"{type(exc).__name__}: {exc}"
+            _log.warning("failed to persist YStore before eviction webspace=%s", key, exc_info=True)
+
+    try:
+        result = target.stop()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        _log.debug("failed to stop YStore before eviction webspace=%s", key, exc_info=True)
+
+    released = {"released_update_entries": 0, "released_update_bytes": 0}
+    try:
+        released = await target.evict_runtime_state()
+    except Exception:
+        _log.warning("failed to clear YStore runtime state webspace=%s", key, exc_info=True)
+
+    if extra_target is not None:
+        try:
+            result = extra_target.stop()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            _log.debug("failed to stop cached YStore during eviction webspace=%s", key, exc_info=True)
+        try:
+            await extra_target.evict_runtime_state()
+        except Exception:
+            _log.warning("failed to clear cached YStore runtime state webspace=%s", key, exc_info=True)
+
+    removed_snapshot = False
+    if delete_snapshot:
+        try:
+            path = ystore_path_for_webspace(key)
+            if path.exists():
+                path.unlink()
+                removed_snapshot = True
+        except Exception:
+            _log.warning("failed to remove YStore snapshot for webspace=%s", key, exc_info=True)
+
+    return {
+        "ok": backup_error is None,
+        "webspace_id": key,
+        "ystore_found": True,
+        "persisted": persisted,
+        "backup_skipped": backup_skipped,
+        "backup_error": backup_error,
+        "snapshot_deleted": removed_snapshot,
+        **released,
     }
 
 

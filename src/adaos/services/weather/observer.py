@@ -127,7 +127,31 @@ def _current_city_from_doc(ydoc) -> Optional[str]:
     return None
 
 
-def _ensure_city_observer(webspace_id: str, ydoc) -> None:
+def _detach_after_transaction_observer(ydoc, *, sub_id: int | None, callback) -> bool:
+    method = getattr(ydoc, "unobserve_after_transaction", None)
+    if callable(method):
+        for args in ((sub_id,), (callback,), (sub_id, callback)):
+            try:
+                method(*args)
+                return True
+            except TypeError:
+                continue
+            except Exception:
+                return False
+    fallback = getattr(ydoc, "unobserve", None)
+    if callable(fallback):
+        for args in ((sub_id,), (callback,), (sub_id, callback)):
+            try:
+                fallback(*args)
+                return True
+            except TypeError:
+                continue
+            except Exception:
+                return False
+    return False
+
+
+def _ensure_city_observer(webspace_id: str, ydoc):
     key = str(webspace_id or "").strip() or "default"
     ydoc_id = id(ydoc)
     attached = _YDOC_OBSERVERS.get(key)
@@ -215,9 +239,17 @@ def _ensure_city_observer(webspace_id: str, ydoc) -> None:
     _YDOC_OBSERVERS[key] = (ydoc_id, sub_id)
     _emit_current()
 
+    def _detach() -> None:
+        try:
+            _detach_after_transaction_observer(ydoc, sub_id=sub_id, callback=_maybe_emit)
+        finally:
+            forget_weather_room_observer(key, ydoc_id)
 
-def _room_observer(webspace_id: str, ydoc) -> None:
-    _ensure_city_observer(webspace_id, ydoc)
+    return _detach
+
+
+def _room_observer(webspace_id: str, ydoc):
+    return _ensure_city_observer(webspace_id, ydoc)
 
 
 try:
