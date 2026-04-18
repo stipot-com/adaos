@@ -143,6 +143,16 @@ def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatc
     monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
     monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
     monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    monkeypatch.setattr(supervisor, "load_config", lambda: object())
+    monkeypatch.setattr(
+        supervisor,
+        "report_hub_memory_profile",
+        lambda conf, session_summary, operations=None, telemetry=None: {
+            "ok": True,
+            "reported_at": 33.0,
+            "_protocol": {"message_id": "root-msg-1", "cursor": 1},
+        },
+    )
 
     started = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
     session_id = started["session"]["session_id"]
@@ -157,7 +167,9 @@ def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatc
     assert details["operations"][0]["details"]["action"] == "profile_start"
 
     published = manager.publish_memory_profile(session_id, reason="operator.publish")
-    assert published["session"]["publish_state"] == "publish_requested"
+    assert published["session"]["publish_state"] == "published"
+    assert published["session"]["published_to_root"] is True
+    assert published["session"]["published_ref"] == "root-msg-1"
     assert published["runtime"]["publish_request_session_id"] == session_id
 
     stopped = manager.stop_memory_profile(session_id, reason="operator.stop")
@@ -458,6 +470,9 @@ def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, t
     assert retried["retry_of_session_id"] == "mem-old"
     assert retried["session"]["profile_mode"] == "trace_profile"
     assert retried["session"]["session_state"] == "requested"
+    assert retried["session"]["retry_of_session_id"] == "mem-old"
+    assert retried["session"]["retry_root_session_id"] == "mem-old"
+    assert retried["session"]["retry_depth"] == 1
     assert retried["session"]["operation_window"]["retry_of_session_id"] == "mem-old"
     details = manager.memory_session(retried["session"]["session_id"])
     assert details is not None
@@ -507,7 +522,14 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
             }
 
         def publish_memory_profile(self, session_id: str, *, reason: str) -> dict:
-            return {"ok": True, "session": {"session_id": session_id, "publish_state": "publish_requested"}}
+            return {
+                "ok": True,
+                "session": {
+                    "session_id": session_id,
+                    "publish_state": "published",
+                    "published_ref": "root-msg-1",
+                },
+            }
 
     monkeypatch.setattr(supervisor, "_manager", lambda: _Manager())
     client = TestClient(supervisor.app)
@@ -564,4 +586,4 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
     assert retry_response.json()["retry_of_session_id"] == "mem-001"
     assert retry_response.json()["session"]["session_id"] == "mem-002"
     assert publish_response.status_code == 200
-    assert publish_response.json()["session"]["publish_state"] == "publish_requested"
+    assert publish_response.json()["session"]["publish_state"] == "published"

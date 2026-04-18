@@ -119,6 +119,7 @@ def test_runtime_memory_incidents_cli_prints_rows(monkeypatch) -> None:
                         "session_state": "failed",
                         "profile_mode": "sampled_profile",
                         "suspected_leak": True,
+                        "retry_depth": 2,
                     }
                 ],
             }
@@ -129,7 +130,7 @@ def test_runtime_memory_incidents_cli_prints_rows(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "incidents total: 1" in result.output
-    assert "incident: id=mem-001 state=failed mode=sampled_profile suspected=True" in result.output
+    assert "incident: id=mem-001 state=failed mode=sampled_profile suspected=True retry_depth=2" in result.output
 
 
 def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
@@ -163,6 +164,10 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
                     "profile_mode": "sampled_profile",
                     "publish_state": "publish_requested",
                     "trigger_reason": "operator.request",
+                    "retry_of_session_id": "mem-000",
+                    "retry_root_session_id": "mem-root",
+                    "retry_depth": 2,
+                    "published_ref": "root-msg-1",
                     "artifact_refs": [{"artifact_id": "mem-001-final", "kind": "tracemalloc_final_snapshot"}],
                 },
             }
@@ -174,11 +179,13 @@ def test_runtime_memory_session_cli_prints_details(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "session: id=mem-001 state=requested mode=sampled_profile publish=publish_requested" in result.output
     assert "trigger: operator.request" in result.output
+    assert "retry chain: from=mem-000 root=mem-root depth=2" in result.output
     assert "operations: 2" in result.output
     assert "last operation: event=tool_invoked seq=2" in result.output
     assert "telemetry: 2" in result.output
     assert "artifacts: 1" in result.output
     assert "first artifact: mem-001-final" in result.output
+    assert "published ref: root-msg-1" in result.output
 
 
 def test_runtime_memory_artifact_cli_prints_summary(monkeypatch) -> None:
@@ -344,7 +351,8 @@ def test_runtime_memory_publish_cli_posts_intent(monkeypatch) -> None:
                 "control_mode": "phase2_supervisor_restart",
                 "session": {
                     "session_id": "mem-001",
-                    "publish_state": "publish_requested",
+                    "publish_state": "published",
+                    "published_ref": "root-msg-1",
                 },
             }
 
@@ -360,5 +368,6 @@ def test_runtime_memory_publish_cli_posts_intent(monkeypatch) -> None:
     assert result.exit_code == 0
     assert captured["url"] == "http://127.0.0.1:8777/api/supervisor/memory/publish"
     assert captured["json"]["session_id"] == "mem-001"
-    assert "memory publish: id=mem-001 publish=publish_requested" in result.output
+    assert "memory publish: id=mem-001 publish=published" in result.output
+    assert "published ref: root-msg-1" in result.output
     assert "control mode: phase2_supervisor_restart" in result.output

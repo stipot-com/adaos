@@ -51,6 +51,7 @@ from adaos.services.core_update import resolved_root_promotion_requirement
 from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
+from adaos.services.node_config import load_config
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_enabled,
     realtime_sidecar_listener_snapshot,
@@ -58,6 +59,7 @@ from adaos.services.realtime_sidecar import (
     start_realtime_sidecar_subprocess,
     stop_realtime_sidecar_subprocess,
 )
+from adaos.services.root.memory_profile_sync import report_hub_memory_profile
 from adaos.services.runtime_paths import current_base_dir
 from adaos.services.supervisor_memory import (
     DEFAULT_PROFILER_ADAPTER,
@@ -928,8 +930,11 @@ class SupervisorManager:
                 "started_at": summary.get("started_at"),
                 "finished_at": summary.get("finished_at"),
                 "suspected_leak": bool(summary.get("suspected_leak")),
+                "retry_of_session_id": summary.get("retry_of_session_id"),
+                "retry_depth": int(summary.get("retry_depth") or 0),
                 "published_to_root": bool(summary.get("published_to_root")),
                 "publish_state": summary.get("publish_state"),
+                "published_ref": summary.get("published_ref"),
             }
         )
         replaced = False
@@ -1009,6 +1014,9 @@ class SupervisorManager:
                 "finished_at": None,
                 "publish_state": "local_only",
                 "suspected_leak": trigger_source == "policy",
+                "retry_of_session_id": None,
+                "retry_root_session_id": None,
+                "retry_depth": 0,
                 "operation_window": {
                     "contract_version": MEMORY_OPERATION_CONTRACT_VERSION,
                     "events_path": str(supervisor_memory_session_operations_path(session_id)),
@@ -2109,10 +2117,17 @@ class SupervisorManager:
             trigger_source=trigger_source,
             trigger_threshold=str(summary.get("trigger_threshold") or "").strip() or None,
         )
+        retry_root_session_id = str(summary.get("retry_root_session_id") or token).strip() or token
+        retry_depth = max(1, int(summary.get("retry_depth") or 0) + 1)
+        retried["retry_of_session_id"] = token
+        retried["retry_root_session_id"] = retry_root_session_id
+        retried["retry_depth"] = retry_depth
         retried_window = (
             retried.get("operation_window") if isinstance(retried.get("operation_window"), dict) else {}
         )
         retried_window["retry_of_session_id"] = token
+        retried_window["retry_root_session_id"] = retry_root_session_id
+        retried_window["retry_depth"] = retry_depth
         retried_window["retry_reason"] = str(reason or "operator.retry")
         retried["operation_window"] = retried_window
         retried = self._upsert_memory_session_summary(retried)
@@ -2123,6 +2138,8 @@ class SupervisorManager:
             details={
                 "action": "profile_retry",
                 "retry_of_session_id": token,
+                "retry_root_session_id": retry_root_session_id,
+                "retry_depth": retry_depth,
                 "reason": str(reason or "operator.retry"),
                 "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
             },
@@ -2169,6 +2186,74 @@ class SupervisorManager:
             "runtime": self.memory_status(),
         }
 
+    def _publish_memory_profile_to_root(
+        self,
+        *,
+        summary: dict[str, Any],
+        reason: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        token = str(summary.get("session_id") or "").strip()
+        operations = read_memory_session_operations(token, limit=200)
+        telemetry = self._memory_session_telemetry_window(summary, limit=200)
+        try:
+            conf = load_config()
+        except Exception as exc:
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reason": "root_config_unavailable",
+                },
+                None,
+            )
+        try:
+            result = report_hub_memory_profile(
+                conf,
+                session_summary=summary,
+                operations=operations,
+                telemetry=telemetry,
+            )
+        except Exception as exc:
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reason": str(reason or "operator.publish"),
+                },
+                None,
+            )
+        if not isinstance(result, dict):
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": "root client is unavailable",
+                    "reason": str(reason or "operator.publish"),
+                },
+                None,
+            )
+        protocol_meta = result.get("_protocol") if isinstance(result.get("_protocol"), dict) else {}
+        published_ref = (
+            str(result.get("published_ref") or "").strip()
+            or str(protocol_meta.get("message_id") or "").strip()
+            or f"root://hub-memory-profile/{token}"
+        )
+        return (
+            {
+                "ok": True,
+                "state": "published",
+                "reason": str(reason or "operator.publish"),
+                "reported_at": result.get("reported_at"),
+                "published_ref": published_ref,
+                "duplicate": bool(result.get("duplicate")),
+                "message_id": protocol_meta.get("message_id") or result.get("message_id"),
+                "cursor": protocol_meta.get("cursor"),
+            },
+            result,
+        )
+
     def publish_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
         token = str(session_id or "").strip()
         summary = read_memory_session_summary(token)
@@ -2177,8 +2262,8 @@ class SupervisorManager:
         now = time.time()
         summary["publish_state"] = "publish_requested"
         summary["publish_requested_at"] = now
-        updated = self._upsert_memory_session_summary(summary)
         self._memory_publish_request_session_id = token
+        updated = self._upsert_memory_session_summary(summary)
         self._append_memory_operation(
             session_id=token,
             event="tool_invoked",
@@ -2187,7 +2272,28 @@ class SupervisorManager:
                 "action": "publish_request",
                 "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
                 "reason": str(reason or "operator.publish"),
-                "note": "Phase 1 records explicit publish intent only; root publication is pending Phase 3",
+            },
+        )
+        publish_result, raw_result = self._publish_memory_profile_to_root(summary=updated, reason=reason)
+        updated["publish_result"] = publish_result
+        updated["published_to_root"] = bool(publish_result.get("ok"))
+        updated["publish_state"] = str(publish_result.get("state") or "publish_failed")
+        updated["published_ref"] = publish_result.get("published_ref")
+        updated_window = updated.get("operation_window") if isinstance(updated.get("operation_window"), dict) else {}
+        updated_window["publish_result"] = publish_result
+        updated["operation_window"] = updated_window
+        updated = self._upsert_memory_session_summary(updated)
+        self._append_memory_operation(
+            session_id=token,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or ""),
+            details={
+                "action": "publish_complete" if bool(publish_result.get("ok")) else "publish_failed",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "reason": str(reason or "operator.publish"),
+                "publish_state": updated.get("publish_state"),
+                "published_ref": updated.get("published_ref"),
+                "error": publish_result.get("error"),
             },
         )
         self._persist_runtime_state()
@@ -2195,6 +2301,8 @@ class SupervisorManager:
             "ok": True,
             "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
             "session": updated,
+            "publish_result": publish_result,
+            "root_result": raw_result,
             "runtime": self.memory_status(),
         }
 
@@ -2802,6 +2910,8 @@ class SupervisorManager:
                 "requested_at": session.get("requested_at"),
                 "finished_at": session.get("finished_at"),
                 "publish_state": str(session.get("publish_state") or "").strip() or None,
+                "published_ref": str(session.get("published_ref") or "").strip() or None,
+                "retry_depth": int(session.get("retry_depth") or 0),
                 "suspected_leak": bool(session.get("suspected_leak")),
             }
         return {

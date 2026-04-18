@@ -23,7 +23,8 @@ These commands are useful for checking local readiness, runtime slots, and the b
 If `node reliability` falls back to the supervisor during a controlled restart, it also prints the compact public memory summary when available.
 The `runtime memory-*` commands expose the supervisor-owned profiling workflow directly through the memory APIs.
 In the current Phase 2 baseline, `memory-profile-start` creates a requested profiling session and supervisor converges the runtime into the requested mode through a controlled restart.
-`memory-session` now includes compact operation/telemetry/artifact context for one profiling session, `memory-telemetry` gives a quick tail view of rolling growth samples, and `memory-incidents`/`memory-artifact` make it easier to inspect completed or failed profiling incidents without opening state files directly. If a profiling session failed or was cancelled, `memory-profile-retry` opens a fresh requested session using the same profile mode.
+`memory-session` now includes compact operation/telemetry/artifact context for one profiling session, `memory-telemetry` gives a quick tail view of rolling growth samples, and `memory-incidents`/`memory-artifact` make it easier to inspect completed or failed profiling incidents without opening state files directly. If a profiling session failed or was cancelled, `memory-profile-retry` opens a fresh requested session using the same profile mode and preserves retry-chain metadata.
+`memory-publish` now attempts the first Phase 3 root publication path for the session summary and prints the resulting `published_ref` when root ingestion accepts the report.
 
 ## Autostart and service mode
 

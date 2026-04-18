@@ -2372,6 +2372,16 @@ def test_public_update_status_does_not_probe_runtime_admin_status(monkeypatch, t
 def test_public_memory_status_uses_compact_last_session(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "load_config", lambda: object())
+    monkeypatch.setattr(
+        supervisor,
+        "report_hub_memory_profile",
+        lambda conf, session_summary, operations=None, telemetry=None: {
+            "ok": True,
+            "reported_at": 33.0,
+            "_protocol": {"message_id": "root-msg-1", "cursor": 1},
+        },
+    )
 
     manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
     session_id = manager.memory_status()["requested_session_id"]
@@ -2381,7 +2391,7 @@ def test_public_memory_status_uses_compact_last_session(monkeypatch, tmp_path) -
 
     assert payload["memory"]["profile_control_mode"] == "phase2_supervisor_restart"
     assert payload["memory"]["last_session"]["session_id"] == session_id
-    assert payload["memory"]["last_session"]["publish_state"] == "publish_requested"
+    assert payload["memory"]["last_session"]["publish_state"] == "published"
 
 
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:

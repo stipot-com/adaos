@@ -701,12 +701,13 @@ Current implementation control mode is `phase2_supervisor_restart`:
 - `profile/start` creates a supervisor-owned profiling request and the monitor applies it through restart-into-profile
 - `profile/stop` clears the requested mode and lets the monitor converge the runtime back to `normal`
 - suspicion policy can create a `sampled_profile` request automatically when growth remains both large and steep
-- `publish` still records publication intent locally and does not claim root publication until a later phase adds explicit transport/ack
+- `publish` records operator intent locally and now attempts the first dedicated root summary publication path, persisting `published_ref` / `publish_result` back into the supervisor-owned session record
+- retry-created sessions now carry explicit retry-chain metadata (`retry_of_session_id`, `retry_root_session_id`, `retry_depth`) so later incidents can be grouped without reconstructing lineage from operations alone
 
 Current implementation deliberately does not yet:
 
-- materialize runtime-produced profiler artifacts beyond the supervisor-owned session envelope
-- publish profiling artifacts or summaries to root
+- publish heavy profiling artifacts to root
+- provide remote retrieval/listing flows for the new memory-profile report family
 
 ### Local control surfaces
 

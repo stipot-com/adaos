@@ -210,7 +210,8 @@ def memory_incidents(
             f"id={item.get('session_id') or '-'} "
             f"state={item.get('session_state') or '-'} "
             f"mode={item.get('profile_mode') or '-'} "
-            f"suspected={bool(item.get('suspected_leak'))}"
+            f"suspected={bool(item.get('suspected_leak'))} "
+            f"retry_depth={item.get('retry_depth') or 0}"
         )
 
 
@@ -235,6 +236,13 @@ def memory_session(
     )
     if session.get("trigger_reason"):
         typer.echo(f"trigger: {session.get('trigger_reason')}")
+    if session.get("retry_of_session_id"):
+        typer.echo(
+            "retry chain: "
+            f"from={session.get('retry_of_session_id')} "
+            f"root={session.get('retry_root_session_id') or session.get('retry_of_session_id')} "
+            f"depth={session.get('retry_depth') or 0}"
+        )
     if operations:
         typer.echo(f"operations: {len(operations)}")
         last = operations[-1] if isinstance(operations[-1], dict) else {}
@@ -253,6 +261,8 @@ def memory_session(
         first = artifact_refs[0] if isinstance(artifact_refs[0], dict) else {}
         if first:
             typer.echo(f"first artifact: {first.get('artifact_id') or '-'}")
+    if session.get("published_ref"):
+        typer.echo(f"published ref: {session.get('published_ref')}")
 
 
 @app.command("memory-artifact")
@@ -388,5 +398,7 @@ def memory_publish(
         f"id={session.get('session_id') or '-'} "
         f"publish={session.get('publish_state') or '-'}"
     )
+    if session.get("published_ref"):
+        typer.echo(f"published ref: {session.get('published_ref')}")
     if payload.get("control_mode"):
         typer.echo(f"control mode: {payload.get('control_mode')}")

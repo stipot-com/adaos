@@ -323,11 +323,16 @@ class MemorySessionSummary:
     stopped_at: float | None = None
     stop_reason: str | None = None
     suspected_leak: bool = False
+    retry_of_session_id: str | None = None
+    retry_root_session_id: str | None = None
+    retry_depth: int = 0
     top_growth_sites: list[dict[str, Any]] = field(default_factory=list)
     operation_window: dict[str, Any] = field(default_factory=dict)
     published_to_root: bool = False
     publish_state: str = "local_only"
     publish_requested_at: float | None = None
+    published_ref: str | None = None
+    publish_result: dict[str, Any] = field(default_factory=dict)
     artifact_refs: list[MemoryArtifactRef] = field(default_factory=list)
 
     @classmethod
@@ -354,11 +359,16 @@ class MemorySessionSummary:
             stopped_at=_float(source.get("stopped_at")),
             stop_reason=_optional_string(source.get("stop_reason")),
             suspected_leak=_bool(source.get("suspected_leak")),
+            retry_of_session_id=_optional_string(source.get("retry_of_session_id")),
+            retry_root_session_id=_optional_string(source.get("retry_root_session_id")),
+            retry_depth=max(0, int(_int(source.get("retry_depth")) or 0)),
             top_growth_sites=list(sites) if isinstance(sites, list) else [],
             operation_window=_mapping(source.get("operation_window")),
             published_to_root=_bool(source.get("published_to_root")),
             publish_state=_string(source.get("publish_state"), default="local_only"),
             publish_requested_at=_float(source.get("publish_requested_at")),
+            published_ref=_optional_string(source.get("published_ref")),
+            publish_result=_mapping(source.get("publish_result")),
             artifact_refs=(
                 [MemoryArtifactRef.from_dict(item) for item in artifacts if isinstance(item, Mapping)]
                 if isinstance(artifacts, list)
@@ -386,11 +396,16 @@ class MemorySessionSummary:
             "stopped_at": self.stopped_at,
             "stop_reason": self.stop_reason,
             "suspected_leak": self.suspected_leak,
+            "retry_of_session_id": self.retry_of_session_id,
+            "retry_root_session_id": self.retry_root_session_id,
+            "retry_depth": self.retry_depth,
             "top_growth_sites": list(self.top_growth_sites),
             "operation_window": dict(self.operation_window),
             "published_to_root": self.published_to_root,
             "publish_state": self.publish_state,
             "publish_requested_at": self.publish_requested_at,
+            "published_ref": self.published_ref,
+            "publish_result": dict(self.publish_result),
             "artifact_refs": [item.to_dict() for item in self.artifact_refs],
         }
 
@@ -406,8 +421,11 @@ class MemorySessionSummary:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "suspected_leak": self.suspected_leak,
+            "retry_of_session_id": self.retry_of_session_id,
+            "retry_depth": self.retry_depth,
             "published_to_root": self.published_to_root,
             "publish_state": self.publish_state,
+            "published_ref": self.published_ref,
         }
 
 
