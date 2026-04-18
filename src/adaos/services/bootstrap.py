@@ -7399,11 +7399,9 @@ class BootstrapService:
             self._log.debug("control lifecycle report failed trigger=sys.stopping", exc_info=True)
         try:
             await get_service_supervisor().shutdown()
-            _startup_stage_mark("bootstrap_inbound_bridge_setup", started=_bridge_setup_started)
         except Exception as e:
-            _startup_stage_mark("bootstrap_inbound_bridge_setup", started=_bridge_setup_started, failed=e)
+            self._log.debug("service supervisor shutdown failed", exc_info=True)
             pass
-        _startup_stage_mark("bootstrap_post_ready_tail", started=_post_ready_started)
         try:
             await stop_scheduler()
         except Exception:
