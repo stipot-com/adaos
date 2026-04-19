@@ -818,6 +818,7 @@ Current implementation baseline now covers this phase:
 - supervisor-owned update attempt state persists under an explicit contract version instead of an ad-hoc free-form payload
 - browser-safe and operator-facing update surfaces both expose normalized supervisor attempt state
 - `adaos autostart update-status` prefers supervisor-backed state first, then falls back to the public supervisor transition surface before legacy runtime admin status
+- operator-facing field meanings for the normalized attempt payload are documented in `docs/guides/supervisor-update-attempts.md`
 
 ### Phase 5 - Resilience before full split
 

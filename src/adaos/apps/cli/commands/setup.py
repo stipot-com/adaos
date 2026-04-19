@@ -1385,6 +1385,12 @@ def autostart_update_status_cmd(
         typer.echo(f"supervisor attempt: {attempt.get('state')}")
         if attempt.get("contract_version"):
             typer.echo(f"attempt contract: v{attempt.get('contract_version')}")
+        if attempt.get("authority"):
+            typer.echo(f"attempt authority: {attempt.get('authority')}")
+        if attempt.get("planned_reason"):
+            typer.echo(f"planned reason: {attempt.get('planned_reason')}")
+        if attempt.get("completion_reason"):
+            typer.echo(f"completion reason: {attempt.get('completion_reason')}")
         if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
             typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
     if memory:

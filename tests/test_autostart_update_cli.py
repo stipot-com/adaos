@@ -122,7 +122,13 @@ def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
         lambda path, token=None: {
             "ok": True,
             "status": {"state": "succeeded", "phase": "root_promoted"},
-            "attempt": {"state": "awaiting_root_restart", "contract_version": "1"},
+            "attempt": {
+                "state": "awaiting_root_restart",
+                "contract_version": "1",
+                "authority": "supervisor",
+                "planned_reason": "root promotion is staged and waiting for restart",
+                "completion_reason": "runtime handoff is blocked on service restart",
+            },
             "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
         },
     )
@@ -132,6 +138,9 @@ def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert "supervisor attempt: awaiting_root_restart" in result.output
     assert "attempt contract: v1" in result.output
+    assert "attempt authority: supervisor" in result.output
+    assert "planned reason: root promotion is staged and waiting for restart" in result.output
+    assert "completion reason: runtime handoff is blocked on service restart" in result.output
     assert "next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes" in result.output
 
 
@@ -145,7 +154,12 @@ def test_autostart_update_status_falls_back_to_public_supervisor_surface(monkeyp
             return {
                 "ok": True,
                 "status": {"state": "planned", "phase": "scheduled", "scheduled_for": 1776000000.0},
-                "attempt": {"state": "planned", "contract_version": "1"},
+                "attempt": {
+                    "state": "planned",
+                    "contract_version": "1",
+                    "authority": "supervisor",
+                    "planned_reason": "maintenance window opens after countdown",
+                },
                 "runtime": {"active_slot": "A"},
             }
         raise AssertionError(path)
@@ -158,6 +172,8 @@ def test_autostart_update_status_falls_back_to_public_supervisor_surface(monkeyp
     assert "state: planned" in result.output
     assert "supervisor attempt: planned" in result.output
     assert "attempt contract: v1" in result.output
+    assert "attempt authority: supervisor" in result.output
+    assert "planned reason: maintenance window opens after countdown" in result.output
 
 
 def test_autostart_update_status_prints_planned_schedule_and_subsequent_transition(monkeypatch) -> None:
