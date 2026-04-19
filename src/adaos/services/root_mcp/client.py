@@ -98,6 +98,41 @@ class RootMcpClient:
             payload["reason"] = str(reason)
         return dict(self._request("POST", f"/v1/root/mcp/access-tokens/{token_id}/revoke", json=payload))
 
+    def issue_session_lease(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(self._request("POST", "/v1/root/mcp/sessions", json=dict(payload)))
+
+    def list_session_leases(
+        self,
+        *,
+        limit: int = 100,
+        status: str | None = None,
+        audience: str | None = None,
+        target_id: str | None = None,
+        capability_profile: str | None = None,
+        active_only: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        if status:
+            params["status"] = status
+        if audience:
+            params["audience"] = audience
+        if target_id:
+            params["target_id"] = target_id
+        if capability_profile:
+            params["capability_profile"] = capability_profile
+        if active_only:
+            params["active_only"] = True
+        return dict(self._request("GET", "/v1/root/mcp/sessions", params=params))
+
+    def get_session_lease(self, session_id: str) -> dict[str, Any]:
+        return dict(self._request("GET", f"/v1/root/mcp/sessions/{session_id}"))
+
+    def revoke_session_lease(self, session_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason:
+            payload["reason"] = str(reason)
+        return dict(self._request("POST", f"/v1/root/mcp/sessions/{session_id}/revoke", json=payload))
+
     def get_operational_surface(
         self,
         target_id: str,

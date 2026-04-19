@@ -370,6 +370,99 @@ def test_root_mcp_access_token_lifecycle_management(monkeypatch, tmp_path) -> No
     assert issue_events[0]["redactions"] == ["result.access_token"]
 
 
+def test_root_mcp_session_lease_lifecycle_and_bearer_scope(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import sessions as session_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(session_registry, "_sessions_path", lambda: tmp_path / "mcp_sessions.json")
+
+    client = _make_client()
+    owner_headers = {"X-Owner-Token": "owner-secret"}
+    target_id = "hub:test-profileops"
+
+    register = client.post(
+        "/v1/root/mcp/targets",
+        headers=owner_headers,
+        json={
+            "target_id": target_id,
+            "title": "ProfileOps Test Hub",
+            "kind": "hub",
+            "environment": "test",
+            "status": "online",
+            "zone": "lab-profile",
+            "subnet_id": "subnet:profile",
+            "operational_surface": {"published_by": "skill:infra_access_skill", "enabled": True},
+        },
+    )
+    assert register.status_code == 200
+
+    issued = client.post(
+        "/v1/root/mcp/sessions",
+        headers=owner_headers,
+        json={
+            "audience": "codex-vscode",
+            "target_id": target_id,
+            "capability_profile": "ProfileOpsRead",
+            "ttl_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+    payload = issued.json()
+    session = payload["session"]
+    assert payload["audit_event_id"]
+    assert session["capability_profile"] == "ProfileOpsRead"
+    assert session["target_id"] == target_id
+    assert session["subnet_id"] == "subnet:profile"
+    assert session["zone"] == "lab-profile"
+    assert session["use_count"] == 0
+
+    listed = client.get(
+        "/v1/root/mcp/sessions",
+        headers=owner_headers,
+        params={"active_only": "true", "capability_profile": "ProfileOpsRead"},
+    )
+    assert listed.status_code == 200
+    listed_sessions = listed.json()["sessions"]
+    assert len(listed_sessions) == 1
+    assert listed_sessions[0]["session_id"] == session["session_id"]
+
+    fetched = client.get(f"/v1/root/mcp/sessions/{session['session_id']}", headers=owner_headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["session"]["session_id"] == session["session_id"]
+
+    foundation = client.get(
+        "/v1/root/mcp/foundation",
+        headers={"Authorization": f"Bearer {session['access_token']}"},
+    )
+    assert foundation.status_code == 200
+    assert foundation.json()["scope"]["subnet_id"] == "subnet:profile"
+    assert foundation.json()["scope"]["zone"] == "lab-profile"
+
+    refreshed = client.get(f"/v1/root/mcp/sessions/{session['session_id']}", headers=owner_headers)
+    assert refreshed.status_code == 200
+    refreshed_session = refreshed.json()["session"]
+    assert refreshed_session["use_count"] == 1
+    assert refreshed_session["last_used_at"] is not None
+
+    revoked = client.post(
+        f"/v1/root/mcp/sessions/{session['session_id']}/revoke",
+        headers=owner_headers,
+        json={"reason": "rotate"},
+    )
+    assert revoked.status_code == 200
+    revoked_payload = revoked.json()
+    assert revoked_payload["session"]["status"] == "revoked"
+    assert revoked_payload["audit_event_id"]
+
+    denied = client.get(
+        "/v1/root/mcp/foundation",
+        headers={"Authorization": f"Bearer {session['access_token']}"},
+    )
+    assert denied.status_code == 401
+
+
 def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
     from adaos.services.root_mcp import reports as report_registry

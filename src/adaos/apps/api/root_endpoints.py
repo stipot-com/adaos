@@ -40,6 +40,13 @@ from adaos.services.root_mcp.memory_reports import (
     ingest_memory_profile_report,
     list_memory_profile_reports,
 )
+from adaos.services.root_mcp.sessions import (
+    get_mcp_session_lease_record,
+    issue_mcp_session_lease,
+    list_mcp_session_leases,
+    revoke_mcp_session_lease,
+    validate_mcp_session_lease,
+)
 from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.root_mcp.tokens import issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
 
@@ -161,6 +168,21 @@ def _require_root_access_auth(*, authorization: str | None, owner_token: str | N
                 "allowed_target_ids": list(record.get("target_ids") or []),
                 "access_token_id": record.get("token_id"),
                 "audience": record.get("audience"),
+            }
+        session_record = validate_mcp_session_lease(token)
+        if session_record is not None:
+            return {
+                "method": "mcp_session_lease",
+                "verified": True,
+                "actor": f"mcp_session_lease:{session_record.get('session_id')}",
+                "grant_source": "issued_session_lease",
+                "capabilities": list(session_record.get("capabilities") or []),
+                "subnet_id": session_record.get("subnet_id"),
+                "zone": session_record.get("zone"),
+                "allowed_target_ids": list(session_record.get("target_ids") or []),
+                "mcp_session_id": session_record.get("session_id"),
+                "audience": session_record.get("audience"),
+                "capability_profile": session_record.get("capability_profile"),
             }
 
     raise HTTPException(status_code=401, detail="Missing Authorization bearer token or X-Owner-Token")
@@ -518,6 +540,21 @@ class RootMcpAccessTokenIssueRequest(BaseModel):
 
 
 class RootMcpAccessTokenRevokeRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class RootMcpSessionLeaseIssueRequest(BaseModel):
+    audience: str = Field(..., min_length=1, max_length=128)
+    target_id: str = Field(..., min_length=1, max_length=128)
+    ttl_seconds: int = Field(default=14_400, ge=60, le=86_400)
+    capability_profile: str | None = Field(default=None, max_length=128)
+    capabilities: list[str] = Field(default_factory=list)
+    subnet_id: str | None = Field(default=None, max_length=128)
+    zone: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=512)
+
+
+class RootMcpSessionLeaseRevokeRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
@@ -1141,6 +1178,139 @@ async def root_mcp_revoke_access_token(
         "ok": True,
         "auth": {"method": auth.get("method")},
         "token": record,
+        "audit_event_id": audit_event_id,
+    }
+
+
+@root_router.post("/mcp/sessions")
+async def root_mcp_issue_session_lease(
+    payload: RootMcpSessionLeaseIssueRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.issue.tokens", auth=auth)
+    issued = issue_mcp_session_lease(
+        audience=payload.audience,
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        ttl_seconds=payload.ttl_seconds,
+        capability_profile=payload.capability_profile,
+        capabilities=list(payload.capabilities or []),
+        subnet_id=payload.subnet_id,
+        zone=payload.zone,
+        target_id=payload.target_id,
+        note=payload.note,
+    )
+    audit_event_id = _append_direct_root_mcp_audit(
+        tool_id="root.mcp_sessions.issue",
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        capability="operations.issue.tokens",
+        status="ok",
+        target_id=payload.target_id,
+        meta={
+            "subnet_id": issued.get("subnet_id"),
+            "zone": issued.get("zone"),
+            "audience": issued.get("audience"),
+            "session_id": issued.get("session_id"),
+            "capability_profile": issued.get("capability_profile"),
+        },
+        result_summary={"kind": "mcp_session_lease", "session_id": issued.get("session_id")},
+        redactions=["result.access_token"],
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "session": issued,
+        "audit_event_id": audit_event_id,
+    }
+
+
+@root_router.get("/mcp/sessions")
+async def root_mcp_list_session_leases(
+    limit: int = 100,
+    status: str | None = None,
+    audience: str | None = None,
+    target_id: str | None = None,
+    capability_profile: str | None = None,
+    active_only: bool = False,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.read.tokens", auth=auth)
+    sessions = list_mcp_session_leases(
+        limit=max(1, min(int(limit), 200)),
+        status=status,
+        audience=audience,
+        target_id=target_id,
+        capability_profile=capability_profile,
+        active_only=active_only,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "sessions": sessions,
+    }
+
+
+@root_router.get("/mcp/sessions/{session_id}")
+async def root_mcp_get_session_lease(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.read.tokens", auth=auth)
+    record = get_mcp_session_lease_record(session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "MCP session lease was not found."})
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "session": record,
+    }
+
+
+@root_router.post("/mcp/sessions/{session_id}/revoke")
+async def root_mcp_revoke_session_lease(
+    session_id: str,
+    payload: RootMcpSessionLeaseRevokeRequest,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+) -> dict[str, Any]:
+    auth = _require_root_write_auth(authorization=authorization, owner_token=owner_token)
+    _enforce_mcp_capability("operations.revoke.tokens", auth=auth)
+    try:
+        record = revoke_mcp_session_lease(
+            session_id,
+            actor=str(auth.get("actor") or "root:unknown"),
+            auth_method=str(auth.get("method") or "unknown"),
+            reason=payload.reason,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "MCP session lease was not found."}) from None
+    audit_event_id = _append_direct_root_mcp_audit(
+        tool_id="root.mcp_sessions.revoke",
+        actor=str(auth.get("actor") or "root:unknown"),
+        auth_method=str(auth.get("method") or "unknown"),
+        capability="operations.revoke.tokens",
+        status="ok",
+        target_id=str(record.get("target_id") or ""),
+        meta={
+            "subnet_id": record.get("subnet_id"),
+            "zone": record.get("zone"),
+            "audience": record.get("audience"),
+            "session_id": record.get("session_id"),
+            "capability_profile": record.get("capability_profile"),
+        },
+        result_summary={"kind": "mcp_session_lease", "session_id": record.get("session_id"), "status": record.get("status")},
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "session": record,
         "audit_event_id": audit_event_id,
     }
 

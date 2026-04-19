@@ -26,6 +26,15 @@ from .model import (
 from .policy import capability_registry_payload, capability_registry_summary, evaluate_direct_access, evaluate_tool_access
 from .reports import control_report_registry_summary, ingest_control_report, list_control_reports, sync_target_from_control_report
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
+from .sessions import (
+    DEFAULT_CAPABILITY_PROFILES,
+    get_mcp_session_lease_record,
+    issue_mcp_session_lease,
+    list_mcp_session_leases,
+    mcp_session_registry_summary,
+    revoke_mcp_session_lease,
+    validate_mcp_session_lease,
+)
 from .service import (
     foundation_snapshot,
     get_descriptor,
@@ -63,6 +72,7 @@ __all__ = [
     "control_report_registry_summary",
     "default_profile_paths",
     "descriptor_registry_summary",
+    "DEFAULT_CAPABILITY_PROFILES",
     "evaluate_direct_access",
     "evaluate_tool_access",
     "foundation_snapshot",
@@ -78,18 +88,24 @@ __all__ = [
     "list_managed_targets",
     "list_tool_contracts",
     "managed_target_registry_summary",
+    "mcp_session_registry_summary",
     "recent_audit_events",
     "schema_object",
     "DEFAULT_CODEX_TARGET_CAPABILITIES",
+    "get_mcp_session_lease_record",
     "issue_access_token",
+    "issue_mcp_session_lease",
     "list_access_tokens",
+    "list_mcp_session_leases",
     "ingest_control_report",
     "upsert_managed_target",
     "validate_access_token",
+    "validate_mcp_session_lease",
     "list_control_reports",
     "load_codex_bridge_profile",
     "resolve_skill_dir",
     "revoke_access_token",
+    "revoke_mcp_session_lease",
     "serve_codex_stdio_bridge",
     "skill_state",
     "sync_target_from_control_report",

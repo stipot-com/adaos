@@ -29,11 +29,11 @@ The roadmap has two explicit companion slices:
 
 ## Phase 0. Architectural Fixation
 
-- fix root-first MCP terminology and boundaries
-- split foundation from plane evolution
-- define `Root Descriptor Cache`
-- define `MCP Session Lease`
-- define first named plane concepts such as `AdaOSDevPlane` and `ProfileOpsPlane`
+- [x] fix root-first MCP terminology and boundaries
+- [x] split foundation from plane evolution
+- [x] define `Root Descriptor Cache`
+- [x] define `MCP Session Lease`
+- [x] define first named plane concepts such as `AdaOSDevPlane` and `ProfileOpsPlane`
 
 Phase is complete when:
 
@@ -43,11 +43,11 @@ Phase is complete when:
 
 ## Phase 1. Root MCP Foundation Skeleton
 
-- add minimal root MCP entrypoint and request/response envelopes
-- add root-hosted tool contract registry
-- add initial audit primitives and event IDs
-- expose only minimal read-oriented descriptors and placeholder operational contracts
-- keep planes implicit at first, but avoid baking every projection directly into the foundation contract
+- [x] add minimal root MCP entrypoint and request/response envelopes
+- [x] add root-hosted tool contract registry
+- [x] add initial audit primitives and event IDs
+- [x] expose only minimal read-oriented descriptors and placeholder operational contracts
+- [x] keep planes implicit at first, but avoid baking every projection directly into the foundation contract
 
 ### Current Implementation Slice
 
@@ -81,11 +81,11 @@ It proves the first `hub -> root -> Root MCP` operational loop and the first end
 
 ## Phase 2. Root Descriptor Cache and Descriptor Build Pipeline
 
-- define descriptor bundle formats and provenance fields
-- promote current `build SDK` work into a descriptor-build pipeline prototype
-- publish architecture, SDK, schema, manifest, and template descriptors through root cache
-- add CI/CD and publish hooks so public skills and scenarios refresh root descriptors as part of lifecycle
-- expose freshness metadata and TTL semantics in descriptor responses
+- [ ] define descriptor bundle formats and provenance fields
+- [ ] promote current `build SDK` work into a descriptor-build pipeline prototype
+- [ ] publish architecture, SDK, schema, manifest, and template descriptors through root cache
+- [ ] add CI/CD and publish hooks so public skills and scenarios refresh root descriptors as part of lifecycle
+- [ ] expose freshness metadata and TTL semantics in descriptor responses
 
 Phase is complete when:
 
@@ -95,10 +95,10 @@ Phase is complete when:
 
 ## Phase 3. AdaOSDevPlane
 
-- define the first explicit descriptive plane over the foundation
-- expose architecture, SDK, manifest, schema, template, and public registry descriptors through typed plane contracts
-- make `AdaOSDevPlane` the preferred LLM-programmer descriptive surface
-- keep descriptive responses root-curated and cache-backed by default
+- [ ] define the first explicit descriptive plane over the foundation
+- [ ] expose architecture, SDK, manifest, schema, template, and public registry descriptors through typed plane contracts
+- [ ] make `AdaOSDevPlane` the preferred LLM-programmer descriptive surface
+- [ ] keep descriptive responses root-curated and cache-backed by default
 
 Phase is complete when:
 
@@ -107,11 +107,11 @@ Phase is complete when:
 
 ## Phase 4. Test-Hub Operational Pilot
 
-- register `test hub` as the first managed target
-- implement `infra_access_skill`
-- start with read-only diagnostics and low-risk checks
-- add controlled write operations only after bounded execution and audit are proven
-- add web UI and operational logging for the skill
+- [x] register `test hub` as the first managed target
+- [x] implement `infra_access_skill`
+- [x] start with read-only diagnostics and low-risk checks
+- [x] add controlled write operations only after bounded execution and audit are proven
+- [x] add web UI and operational logging for the skill
 
 Phase is complete when:
 
@@ -120,11 +120,11 @@ Phase is complete when:
 
 ## Phase 5. MCP Session Lease
 
-- introduce root-side `MCP Session Lease` issuance
-- allow operator selection of `target`, `ttl`, and named capability profile
-- bind `subnet_id`, `zone`, target scope, and effective capabilities to the stored lease
-- make root the source of truth for lease deadline, last use, and usage count
-- expose list/revoke flows for open sessions through skill-facing operational surfaces
+- [x] introduce root-side `MCP Session Lease` issuance
+- [x] allow operator selection of `target`, `ttl`, and named capability profile
+- [x] bind `subnet_id`, `zone`, target scope, and effective capabilities to the stored lease
+- [x] make root the source of truth for lease deadline, last use, and usage count
+- [ ] expose list/revoke flows for open sessions through skill-facing operational surfaces
 
 Phase is complete when:
 
@@ -133,10 +133,46 @@ Phase is complete when:
 
 ## Phase 6. Plane Registration and Multiple Operational Planes
 
-- formalize plane registration contracts
-- let multiple operational planes coexist over the same foundation
-- keep capability profiles and tool catalogs plane-scoped where appropriate
-- avoid coupling feature-specific product surfaces directly to the foundation implementation
+- [ ] formalize plane registration contracts
+- [ ] let multiple operational planes coexist over the same foundation
+- [ ] keep capability profiles and tool catalogs plane-scoped where appropriate
+- [ ] avoid coupling feature-specific product surfaces directly to the foundation implementation
+
+## Functional Maturity Milestones
+
+### Milestone A. VS Code Codex Local Bridge Trial
+
+- [x] root-hosted MCP foundation can be reached through local `stdio` bridge
+- [x] Codex can inspect managed target status and operational surface through the bridge
+- [ ] Codex can use named session/capability bootstrap instead of only workspace-local profile/token preparation
+
+This milestone is the earliest point for repeated live trials with `Codex in VS Code` through the current local bridge model.
+
+### Milestone B. VS Code Codex Session-Lease Trial
+
+- [x] root can issue `MCP Session Lease` objects for a chosen target and capability profile
+- [x] bearer-only access resolves subnet/zone/target context from the lease itself
+- [ ] session list/revoke UX is available for operators through `infra_access_skill`
+- [ ] Codex bootstrap no longer depends on explicit `subnet_id` transport parameters
+
+This milestone is the first clean live-aprroval point for `Codex in VS Code` with target-scoped bearer access that matches MCP client limitations.
+
+### Milestone C. Descriptive Codex Trial
+
+- [ ] root descriptor cache serves architecture and SDK descriptors without contacting a hub
+- [ ] `AdaOSDevPlane` exposes stable descriptive contracts for LLM-programmer workflows
+- [ ] public skill/scenario publication refreshes the descriptive registry path
+
+This milestone is the first point where live Codex trials should cover AdaOS architecture/programming assistance rather than only operational inspection.
+
+### Milestone D. ProfileOps Live Trial
+
+- [ ] `ProfileOpsRead` is available through MCP
+- [ ] `ProfileOpsControl` is available through bounded typed writes
+- [ ] profiler reads/writes appear in shared Root MCP audit history
+- [ ] Infrascope and Codex consume the same profiler contracts
+
+This milestone is the first live approval point for real supervisor-profiler MCP workflows.
 
 Phase is complete when:
 
@@ -149,10 +185,10 @@ Its purpose is to turn supervisor-owned profiling into a first-class typed opera
 
 ### `ProfileOps-0`. Architecture Fixation
 
-- fix the target-state statement that profiler authority remains with supervisor
-- define `ProfileOps` as the MCP projection layer over supervisor profiling
-- define the first profiler tool ids and capability vocabulary
-- define the split between root-published profiling evidence and target-routed profiling controls
+- [x] fix the target-state statement that profiler authority remains with supervisor
+- [x] define `ProfileOps` as the MCP projection layer over supervisor profiling
+- [x] define the first profiler tool ids and capability vocabulary
+- [x] define the split between root-published profiling evidence and target-routed profiling controls
 
 Phase is complete when:
 
@@ -161,11 +197,11 @@ Phase is complete when:
 
 ### `ProfileOps-1`. Read-Only MCP Projection
 
-- add profiler tool contracts to Root MCP for status, sessions, incidents, artifact catalogs, and artifact retrieval
-- project already-published root profiling summaries through typed MCP responses
-- expose the read surface through `RootMcpClient`
-- expose the same read surface through the local Codex `stdio` bridge
-- package read capabilities as a named profile such as `ProfileOpsRead`
+- [ ] add profiler tool contracts to Root MCP for status, sessions, incidents, artifact catalogs, and artifact retrieval
+- [ ] project already-published root profiling summaries through typed MCP responses
+- [ ] expose the read surface through `RootMcpClient`
+- [ ] expose the same read surface through the local Codex `stdio` bridge
+- [ ] package read capabilities as a named profile such as `ProfileOpsRead`
 
 Phase is complete when:
 
@@ -174,11 +210,11 @@ Phase is complete when:
 
 ### `ProfileOps-2`. Target-Routed Profiling Controls
 
-- add typed MCP write tools for `start`, `stop`, `retry`, and `publish`
-- require explicit target capability publication before any write tool is allowed
-- keep execution bounded and environment-scoped in the same style as existing `hub.*` write tools
-- preserve supervisor as the only authority that decides profile mode convergence and session lifecycle
-- package control capabilities as a named profile such as `ProfileOpsControl`
+- [ ] add typed MCP write tools for `start`, `stop`, `retry`, and `publish`
+- [ ] require explicit target capability publication before any write tool is allowed
+- [ ] keep execution bounded and environment-scoped in the same style as existing `hub.*` write tools
+- [ ] preserve supervisor as the only authority that decides profile mode convergence and session lifecycle
+- [ ] package control capabilities as a named profile such as `ProfileOpsControl`
 
 Phase is complete when:
 
@@ -187,9 +223,9 @@ Phase is complete when:
 
 ### `ProfileOps-3`. Unified Audit and Event History
 
-- align profiler tool execution with the Root MCP operational event model
-- link profiling control actions, root publication, and artifact retrieval through common trace ids where practical
-- let activity feeds and capability-usage views include profiler operations without a second audit vocabulary
+- [ ] align profiler tool execution with the Root MCP operational event model
+- [ ] link profiling control actions, root publication, and artifact retrieval through common trace ids where practical
+- [ ] let activity feeds and capability-usage views include profiler operations without a second audit vocabulary
 
 Phase is complete when:
 
@@ -197,9 +233,9 @@ Phase is complete when:
 
 ### `ProfileOps-4`. Human/Agent Surface Convergence
 
-- let Infrascope consume the same typed profiler tools for remote inspection
-- use the same contracts for Codex, operator UI, and later approval-aware workflows
-- keep direct report endpoints as substrate and compatibility paths, not as the primary product surface
+- [ ] let Infrascope consume the same typed profiler tools for remote inspection
+- [ ] use the same contracts for Codex, operator UI, and later approval-aware workflows
+- [ ] keep direct report endpoints as substrate and compatibility paths, not as the primary product surface
 
 Phase is complete when:
 
