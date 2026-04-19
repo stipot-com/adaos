@@ -11,6 +11,7 @@ from adaos.services.id_gen import new_id
 from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
 from .infra_access import (
     deploy_local_ref,
+    publish_local_memory_profile,
     read_deploy_state,
     read_local_logs,
     read_test_results,
@@ -18,6 +19,9 @@ from .infra_access import (
     rollback_local_deploy,
     run_allowed_tests,
     run_local_healthchecks,
+    retry_local_memory_profile,
+    start_local_memory_profile,
+    stop_local_memory_profile,
 )
 from .infra_access_skill import skill_state as infra_access_skill_state
 from .model import (
@@ -744,6 +748,99 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             required_capability="hub.memory.get_artifact",
             metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_get_artifact", "environment_scope": "test-first"},
         ),
+        RootMcpToolContract(
+            id="hub.memory.start_profile",
+            title="Start profiler session",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Request a new supervisor-owned profiler session for a managed target.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "profile_mode": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "trigger_source": {"type": "string"},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.start_profile",
+            side_effects="write",
+            metadata={
+                "published_by": "plane:profile_ops",
+                "handler": "hub_memory_start_profile",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.memory.stop_profile",
+            title="Stop profiler session",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Request supervisor to stop a profiler session for a managed target.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.stop_profile",
+            side_effects="write",
+            metadata={
+                "published_by": "plane:profile_ops",
+                "handler": "hub_memory_stop_profile",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.memory.retry_profile",
+            title="Retry profiler session",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Request supervisor to retry a profiler session for a managed target.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.retry_profile",
+            side_effects="write",
+            metadata={
+                "published_by": "plane:profile_ops",
+                "handler": "hub_memory_retry_profile",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.memory.publish_profile",
+            title="Publish profiler session",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Request supervisor to publish a profiler session to root for a managed target.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.publish_profile",
+            side_effects="write",
+            metadata={
+                "published_by": "plane:profile_ops",
+                "handler": "hub_memory_publish_profile",
+                "environment_scope": "test-only",
+                "required_execution_mode": "local_process",
+            },
+        ),
     ]
 
 
@@ -1294,6 +1391,83 @@ def _handle_hub_memory_get_artifact(arguments: dict[str, Any], *, dry_run: bool)
     return {"target_id": target_id, **artifact}
 
 
+def _handle_hub_memory_start_profile(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "execution_mode": "local_process",
+        "profile": start_local_memory_profile(
+            profile_mode=str(arguments.get("profile_mode") or "sampled_profile"),
+            reason=str(arguments.get("reason") or "root_mcp.memory.start"),
+            trigger_source=str(arguments.get("trigger_source") or "root_mcp"),
+        ),
+    }
+
+
+def _handle_hub_memory_stop_profile(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "session_id": session_id,
+        "execution_mode": "local_process",
+        "profile": stop_local_memory_profile(
+            session_id,
+            reason=str(arguments.get("reason") or "root_mcp.memory.stop"),
+        ),
+    }
+
+
+def _handle_hub_memory_retry_profile(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "session_id": session_id,
+        "execution_mode": "local_process",
+        "profile": retry_local_memory_profile(
+            session_id,
+            reason=str(arguments.get("reason") or "root_mcp.memory.retry"),
+        ),
+    }
+
+
+def _handle_hub_memory_publish_profile(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    if _target_execution_mode(target_id) != "local_process":
+        raise ValueError(f"target '{target_id}' does not expose local_process infra access execution")
+    return {
+        "target_id": target_id,
+        "session_id": session_id,
+        "execution_mode": "local_process",
+        "profile": publish_local_memory_profile(
+            session_id,
+            reason=str(arguments.get("reason") or "root_mcp.memory.publish"),
+        ),
+    }
+
+
 def _target_execution_mode(target_id: str) -> str:
     target = get_target_descriptor(target_id)
     if target is None:
@@ -1462,6 +1636,10 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.memory.list_incidents": lambda arguments, dry_run=False: _handle_hub_memory_list_incidents(arguments, dry_run=dry_run),
     "hub.memory.list_artifacts": lambda arguments, dry_run=False: _handle_hub_memory_list_artifacts(arguments, dry_run=dry_run),
     "hub.memory.get_artifact": lambda arguments, dry_run=False: _handle_hub_memory_get_artifact(arguments, dry_run=dry_run),
+    "hub.memory.start_profile": lambda arguments, dry_run=False: _handle_hub_memory_start_profile(arguments, dry_run=dry_run),
+    "hub.memory.stop_profile": lambda arguments, dry_run=False: _handle_hub_memory_stop_profile(arguments, dry_run=dry_run),
+    "hub.memory.retry_profile": lambda arguments, dry_run=False: _handle_hub_memory_retry_profile(arguments, dry_run=dry_run),
+    "hub.memory.publish_profile": lambda arguments, dry_run=False: _handle_hub_memory_publish_profile(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
     "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),
@@ -1532,6 +1710,14 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "root.memory_profile_projection.artifacts"
     if token == "hub.memory.get_artifact":
         return "root.memory_profile_projection.artifact"
+    if token == "hub.memory.start_profile":
+        return "profile_ops.local_process.start"
+    if token == "hub.memory.stop_profile":
+        return "profile_ops.local_process.stop"
+    if token == "hub.memory.retry_profile":
+        return "profile_ops.local_process.retry"
+    if token == "hub.memory.publish_profile":
+        return "profile_ops.local_process.publish"
     if token.startswith("development."):
         return "root.descriptor_registry"
     if token.startswith("operations."):

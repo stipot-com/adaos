@@ -66,6 +66,8 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "hub.memory.get_status" in contract_ids
     assert "hub.memory.list_sessions" in contract_ids
     assert "hub.memory.get_artifact" in contract_ids
+    assert "hub.memory.start_profile" in contract_ids
+    assert "hub.memory.publish_profile" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -1155,9 +1157,59 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
         assert target_id == "hub:subnet-test-5"
         return {"available": True, "target_id": target_id, "result": {"status": "passed", "selected_tests": ["tests/test_sample_dummy.py"]}}
 
+    def fake_start_local_memory_profile(*, profile_mode: str, reason: str, trigger_source: str = "root_mcp"):
+        assert profile_mode == "trace_profile"
+        assert trigger_source == "root_mcp"
+        return {
+            "mode": "local_process",
+            "control": {
+                "ok": True,
+                "control_mode": "phase2_supervisor_restart",
+                "session": {"session_id": "mem-101", "session_state": "requested", "profile_mode": profile_mode},
+            },
+        }
+
+    def fake_stop_local_memory_profile(session_id: str, *, reason: str):
+        assert session_id == "mem-101"
+        return {
+            "mode": "local_process",
+            "control": {
+                "ok": True,
+                "control_mode": "phase2_supervisor_restart",
+                "session": {"session_id": session_id, "session_state": "cancelled"},
+            },
+        }
+
+    def fake_retry_local_memory_profile(session_id: str, *, reason: str):
+        assert session_id == "mem-101"
+        return {
+            "mode": "local_process",
+            "control": {
+                "ok": True,
+                "control_mode": "phase2_supervisor_restart",
+                "retry_of_session_id": session_id,
+                "session": {"session_id": "mem-102", "session_state": "requested", "profile_mode": "trace_profile"},
+            },
+        }
+
+    def fake_publish_local_memory_profile(session_id: str, *, reason: str):
+        assert session_id == "mem-101"
+        return {
+            "mode": "local_process",
+            "control": {
+                "ok": True,
+                "control_mode": "phase2_supervisor_restart",
+                "session": {"session_id": session_id, "publish_state": "published"},
+            },
+        }
+
     monkeypatch.setattr(root_mcp_service, "restart_local_service", fake_restart_local_service)
     monkeypatch.setattr(root_mcp_service, "run_allowed_tests", fake_run_allowed_tests)
     monkeypatch.setattr(root_mcp_service, "read_test_results", fake_read_test_results)
+    monkeypatch.setattr(root_mcp_service, "start_local_memory_profile", fake_start_local_memory_profile)
+    monkeypatch.setattr(root_mcp_service, "stop_local_memory_profile", fake_stop_local_memory_profile)
+    monkeypatch.setattr(root_mcp_service, "retry_local_memory_profile", fake_retry_local_memory_profile)
+    monkeypatch.setattr(root_mcp_service, "publish_local_memory_profile", fake_publish_local_memory_profile)
 
     client = _make_client()
     owner_headers = {"X-Owner-Token": "owner-secret"}
@@ -1186,6 +1238,10 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
                     "hub.get_test_results",
                     "hub.deploy_ref",
                     "hub.rollback_last_test_deploy",
+                    "hub.memory.start_profile",
+                    "hub.memory.stop_profile",
+                    "hub.memory.retry_profile",
+                    "hub.memory.publish_profile",
                 ],
             },
         },
@@ -1232,6 +1288,62 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert get_results_payload["ok"] is True
     assert get_results_payload["response"]["meta"]["routing_mode"] == "infra_access.local_process.test_results"
     assert get_results_payload["response"]["result"]["test_results"]["available"] is True
+
+    start_profile_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.memory.start_profile",
+            "arguments": {"target_id": target_id, "profile_mode": "trace_profile"},
+        },
+    )
+    assert start_profile_call.status_code == 200
+    start_profile_payload = start_profile_call.json()
+    assert start_profile_payload["ok"] is True
+    assert start_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.start"
+    assert start_profile_payload["response"]["result"]["profile"]["control"]["session"]["session_id"] == "mem-101"
+
+    stop_profile_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.memory.stop_profile",
+            "arguments": {"target_id": target_id, "session_id": "mem-101"},
+        },
+    )
+    assert stop_profile_call.status_code == 200
+    stop_profile_payload = stop_profile_call.json()
+    assert stop_profile_payload["ok"] is True
+    assert stop_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.stop"
+    assert stop_profile_payload["response"]["result"]["profile"]["control"]["session"]["session_state"] == "cancelled"
+
+    retry_profile_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.memory.retry_profile",
+            "arguments": {"target_id": target_id, "session_id": "mem-101"},
+        },
+    )
+    assert retry_profile_call.status_code == 200
+    retry_profile_payload = retry_profile_call.json()
+    assert retry_profile_payload["ok"] is True
+    assert retry_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.retry"
+    assert retry_profile_payload["response"]["result"]["profile"]["control"]["retry_of_session_id"] == "mem-101"
+
+    publish_profile_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.memory.publish_profile",
+            "arguments": {"target_id": target_id, "session_id": "mem-101"},
+        },
+    )
+    assert publish_profile_call.status_code == 200
+    publish_profile_payload = publish_profile_call.json()
+    assert publish_profile_payload["ok"] is True
+    assert publish_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.publish"
+    assert publish_profile_payload["response"]["result"]["profile"]["control"]["session"]["publish_state"] == "published"
 
     deploy_call = client.post(
         "/v1/root/mcp/call",

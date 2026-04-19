@@ -73,6 +73,22 @@ class _FakeRootMcpClient:
         )
         return {"target_id": target_id, "artifact": {"artifact_id": artifact_id}, "exists": True}
 
+    def start_profileops_session(self, target_id: str, *, profile_mode: str = "sampled_profile", reason: str = "root_mcp.memory.start", trigger_source: str = "root_mcp") -> dict:
+        self.calls.append(("start_profileops_session", target_id, {"profile_mode": profile_mode, "reason": reason, "trigger_source": trigger_source}))
+        return {"target_id": target_id, "profile": {"control": {"session": {"session_id": "mem-101", "profile_mode": profile_mode}}}}
+
+    def stop_profileops_session(self, target_id: str, session_id: str, *, reason: str = "root_mcp.memory.stop") -> dict:
+        self.calls.append(("stop_profileops_session", target_id, {"session_id": session_id, "reason": reason}))
+        return {"target_id": target_id, "profile": {"control": {"session": {"session_id": session_id, "session_state": "cancelled"}}}}
+
+    def retry_profileops_session(self, target_id: str, session_id: str, *, reason: str = "root_mcp.memory.retry") -> dict:
+        self.calls.append(("retry_profileops_session", target_id, {"session_id": session_id, "reason": reason}))
+        return {"target_id": target_id, "profile": {"control": {"retry_of_session_id": session_id, "session": {"session_id": "mem-102"}}}}
+
+    def publish_profileops_session(self, target_id: str, session_id: str, *, reason: str = "root_mcp.memory.publish") -> dict:
+        self.calls.append(("publish_profileops_session", target_id, {"session_id": session_id, "reason": reason}))
+        return {"target_id": target_id, "profile": {"control": {"session": {"session_id": session_id, "publish_state": "published"}}}}
+
     def list_managed_targets(self, *, environment: str | None = None) -> dict:
         self.calls.append(("list_managed_targets", environment or "", {}))
         return {"targets": [{"target_id": "hub:test-subnet"}]}
@@ -194,6 +210,14 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
             "params": {"name": "get_profileops_status", "arguments": {}},
         }
     )
+    profileops_start = bridge.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {"name": "start_profileops_session", "arguments": {"profile_mode": "trace_profile"}},
+        }
+    )
 
     assert initialize is not None
     assert initialize["result"]["serverInfo"]["name"] == "adaos-test-hub"
@@ -206,15 +230,19 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
     assert "get_sdk_metadata" in tool_names
     assert "get_profileops_status" in tool_names
     assert "list_profileops_sessions" in tool_names
+    assert "start_profileops_session" in tool_names
     assert status is not None
     assert status["result"]["structuredContent"]["target_id"] == "hub:test-subnet"
     assert architecture is not None
     assert architecture["result"]["structuredContent"]["descriptor"]["payload"]["page_count"] == 3
     assert profileops is not None
     assert profileops["result"]["structuredContent"]["latest_session"]["session_id"] == "mem-001"
+    assert profileops_start is not None
+    assert profileops_start["result"]["structuredContent"]["profile"]["control"]["session"]["profile_mode"] == "trace_profile"
     assert ("get_target_status", "hub:test-subnet", {}) in fake_client.calls
     assert ("get_adaos_dev_architecture_catalog", "", {}) in fake_client.calls
     assert ("get_profileops_status", "hub:test-subnet", {}) in fake_client.calls
+    assert ("start_profileops_session", "hub:test-subnet", {"profile_mode": "trace_profile", "reason": "root_mcp.memory.start", "trigger_source": "root_mcp"}) in fake_client.calls
 
 
 def test_build_codex_stdio_command_uses_profile_and_server_name(tmp_path: Path) -> None:

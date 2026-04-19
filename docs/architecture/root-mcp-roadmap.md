@@ -168,7 +168,7 @@ This milestone is the first point where live Codex trials should cover AdaOS arc
 ### Milestone D. ProfileOps Live Trial
 
 - [x] `ProfileOpsRead` is available through MCP
-- [ ] `ProfileOpsControl` is available through bounded typed writes
+- [x] `ProfileOpsControl` is available through bounded typed writes
 - [ ] profiler reads/writes appear in shared Root MCP audit history
 - [ ] Infrascope and Codex consume the same profiler contracts
 
@@ -210,11 +210,11 @@ Phase is complete when:
 
 ### `ProfileOps-2`. Target-Routed Profiling Controls
 
-- [ ] add typed MCP write tools for `start`, `stop`, `retry`, and `publish`
-- [ ] require explicit target capability publication before any write tool is allowed
-- [ ] keep execution bounded and environment-scoped in the same style as existing `hub.*` write tools
-- [ ] preserve supervisor as the only authority that decides profile mode convergence and session lifecycle
-- [ ] package control capabilities as a named profile such as `ProfileOpsControl`
+- [x] add typed MCP write tools for `start`, `stop`, `retry`, and `publish`
+- [x] require explicit target capability publication before any write tool is allowed
+- [x] keep execution bounded and environment-scoped in the same style as existing `hub.*` write tools
+- [x] preserve supervisor as the only authority that decides profile mode convergence and session lifecycle
+- [x] package control capabilities as a named profile such as `ProfileOpsControl`
 
 Phase is complete when:
 

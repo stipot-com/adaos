@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from adaos.services.agent_context import get_ctx
 from adaos.services.reliability import channel_diagnostics_snapshot, runtime_signal_snapshot
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
@@ -114,6 +116,40 @@ def _run_coroutine_in_thread(coro_factory) -> Any:
     if "exc" in error:
         raise error["exc"]
     return result.get("value")
+
+
+def _resolve_local_control_base_url() -> str:
+    try:
+        from adaos.apps.cli.active_control import resolve_control_base_url
+
+        return str(resolve_control_base_url(prefer_local=True)).rstrip("/")
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise RuntimeError("unable to resolve local control base URL") from exc
+
+
+def _resolve_local_control_token(*, base_url: str) -> str:
+    try:
+        from adaos.apps.cli.active_control import resolve_control_token
+
+        return str(resolve_control_token(base_url=base_url))
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise RuntimeError("unable to resolve local control token") from exc
+
+
+def _local_control_post(path: str, *, body: dict[str, Any]) -> dict[str, Any]:
+    base = _resolve_local_control_base_url()
+    token = _resolve_local_control_token(base_url=base)
+    response = requests.post(
+        base + str(path),
+        headers={"X-AdaOS-Token": token},
+        json=dict(body),
+        timeout=15.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid JSON payload for {path}")
+    return payload
 
 
 def read_local_logs(*, tail: int = 200, max_files: int = 5) -> dict[str, Any]:
@@ -319,6 +355,67 @@ def read_test_results(*, target_id: str) -> dict[str, Any]:
     return {"available": True, "target_id": target_id, "result": item}
 
 
+def start_local_memory_profile(
+    *,
+    profile_mode: str,
+    reason: str,
+    trigger_source: str = "root_mcp",
+) -> dict[str, Any]:
+    return {
+        "mode": "local_process",
+        "control": _local_control_post(
+            "/api/supervisor/memory/profile/start",
+            body={
+                "profile_mode": str(profile_mode or "sampled_profile"),
+                "reason": str(reason or "root_mcp.memory.start"),
+                "trigger_source": str(trigger_source or "root_mcp"),
+            },
+        ),
+    }
+
+
+def stop_local_memory_profile(session_id: str, *, reason: str) -> dict[str, Any]:
+    token = str(session_id or "").strip()
+    if not token:
+        raise ValueError("session_id is required")
+    return {
+        "mode": "local_process",
+        "control": _local_control_post(
+            f"/api/supervisor/memory/profile/{token}/stop",
+            body={"reason": str(reason or "root_mcp.memory.stop")},
+        ),
+    }
+
+
+def retry_local_memory_profile(session_id: str, *, reason: str) -> dict[str, Any]:
+    token = str(session_id or "").strip()
+    if not token:
+        raise ValueError("session_id is required")
+    return {
+        "mode": "local_process",
+        "control": _local_control_post(
+            f"/api/supervisor/memory/profile/{token}/retry",
+            body={"reason": str(reason or "root_mcp.memory.retry")},
+        ),
+    }
+
+
+def publish_local_memory_profile(session_id: str, *, reason: str) -> dict[str, Any]:
+    token = str(session_id or "").strip()
+    if not token:
+        raise ValueError("session_id is required")
+    return {
+        "mode": "local_process",
+        "control": _local_control_post(
+            "/api/supervisor/memory/publish",
+            body={
+                "session_id": token,
+                "reason": str(reason or "root_mcp.memory.publish"),
+            },
+        ),
+    }
+
+
 def deploy_local_ref(
     *,
     target_id: str,
@@ -453,6 +550,7 @@ def read_deploy_state(*, target_id: str) -> dict[str, Any]:
 
 __all__ = [
     "deploy_local_ref",
+    "publish_local_memory_profile",
     "read_deploy_state",
     "read_local_logs",
     "read_test_results",
@@ -460,4 +558,7 @@ __all__ = [
     "rollback_local_deploy",
     "run_allowed_tests",
     "run_local_healthchecks",
+    "retry_local_memory_profile",
+    "start_local_memory_profile",
+    "stop_local_memory_profile",
 ]

@@ -339,6 +339,51 @@ class CodexRootMcpBridge:
                 },
             },
             {
+                "name": "start_profileops_session",
+                "description": "Start a supervisor-owned profiler session through the bounded ProfileOps control surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "profile_mode": {"type": "string", "default": "sampled_profile"},
+                        "reason": {"type": "string"},
+                        "trigger_source": {"type": "string", "default": "root_mcp"},
+                    },
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "stop_profileops_session",
+                "description": "Stop a supervisor-owned profiler session through the bounded ProfileOps control surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {**target_properties, "session_id": {"type": "string"}, "reason": {"type": "string"}},
+                    "required": [*target_required, "session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "retry_profileops_session",
+                "description": "Retry a supervisor-owned profiler session through the bounded ProfileOps control surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {**target_properties, "session_id": {"type": "string"}, "reason": {"type": "string"}},
+                    "required": [*target_required, "session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "publish_profileops_session",
+                "description": "Publish a supervisor-owned profiler session to root through the bounded ProfileOps control surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {**target_properties, "session_id": {"type": "string"}, "reason": {"type": "string"}},
+                    "required": [*target_required, "session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "list_managed_targets",
                 "description": "List managed targets visible to the current Root MCP token scope.",
                 "inputSchema": {
@@ -494,6 +539,39 @@ class CodexRootMcpBridge:
                     str(args.get("artifact_id") or ""),
                     offset=int(args.get("offset") or 0),
                     max_bytes=int(args.get("max_bytes") or 256 * 1024),
+                )
+            )
+        if tool == "start_profileops_session":
+            return _tool_text(
+                client.start_profileops_session(
+                    self._effective_target_id(args),
+                    profile_mode=str(args.get("profile_mode") or "sampled_profile"),
+                    reason=str(args.get("reason") or "root_mcp.memory.start"),
+                    trigger_source=str(args.get("trigger_source") or "root_mcp"),
+                )
+            )
+        if tool == "stop_profileops_session":
+            return _tool_text(
+                client.stop_profileops_session(
+                    self._effective_target_id(args),
+                    str(args.get("session_id") or ""),
+                    reason=str(args.get("reason") or "root_mcp.memory.stop"),
+                )
+            )
+        if tool == "retry_profileops_session":
+            return _tool_text(
+                client.retry_profileops_session(
+                    self._effective_target_id(args),
+                    str(args.get("session_id") or ""),
+                    reason=str(args.get("reason") or "root_mcp.memory.retry"),
+                )
+            )
+        if tool == "publish_profileops_session":
+            return _tool_text(
+                client.publish_profileops_session(
+                    self._effective_target_id(args),
+                    str(args.get("session_id") or ""),
+                    reason=str(args.get("reason") or "root_mcp.memory.publish"),
                 )
             )
         if tool == "list_managed_targets":

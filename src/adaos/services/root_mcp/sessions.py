@@ -38,6 +38,10 @@ DEFAULT_CAPABILITY_PROFILES: dict[str, list[str]] = {
         "hub.memory.list_incidents",
         "hub.memory.list_artifacts",
         "hub.memory.get_artifact",
+        "hub.memory.start_profile",
+        "hub.memory.stop_profile",
+        "hub.memory.retry_profile",
+        "hub.memory.publish_profile",
     ],
 }
 

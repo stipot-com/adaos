@@ -367,6 +367,84 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def start_profileops_session(
+        self,
+        target_id: str,
+        *,
+        profile_mode: str = "sampled_profile",
+        reason: str = "root_mcp.memory.start",
+        trigger_source: str = "root_mcp",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.start_profile",
+            arguments={
+                "target_id": str(target_id),
+                "profile_mode": str(profile_mode),
+                "reason": str(reason),
+                "trigger_source": str(trigger_source),
+            },
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def stop_profileops_session(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        reason: str = "root_mcp.memory.stop",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.stop_profile",
+            arguments={"target_id": str(target_id), "session_id": str(session_id), "reason": str(reason)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def retry_profileops_session(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        reason: str = "root_mcp.memory.retry",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.retry_profile",
+            arguments={"target_id": str(target_id), "session_id": str(session_id), "reason": str(reason)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def publish_profileops_session(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        reason: str = "root_mcp.memory.publish",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.publish_profile",
+            arguments={"target_id": str(target_id), "session_id": str(session_id), "reason": str(reason)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def get_target_logs(
         self,
         target_id: str,
