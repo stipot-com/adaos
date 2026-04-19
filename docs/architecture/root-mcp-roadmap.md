@@ -169,7 +169,7 @@ This milestone is the first point where live Codex trials should cover AdaOS arc
 
 - [x] `ProfileOpsRead` is available through MCP
 - [x] `ProfileOpsControl` is available through bounded typed writes
-- [ ] profiler reads/writes appear in shared Root MCP audit history
+- [x] profiler reads/writes appear in shared Root MCP audit history
 - [ ] Infrascope and Codex consume the same profiler contracts
 
 This milestone is the first live approval point for real supervisor-profiler MCP workflows.
@@ -223,9 +223,9 @@ Phase is complete when:
 
 ### `ProfileOps-3`. Unified Audit and Event History
 
-- [ ] align profiler tool execution with the Root MCP operational event model
-- [ ] link profiling control actions, root publication, and artifact retrieval through common trace ids where practical
-- [ ] let activity feeds and capability-usage views include profiler operations without a second audit vocabulary
+- [x] align profiler tool execution with the Root MCP operational event model
+- [x] link profiling control actions, root publication, and artifact retrieval through common trace ids where practical
+- [x] let activity feeds and capability-usage views include profiler operations without a second audit vocabulary
 
 Phase is complete when:
 

@@ -1655,6 +1655,54 @@ def _result_summary(result: Any) -> dict[str, Any]:
     return {"kind": type(result).__name__}
 
 
+def _nested_mapping(value: Any, *keys: str) -> dict[str, Any]:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return dict(current) if isinstance(current, dict) else {}
+
+
+def _profile_ops_meta(tool_id: str, *, arguments: dict[str, Any], result: Any) -> dict[str, Any]:
+    token = str(tool_id or "").strip()
+    if token != "hub.memory_profile_report.ingest" and not token.startswith("hub.memory."):
+        return {}
+
+    payload: dict[str, Any] = {"plane": "profile_ops"}
+    if token == "hub.memory_profile_report.ingest":
+        payload["action"] = "report_ingest"
+        payload["session_id"] = str(arguments.get("session_id") or "").strip() or None
+        payload["profile_mode"] = str(arguments.get("profile_mode") or "").strip() or None
+        payload["artifact_id"] = str(arguments.get("artifact_id") or "").strip() or None
+        return {key: value for key, value in payload.items() if value is not None}
+
+    payload["action"] = token.removeprefix("hub.memory.")
+    session_id = str(arguments.get("session_id") or "").strip() or None
+    artifact_id = str(arguments.get("artifact_id") or "").strip() or None
+    profile_mode = str(arguments.get("profile_mode") or "").strip() or None
+
+    direct_session = _nested_mapping(result, "session")
+    control_session = _nested_mapping(result, "profile", "control", "session")
+    if not session_id:
+        session_id = str(control_session.get("session_id") or direct_session.get("session_id") or result.get("session_id") or "").strip() or None
+    if not profile_mode:
+        profile_mode = str(control_session.get("profile_mode") or direct_session.get("profile_mode") or "").strip() or None
+    if not artifact_id:
+        artifact = _nested_mapping(result, "artifact")
+        artifact_id = str(artifact.get("artifact_id") or "").strip() or None
+
+    publish_state = str(_nested_mapping(result, "profile", "control", "session").get("publish_state") or "").strip() or None
+    retry_of_session_id = str(_nested_mapping(result, "profile", "control").get("retry_of_session_id") or "").strip() or None
+
+    payload["session_id"] = session_id
+    payload["artifact_id"] = artifact_id
+    payload["profile_mode"] = profile_mode
+    payload["publish_state"] = publish_state
+    payload["retry_of_session_id"] = retry_of_session_id
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 def _redactions_for_tool(tool_id: str) -> list[str]:
     token = str(tool_id or "").strip()
     if token in {"hub.issue_access_token", "root.access_tokens.issue"}:
@@ -1743,6 +1791,7 @@ def _trace_meta(
     scope_meta: dict[str, Any],
     policy_decision: Any,
     routing_mode: str,
+    result: Any | None = None,
     result_summary: dict[str, Any] | None = None,
     error_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1769,6 +1818,7 @@ def _trace_meta(
         "result": dict(result_summary or {}),
         "error": dict(error_summary or {}),
         "redactions": _redactions_for_tool(tool_id),
+        "profile_ops": _profile_ops_meta(tool_id, arguments=arguments, result=result),
     }
 
 
@@ -1902,6 +1952,7 @@ def invoke_tool(
                         scope_meta=scope_meta,
                         policy_decision=policy_decision,
                         routing_mode=routing_mode,
+                        result=result,
                         result_summary=summary,
                     )
                     response = RootMcpResponseEnvelope(
@@ -2001,6 +2052,7 @@ def invoke_tool(
 
     target_id = str(payload_arguments.get("target_id") or "").strip() or None
     audit_trace = dict(response.meta.get("trace") or {}) if isinstance(response.meta.get("trace"), dict) else {}
+    profile_ops = dict(audit_trace.get("profile_ops") or {}) if isinstance(audit_trace.get("profile_ops"), dict) else {}
     if _should_audit_tool(response.tool_id):
         event = RootMcpAuditEvent(
             event_id=new_id(),
@@ -2026,6 +2078,7 @@ def invoke_tool(
                 **scope_meta,
                 **(policy_decision.to_meta() if policy_decision is not None else {}),
                 "trace": audit_trace,
+                "profile_ops": profile_ops,
             },
         )
         append_audit_event(event)

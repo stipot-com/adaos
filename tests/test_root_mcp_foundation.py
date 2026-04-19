@@ -957,6 +957,8 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
                     "hub.memory.list_incidents",
                     "hub.memory.list_artifacts",
                     "hub.memory.get_artifact",
+                    "hub.get_activity_log",
+                    "hub.get_capability_usage_summary",
                 ],
             },
         }
@@ -1125,6 +1127,35 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert profileops_artifact.status_code == 200
     assert profileops_artifact.json()["response"]["result"]["artifact"]["artifact_id"] == "mem-001-final"
 
+    profiler_audit = client.get(
+        "/v1/root/mcp/audit",
+        headers=owner_headers,
+        params={"tool_id": "hub.memory_profile_report.ingest"},
+    )
+    assert profiler_audit.status_code == 200
+    profiler_events = profiler_audit.json()["events"]
+    assert profiler_events
+    assert profiler_events[0]["meta"]["profile_ops"]["action"] == "report_ingest"
+    assert profiler_events[0]["meta"]["profile_ops"]["session_id"] == "mem-001"
+
+    profileops_activity = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.get_activity_log", "arguments": {"target_id": "hub:subnet-test-1", "limit": 10}},
+    )
+    assert profileops_activity.status_code == 200
+    activity_items = profileops_activity.json()["response"]["result"]["activity"]["items"]
+    assert any(item["kind"] == "profile_ops" and item["profile_ops"]["session_id"] == "mem-001" for item in activity_items)
+
+    profileops_usage = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.get_capability_usage_summary", "arguments": {"target_id": "hub:subnet-test-1", "limit": 50}},
+    )
+    assert profileops_usage.status_code == 200
+    usage_payload = profileops_usage.json()["response"]["result"]["usage"]
+    assert usage_payload["planes"]["profile_ops_event_count"] >= 1
+
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
@@ -1242,6 +1273,8 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
                     "hub.memory.stop_profile",
                     "hub.memory.retry_profile",
                     "hub.memory.publish_profile",
+                    "hub.get_activity_log",
+                    "hub.get_capability_usage_summary",
                 ],
             },
         },
@@ -1294,6 +1327,7 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
         headers=owner_headers,
         json={
             "tool_id": "hub.memory.start_profile",
+            "trace_id": "trace-profileops-1",
             "arguments": {"target_id": target_id, "profile_mode": "trace_profile"},
         },
     )
@@ -1302,6 +1336,12 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert start_profile_payload["ok"] is True
     assert start_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.start"
     assert start_profile_payload["response"]["result"]["profile"]["control"]["session"]["session_id"] == "mem-101"
+    assert start_profile_payload["response"]["meta"]["trace"]["profile_ops"] == {
+        "plane": "profile_ops",
+        "action": "start_profile",
+        "session_id": "mem-101",
+        "profile_mode": "trace_profile",
+    }
 
     stop_profile_call = client.post(
         "/v1/root/mcp/call",
@@ -1316,6 +1356,11 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert stop_profile_payload["ok"] is True
     assert stop_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.stop"
     assert stop_profile_payload["response"]["result"]["profile"]["control"]["session"]["session_state"] == "cancelled"
+    assert stop_profile_payload["response"]["meta"]["trace"]["profile_ops"] == {
+        "plane": "profile_ops",
+        "action": "stop_profile",
+        "session_id": "mem-101",
+    }
 
     retry_profile_call = client.post(
         "/v1/root/mcp/call",
@@ -1330,12 +1375,20 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert retry_profile_payload["ok"] is True
     assert retry_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.retry"
     assert retry_profile_payload["response"]["result"]["profile"]["control"]["retry_of_session_id"] == "mem-101"
+    assert retry_profile_payload["response"]["meta"]["trace"]["profile_ops"] == {
+        "plane": "profile_ops",
+        "action": "retry_profile",
+        "session_id": "mem-101",
+        "profile_mode": "trace_profile",
+        "retry_of_session_id": "mem-101",
+    }
 
     publish_profile_call = client.post(
         "/v1/root/mcp/call",
         headers=owner_headers,
         json={
             "tool_id": "hub.memory.publish_profile",
+            "trace_id": "trace-profileops-1",
             "arguments": {"target_id": target_id, "session_id": "mem-101"},
         },
     )
@@ -1344,6 +1397,47 @@ def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     assert publish_profile_payload["ok"] is True
     assert publish_profile_payload["response"]["meta"]["routing_mode"] == "profile_ops.local_process.publish"
     assert publish_profile_payload["response"]["result"]["profile"]["control"]["session"]["publish_state"] == "published"
+    assert publish_profile_payload["response"]["meta"]["trace"]["profile_ops"] == {
+        "plane": "profile_ops",
+        "action": "publish_profile",
+        "session_id": "mem-101",
+        "publish_state": "published",
+    }
+
+    trace_audit = client.get(
+        "/v1/root/mcp/audit",
+        headers=owner_headers,
+        params={"trace_id": "trace-profileops-1"},
+    )
+    assert trace_audit.status_code == 200
+    trace_events = trace_audit.json()["events"]
+    assert {item["tool_id"] for item in trace_events} >= {"hub.memory.start_profile", "hub.memory.publish_profile"}
+    assert all(item["meta"]["profile_ops"]["plane"] == "profile_ops" for item in trace_events)
+    publish_event = next(item for item in trace_events if item["event_id"] == publish_profile_payload["response"]["audit_event_id"])
+    assert publish_event["meta"]["profile_ops"] == {
+        "plane": "profile_ops",
+        "action": "publish_profile",
+        "session_id": "mem-101",
+        "publish_state": "published",
+    }
+
+    activity_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.get_activity_log", "arguments": {"target_id": target_id, "limit": 20}},
+    )
+    assert activity_call.status_code == 200
+    activity_items = activity_call.json()["response"]["result"]["activity"]["items"]
+    assert any(item["kind"] == "profile_ops" and item["trace_id"] == "trace-profileops-1" for item in activity_items)
+
+    usage_call = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.get_capability_usage_summary", "arguments": {"target_id": target_id, "limit": 100}},
+    )
+    assert usage_call.status_code == 200
+    usage_payload = usage_call.json()["response"]["result"]["usage"]
+    assert usage_payload["planes"]["profile_ops_event_count"] >= 2
 
     deploy_call = client.post(
         "/v1/root/mcp/call",

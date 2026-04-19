@@ -697,6 +697,12 @@ async def hub_memory_profile_report_ingest(
             "zone": str(payload_raw.get("zone") or ""),
             "session_id": str(result.get("session_id") or ""),
             "message_id": str(protocol.get("message_id") or ""),
+            "profile_ops": {
+                "plane": "profile_ops",
+                "action": "report_ingest",
+                "session_id": str(result.get("session_id") or ""),
+                "profile_mode": str(((payload_raw.get("session") or {}) if isinstance(payload_raw.get("session"), dict) else {}).get("profile_mode") or ""),
+            },
         },
     )
     append_audit_event(audit_event)

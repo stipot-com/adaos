@@ -105,6 +105,8 @@ def _event_kind(payload: dict[str, Any]) -> str:
     tool_id = str(payload.get("tool_id") or "").strip()
     if tool_id == "hub.control_report.ingest":
         return "control_report"
+    if tool_id == "hub.memory_profile_report.ingest" or tool_id.startswith("hub.memory."):
+        return "profile_ops"
     if tool_id.startswith("hub."):
         return "target_tool"
     if tool_id.startswith("root.access_tokens."):
@@ -117,6 +119,18 @@ def _event_kind(payload: dict[str, Any]) -> str:
 def _event_summary(payload: dict[str, Any]) -> str:
     tool_id = str(payload.get("tool_id") or "").strip() or "unknown"
     status = str(payload.get("status") or "").strip() or "unknown"
+    meta = payload.get("meta") or {}
+    profile_ops = dict(meta.get("profile_ops") or {}) if isinstance(meta, dict) and isinstance(meta.get("profile_ops"), dict) else {}
+    if tool_id == "hub.memory_profile_report.ingest" or tool_id.startswith("hub.memory."):
+        action = str(profile_ops.get("action") or tool_id.removeprefix("hub.memory.") or "unknown").strip()
+        session_id = str(profile_ops.get("session_id") or meta.get("session_id") or "").strip()
+        artifact_id = str(profile_ops.get("artifact_id") or "").strip()
+        parts = [f"profile_ops.{action}", status]
+        if session_id:
+            parts.append(f"session={session_id}")
+        if artifact_id:
+            parts.append(f"artifact={artifact_id}")
+        return " ".join(parts)
     result_summary = payload.get("result_summary") or {}
     if isinstance(result_summary, dict):
         keys = result_summary.get("keys")
@@ -149,6 +163,7 @@ def target_activity_feed(
             continue
         meta = payload.get("meta") or {}
         trace = meta.get("trace") if isinstance(meta, dict) and isinstance(meta.get("trace"), dict) else {}
+        profile_ops = dict(meta.get("profile_ops") or {}) if isinstance(meta, dict) and isinstance(meta.get("profile_ops"), dict) else {}
         items.append(
             {
                 "event_id": payload.get("event_id"),
@@ -169,6 +184,7 @@ def target_activity_feed(
                     "request": dict(trace.get("request") or {}) if isinstance(trace.get("request"), dict) else {},
                     "redactions": list(trace.get("redactions") or []) if isinstance(trace.get("redactions"), list) else [],
                 },
+                "profile_ops": profile_ops,
             }
         )
         if len(items) >= max_items:
@@ -238,6 +254,9 @@ def target_capability_usage_summary(
         "error_count": error_count,
         "last_activity_at": last_activity_at,
         "tools": tools,
+        "planes": {
+            "profile_ops_event_count": sum(int(item.get("count") or 0) for item in tools if str(item.get("tool_id") or "").startswith("hub.memory.") or str(item.get("tool_id") or "") == "hub.memory_profile_report.ingest"),
+        },
     }
 
 
