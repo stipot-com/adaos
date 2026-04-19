@@ -172,6 +172,43 @@ def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatc
     assert published["session"]["published_ref"] == "root-msg-1"
     assert published["runtime"]["publish_request_session_id"] == session_id
 
+
+def test_publish_memory_profile_stamps_artifact_published_refs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    monkeypatch.setattr(supervisor, "load_config", lambda: object())
+    monkeypatch.setattr(
+        supervisor,
+        "report_hub_memory_profile",
+        lambda conf, session_summary, operations=None, telemetry=None: {
+            "ok": True,
+            "reported_at": 33.0,
+            "_protocol": {"message_id": "root-msg-1", "cursor": 1},
+        },
+    )
+    started = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
+    session_id = started["session"]["session_id"]
+    manager._upsert_memory_session_summary(
+        {
+            **started["session"],
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-final",
+                    "kind": "tracemalloc_final_snapshot",
+                    "content_type": "application/json",
+                    "size_bytes": 128,
+                }
+            ],
+        }
+    )
+
+    published = manager.publish_memory_profile(session_id, reason="operator.publish")
+
+    assert published["session"]["artifact_refs"][0]["published_ref"] == f"root://hub-memory-profile/{session_id}/mem-001-final"
+
     stopped = manager.stop_memory_profile(session_id, reason="operator.stop")
     assert stopped["session"]["session_state"] == "cancelled"
     assert stopped["runtime"]["requested_session_id"] is None

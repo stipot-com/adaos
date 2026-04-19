@@ -59,7 +59,10 @@ from adaos.services.realtime_sidecar import (
     start_realtime_sidecar_subprocess,
     stop_realtime_sidecar_subprocess,
 )
-from adaos.services.root.memory_profile_sync import report_hub_memory_profile
+from adaos.services.root.memory_profile_sync import (
+    memory_profile_artifact_published_ref,
+    report_hub_memory_profile,
+)
 from adaos.services.runtime_paths import current_base_dir
 from adaos.services.supervisor_memory import (
     DEFAULT_PROFILER_ADAPTER,
@@ -2279,6 +2282,23 @@ class SupervisorManager:
         updated["published_to_root"] = bool(publish_result.get("ok"))
         updated["publish_state"] = str(publish_result.get("state") or "publish_failed")
         updated["published_ref"] = publish_result.get("published_ref")
+        if bool(publish_result.get("ok")):
+            artifact_refs = updated.get("artifact_refs") if isinstance(updated.get("artifact_refs"), list) else []
+            published_artifacts: list[dict[str, Any]] = []
+            for item in artifact_refs:
+                if not isinstance(item, dict):
+                    continue
+                artifact_id = str(item.get("artifact_id") or "").strip()
+                published_artifacts.append(
+                    {
+                        **item,
+                        "published_ref": memory_profile_artifact_published_ref(
+                            session_id=token,
+                            artifact_id=artifact_id,
+                        ) if artifact_id else item.get("published_ref"),
+                    }
+                )
+            updated["artifact_refs"] = published_artifacts
         updated_window = updated.get("operation_window") if isinstance(updated.get("operation_window"), dict) else {}
         updated_window["publish_result"] = publish_result
         updated["operation_window"] = updated_window

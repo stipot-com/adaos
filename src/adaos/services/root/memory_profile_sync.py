@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from adaos.services.agent_context import get_ctx
@@ -11,6 +13,15 @@ from adaos.services.root.client import RootHttpClient
 from adaos.services.runtime_identity import runtime_instance_id, runtime_transition_role
 
 _MEMORY_PROFILE_FLOW_ID = "hub_root.memory_profile"
+_REMOTE_ARTIFACT_MAX_BYTES = 256 * 1024
+_REMOTE_ARTIFACT_MAX_COUNT = 6
+_REMOTE_ARTIFACT_ALLOWED_KINDS = {
+    "tracemalloc_start_snapshot",
+    "tracemalloc_final_snapshot",
+    "tracemalloc_top_growth",
+    "tracemalloc_trace_start",
+    "tracemalloc_trace_final",
+}
 
 
 def _memory_profile_stream_id(conf, *, session_id: str) -> str:
@@ -70,6 +81,66 @@ def _zone(conf) -> str | None:
     return token or None
 
 
+def memory_profile_artifact_published_ref(*, session_id: str, artifact_id: str) -> str:
+    return f"root://hub-memory-profile/{str(session_id or '').strip()}/{str(artifact_id or '').strip()}"
+
+
+def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    summary = dict(session_summary or {})
+    session_id = str(summary.get("session_id") or "").strip()
+    artifact_refs = summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []
+    compact_artifacts: list[dict[str, Any]] = []
+    inline_payloads: list[dict[str, Any]] = []
+    for item in artifact_refs:
+        if not isinstance(item, dict):
+            continue
+        artifact_id = str(item.get("artifact_id") or "").strip()
+        kind = str(item.get("kind") or "").strip()
+        content_type = str(item.get("content_type") or "").strip() or None
+        published_ref = memory_profile_artifact_published_ref(session_id=session_id, artifact_id=artifact_id) if session_id and artifact_id else None
+        compact_artifacts.append(
+            {
+                "artifact_id": artifact_id,
+                "kind": kind,
+                "content_type": content_type,
+                "size_bytes": item.get("size_bytes"),
+                "created_at": item.get("created_at"),
+                "published_ref": published_ref,
+            }
+        )
+        if len(inline_payloads) >= _REMOTE_ARTIFACT_MAX_COUNT:
+            continue
+        if kind not in _REMOTE_ARTIFACT_ALLOWED_KINDS or content_type != "application/json":
+            continue
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            size_bytes = int(path.stat().st_size)
+        except Exception:
+            continue
+        if size_bytes > _REMOTE_ARTIFACT_MAX_BYTES:
+            continue
+        try:
+            content = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        inline_payloads.append(
+            {
+                "artifact_id": artifact_id,
+                "kind": kind,
+                "content_type": content_type,
+                "size_bytes": size_bytes,
+                "published_ref": published_ref,
+                "content": content,
+            }
+        )
+    return compact_artifacts, inline_payloads
+
+
 def build_memory_profile_report(
     conf,
     *,
@@ -78,21 +149,7 @@ def build_memory_profile_report(
     telemetry: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     summary = dict(session_summary or {})
-    artifact_refs = summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []
-    compact_artifacts: list[dict[str, Any]] = []
-    for item in artifact_refs:
-        if not isinstance(item, dict):
-            continue
-        compact_artifacts.append(
-            {
-                "artifact_id": str(item.get("artifact_id") or "").strip(),
-                "kind": str(item.get("kind") or "").strip(),
-                "content_type": str(item.get("content_type") or "").strip() or None,
-                "size_bytes": item.get("size_bytes"),
-                "created_at": item.get("created_at"),
-                "published_ref": item.get("published_ref"),
-            }
-        )
+    compact_artifacts, inline_payloads = _inline_artifact_payloads(summary)
     return {
         "target_id": f"hub:{str(getattr(conf, 'subnet_id', '') or '').strip() or 'unknown_hub'}",
         "node_id": str(getattr(conf, "node_id", "") or ""),
@@ -127,6 +184,7 @@ def build_memory_profile_report(
         },
         "operations_tail": [dict(item) for item in (operations or [])[-20:] if isinstance(item, dict)],
         "telemetry_tail": [dict(item) for item in (telemetry or [])[-20:] if isinstance(item, dict)],
+        "artifact_payloads": inline_payloads,
     }
 
 
@@ -178,5 +236,6 @@ def report_hub_memory_profile(
 
 __all__ = [
     "build_memory_profile_report",
+    "memory_profile_artifact_published_ref",
     "report_hub_memory_profile",
 ]

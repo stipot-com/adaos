@@ -237,3 +237,40 @@ def test_hub_root_memory_session_prints_remote_summary(monkeypatch) -> None:
     assert "memory remote: reported=2026-04-18T12:00:00Z received=2026-04-18T12:00:01Z artifacts=1 operations=1 telemetry=1" in result.output
     assert "first artifact: mem-001-final" in result.output
     assert "retry chain: from=mem-000 root=mem-root depth=2" in result.output
+
+
+def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
+    hub_cli = _import_hub_cli()
+    monkeypatch.setattr(hub_cli, "get_ctx", lambda: type("Ctx", (), {"config": type("Cfg", (), {"subnet_id": "subnet-test-1", "root_settings": type("Root", (), {"base_url": "https://root.test"})()})()})())
+    monkeypatch.setattr(hub_cli, "_root_verify_from_conf", lambda conf: True)
+    monkeypatch.setenv("ROOT_TOKEN", "root-token")
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @staticmethod
+        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str) -> dict:
+            assert root_token == "root-token"
+            assert session_id == "mem-001"
+            assert artifact_id == "mem-001-final"
+            return {
+                "ok": True,
+                "session_id": "mem-001",
+                "artifact": {
+                    "artifact_id": "mem-001-final",
+                    "kind": "tracemalloc_final_snapshot",
+                    "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
+                },
+                "exists": True,
+                "content": {"top_allocations": []},
+            }
+
+    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+
+    result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifact", "mem-001", "mem-001-final"])
+
+    assert result.exit_code == 0
+    assert "memory artifact: session=mem-001 id=mem-001-final kind=tracemalloc_final_snapshot exists=True" in result.output
+    assert "published ref: root://hub-memory-profile/mem-001/mem-001-final" in result.output
+    assert "content keys: top_allocations" in result.output

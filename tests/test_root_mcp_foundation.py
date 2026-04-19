@@ -642,10 +642,11 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
                 "profile_mode": "trace_profile",
                 "session_state": "finished",
                 "suspected_leak": True,
-                "artifact_refs": [{"artifact_id": "mem-001-final"}],
+                "artifact_refs": [{"artifact_id": "mem-001-final", "kind": "tracemalloc_final_snapshot", "published_ref": "root://hub-memory-profile/mem-001/mem-001-final"}],
             },
             "operations_tail": [{"event": "tool_invoked"}],
             "telemetry_tail": [{"sampled_at": 1.0, "rss_growth_bytes": 64}],
+            "artifact_payloads": [{"artifact_id": "mem-001-final", "content": {"top_allocations": []}}],
         },
     )
     assert report.status_code == 200
@@ -688,6 +689,16 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     report_payload = report_item.json()["report"]
     assert report_payload["session_id"] == "mem-001"
     assert report_payload["report"]["session"]["session_state"] == "finished"
+
+    artifact_item = client.get(
+        "/v1/hubs/memory_profile/reports/mem-001/artifacts/mem-001-final",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+    )
+    assert artifact_item.status_code == 200
+    artifact_payload = artifact_item.json()
+    assert artifact_payload["exists"] is True
+    assert artifact_payload["artifact"]["artifact_id"] == "mem-001-final"
+    assert artifact_payload["content"]["top_allocations"] == []
 
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:

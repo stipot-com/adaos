@@ -690,6 +690,25 @@ class RootHttpClient:
             )
         )
 
+    def root_memory_profile_artifact(
+        self,
+        *,
+        root_token: str,
+        session_id: str,
+        artifact_id: str,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/hubs/memory_profile/reports/{session_id}/artifacts/{artifact_id}",
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
     def root_core_update_subnets(
         self,
         *,

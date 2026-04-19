@@ -94,6 +94,7 @@ If a promoted supervisor/bootstrap revision fails to come back cleanly, `update-
 adaos hub root reports --kind memory-profile
 adaos hub root reports --kind memory-profile --state finished --suspected-only
 adaos hub root memory-session <SESSION_ID>
+adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>
 adaos hub join-code create
 adaos hub root status
 adaos hub root reconnect
@@ -101,7 +102,7 @@ adaos node join --join-code <CODE>
 adaos node role set --role member
 ```
 
-`adaos hub root reports --kind memory-profile` is the first operator-facing Phase 3 retrieval path for remotely published memory-profile summaries. It complements the local `runtime memory-*` commands by showing what root has already ingested for one hub, can be narrowed further with `--session-id`, and now also supports compact remote filtering such as `--state finished --suspected-only`. `adaos hub root memory-session <SESSION_ID>` opens one remotely published profiling incident directly and prints the compact RSS / retry / artifact summary without requiring raw JSON output.
+`adaos hub root reports --kind memory-profile` is the first operator-facing Phase 3 retrieval path for remotely published memory-profile summaries. It complements the local `runtime memory-*` commands by showing what root has already ingested for one hub, can be narrowed further with `--session-id`, and now also supports compact remote filtering such as `--state finished --suspected-only`. `adaos hub root memory-session <SESSION_ID>` opens one remotely published profiling incident directly and prints the compact RSS / retry / artifact summary without requiring raw JSON output. `adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>` fetches the currently supported remote artifact payloads for that session; at this stage Phase 3 only inlines small JSON artifacts that pass the publish policy, while heavier files remain local-first.
 
 ## Yjs webspace operations
 

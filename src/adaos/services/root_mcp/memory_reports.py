@@ -167,7 +167,43 @@ def get_memory_profile_report(session_id: str) -> dict[str, Any] | None:
     }
 
 
+def get_memory_profile_artifact(session_id: str, artifact_id: str) -> dict[str, Any] | None:
+    report_item = get_memory_profile_report(session_id)
+    if report_item is None:
+        return None
+    report = report_item.get("report") if isinstance(report_item.get("report"), dict) else {}
+    session = report.get("session") if isinstance(report.get("session"), dict) else {}
+    refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+    artifact = next(
+        (
+            dict(item)
+            for item in refs
+            if isinstance(item, dict) and str(item.get("artifact_id") or "").strip() == str(artifact_id or "").strip()
+        ),
+        None,
+    )
+    if artifact is None:
+        return None
+    payloads = report.get("artifact_payloads") if isinstance(report.get("artifact_payloads"), list) else []
+    payload = next(
+        (
+            dict(item)
+            for item in payloads
+            if isinstance(item, dict) and str(item.get("artifact_id") or "").strip() == str(artifact_id or "").strip()
+        ),
+        None,
+    )
+    return {
+        "session_id": str(session_id or "").strip(),
+        "hub_id": report_item.get("hub_id"),
+        "artifact": artifact,
+        "exists": payload is not None,
+        "content": payload.get("content") if isinstance(payload, dict) else None,
+    }
+
+
 __all__ = [
+    "get_memory_profile_artifact",
     "get_memory_profile_report",
     "ingest_memory_profile_report",
     "list_memory_profile_reports",
