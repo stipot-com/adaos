@@ -230,8 +230,11 @@ class CodexRootMcpBridge:
         bootstrap = "MCP Session Lease" if self.profile.bootstrap_mode == "mcp_session_lease" else "bounded access token"
         return (
             "This MCP server is a local stdio bridge from Codex to AdaOS Root MCP. "
-            f"It is currently bound to {target} using {bootstrap}. Prefer get_status, get_runtime_summary, "
-            "and get_operational_surface before requesting logs or healthchecks."
+            f"It is currently bound to {target} using {bootstrap}. "
+            "For descriptive AdaOS programming context, prefer get_architecture_catalog, get_sdk_metadata, "
+            "get_template_catalog, and public registry summaries from AdaOSDevPlane. "
+            "For operational context, prefer get_status, get_runtime_summary, and get_operational_surface "
+            "before requesting logs or healthchecks."
         )
 
     def tool_definitions(self) -> list[dict[str, Any]]:
@@ -242,6 +245,37 @@ class CodexRootMcpBridge:
             {
                 "name": "foundation",
                 "description": "Read the AdaOS Root MCP foundation snapshot used by this bridge.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "get_architecture_catalog",
+                "description": "Read the AdaOS architecture catalog through the AdaOSDevPlane descriptive surface.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "get_sdk_metadata",
+                "description": "Read AdaOS SDK export metadata through the AdaOSDevPlane descriptive surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "level": {"type": "string", "enum": ["mini", "std", "rich"], "default": "std"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_template_catalog",
+                "description": "Read the root-curated skill and scenario template catalog through AdaOSDevPlane.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "get_public_skill_registry",
+                "description": "Read the published workspace skill registry summary through AdaOSDevPlane.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "get_public_scenario_registry",
+                "description": "Read the published workspace scenario registry summary through AdaOSDevPlane.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             },
             {
@@ -366,6 +400,16 @@ class CodexRootMcpBridge:
         tool = str(name or "").strip()
         if tool == "foundation":
             return _tool_text(client.foundation())
+        if tool == "get_architecture_catalog":
+            return _tool_text(client.get_adaos_dev_architecture_catalog())
+        if tool == "get_sdk_metadata":
+            return _tool_text(client.get_adaos_dev_sdk_metadata(level=str(args.get("level") or "std")))
+        if tool == "get_template_catalog":
+            return _tool_text(client.get_adaos_dev_template_catalog())
+        if tool == "get_public_skill_registry":
+            return _tool_text(client.get_adaos_dev_public_skill_registry())
+        if tool == "get_public_scenario_registry":
+            return _tool_text(client.get_adaos_dev_public_scenario_registry())
         if tool == "list_managed_targets":
             return _tool_text(client.list_managed_targets(environment=_normalize_text(args.get("environment"))))
         if tool == "get_managed_target":

@@ -41,6 +41,7 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert foundation_payload["foundation"]["descriptor_cache"]["enabled"] is True
     assert foundation_payload["foundation"]["surfaces"]["development"]["mode"] == "root_descriptor_cache"
     assert foundation_payload["foundation"]["planes"]["adaos_dev"]["enabled"] is True
+    assert foundation_payload["foundation"]["preferred_descriptive_surface"] == "adaos_dev"
     assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)

@@ -92,6 +92,7 @@ def _foundation_summary() -> dict[str, Any]:
                 "enabled": True,
                 "mode": "typed_descriptive_plane",
                 "backing_store": "root_descriptor_cache",
+                "preferred_for": ["llm_programmer", "authoring", "architecture_assistance"],
             },
         },
         "entrypoints": {
@@ -137,6 +138,7 @@ def _foundation_summary() -> dict[str, Any]:
             "mode": "root_descriptor_cache",
             "freshness_contract": "ttl-backed pseudo-static descriptors served directly from root",
         },
+        "preferred_descriptive_surface": "adaos_dev",
         "tool_contract_count": len(contracts),
     }
 

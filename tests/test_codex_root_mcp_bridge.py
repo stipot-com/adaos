@@ -27,6 +27,26 @@ class _FakeRootMcpClient:
         self.calls.append(("foundation", "", {}))
         return {"foundation": {"id": "root-mcp-foundation"}}
 
+    def get_adaos_dev_architecture_catalog(self) -> dict:
+        self.calls.append(("get_adaos_dev_architecture_catalog", "", {}))
+        return {"descriptor": {"payload": {"available": True, "page_count": 3}}}
+
+    def get_adaos_dev_sdk_metadata(self, *, level: str = "std") -> dict:
+        self.calls.append(("get_adaos_dev_sdk_metadata", level, {}))
+        return {"descriptor": {"payload": {"meta": {"generated_at": "2026-01-01T00:00:00+00:00"}, "level": level}}}
+
+    def get_adaos_dev_template_catalog(self) -> dict:
+        self.calls.append(("get_adaos_dev_template_catalog", "", {}))
+        return {"descriptor": {"payload": {"skills": ["skill_default"], "scenarios": ["scenario_default"]}}}
+
+    def get_adaos_dev_public_skill_registry(self) -> dict:
+        self.calls.append(("get_adaos_dev_public_skill_registry", "", {}))
+        return {"descriptor": {"payload": {"kind": "skills", "item_count": 2}}}
+
+    def get_adaos_dev_public_scenario_registry(self) -> dict:
+        self.calls.append(("get_adaos_dev_public_scenario_registry", "", {}))
+        return {"descriptor": {"payload": {"kind": "scenarios", "item_count": 2}}}
+
     def list_managed_targets(self, *, environment: str | None = None) -> dict:
         self.calls.append(("list_managed_targets", environment or "", {}))
         return {"targets": [{"target_id": "hub:test-subnet"}]}
@@ -132,16 +152,30 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
             "params": {"name": "get_status", "arguments": {}},
         }
     )
+    architecture = bridge.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "get_architecture_catalog", "arguments": {}},
+        }
+    )
 
     assert initialize is not None
     assert initialize["result"]["serverInfo"]["name"] == "adaos-test-hub"
     assert "hub:test-subnet" in initialize["result"]["instructions"]
+    assert "AdaOSDevPlane" in initialize["result"]["instructions"]
     assert tools_list is not None
     tool_names = {item["name"] for item in tools_list["result"]["tools"]}
     assert "get_status" in tool_names
+    assert "get_architecture_catalog" in tool_names
+    assert "get_sdk_metadata" in tool_names
     assert status is not None
     assert status["result"]["structuredContent"]["target_id"] == "hub:test-subnet"
+    assert architecture is not None
+    assert architecture["result"]["structuredContent"]["descriptor"]["payload"]["page_count"] == 3
     assert ("get_target_status", "hub:test-subnet", {}) in fake_client.calls
+    assert ("get_adaos_dev_architecture_catalog", "", {}) in fake_client.calls
 
 
 def test_build_codex_stdio_command_uses_profile_and_server_name(tmp_path: Path) -> None:

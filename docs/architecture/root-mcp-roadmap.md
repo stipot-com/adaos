@@ -97,8 +97,8 @@ Phase is complete when:
 
 - [x] define the first explicit descriptive plane over the foundation
 - [x] expose architecture, SDK, manifest, schema, template, and public registry descriptors through typed plane contracts
-- [ ] make `AdaOSDevPlane` the preferred LLM-programmer descriptive surface
-- [ ] keep descriptive responses root-curated and cache-backed by default
+- [x] make `AdaOSDevPlane` the preferred LLM-programmer descriptive surface
+- [x] keep descriptive responses root-curated and cache-backed by default
 
 Phase is complete when:
 
@@ -159,9 +159,9 @@ This milestone is the first clean live-aprroval point for `Codex in VS Code` wit
 
 ### Milestone C. Descriptive Codex Trial
 
-- [ ] root descriptor cache serves architecture and SDK descriptors without contacting a hub
-- [ ] `AdaOSDevPlane` exposes stable descriptive contracts for LLM-programmer workflows
-- [ ] public skill/scenario publication refreshes the descriptive registry path
+- [x] root descriptor cache serves architecture and SDK descriptors without contacting a hub
+- [x] `AdaOSDevPlane` exposes stable descriptive contracts for LLM-programmer workflows
+- [x] public skill/scenario publication refreshes the descriptive registry path
 
 This milestone is the first point where live Codex trials should cover AdaOS architecture/programming assistance rather than only operational inspection.
 
