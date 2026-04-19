@@ -122,7 +122,7 @@ def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
         lambda path, token=None: {
             "ok": True,
             "status": {"state": "succeeded", "phase": "root_promoted"},
-            "attempt": {"state": "awaiting_root_restart"},
+            "attempt": {"state": "awaiting_root_restart", "contract_version": "1"},
             "slots": {"active_slot": "A", "previous_slot": "B", "slots": {}},
         },
     )
@@ -131,7 +131,33 @@ def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert "supervisor attempt: awaiting_root_restart" in result.output
+    assert "attempt contract: v1" in result.output
     assert "next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes" in result.output
+
+
+def test_autostart_update_status_falls_back_to_public_supervisor_surface(monkeypatch) -> None:
+    runner = CliRunner()
+
+    def _supervisor_get(path, *, token=None):
+        if path == "/api/supervisor/update/status":
+            raise RuntimeError("private supervisor surface unavailable")
+        if path == "/api/supervisor/public/update-status":
+            return {
+                "ok": True,
+                "status": {"state": "planned", "phase": "scheduled", "scheduled_for": 1776000000.0},
+                "attempt": {"state": "planned", "contract_version": "1"},
+                "runtime": {"active_slot": "A"},
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_get", _supervisor_get)
+
+    result = runner.invoke(autostart_app, ["update-status"])
+
+    assert result.exit_code == 0, result.output
+    assert "state: planned" in result.output
+    assert "supervisor attempt: planned" in result.output
+    assert "attempt contract: v1" in result.output
 
 
 def test_autostart_update_status_prints_planned_schedule_and_subsequent_transition(monkeypatch) -> None:

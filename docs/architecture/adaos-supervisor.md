@@ -813,6 +813,12 @@ Supervisor policy should therefore preserve these rules:
 - define persisted attempt schema
 - teach CLI to prefer supervisor-style state when available
 
+Current implementation baseline now covers this phase:
+
+- supervisor-owned update attempt state persists under an explicit contract version instead of an ad-hoc free-form payload
+- browser-safe and operator-facing update surfaces both expose normalized supervisor attempt state
+- `adaos autostart update-status` prefers supervisor-backed state first, then falls back to the public supervisor transition surface before legacy runtime admin status
+
 ### Phase 5 - Resilience before full split
 
 - add stale-attempt timeout handling

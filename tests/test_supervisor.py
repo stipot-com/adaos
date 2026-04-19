@@ -54,8 +54,33 @@ def test_reconcile_update_status_marks_stale_attempt_failed(monkeypatch, tmp_pat
     assert read_plan() is None
     attempt = supervisor._read_update_attempt()
     assert isinstance(attempt, dict)
+    assert attempt["contract_version"] == "1"
+    assert attempt["authority"] == "supervisor"
     assert attempt["state"] == "failed"
     assert attempt["last_status"]["state"] == "failed"
+
+
+def test_update_attempt_read_write_normalizes_contract(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+
+    written = supervisor._write_update_attempt(
+        {
+            "state": "ACTIVE",
+            "action": "Update",
+            "target_rev": "rev2026",
+            "reason": "test.update",
+            "requested_at": "100.0",
+            "subsequent_transition_request": {"action": "update", "target_rev": "rev2027"},
+        }
+    )
+
+    loaded = supervisor._read_update_attempt()
+
+    assert written["contract_version"] == "1"
+    assert written["authority"] == "supervisor"
+    assert written["state"] == "active"
+    assert written["action"] == "update"
+    assert loaded == written
 
 
 def test_reconcile_update_status_completes_attempt_on_terminal_status(monkeypatch, tmp_path) -> None:
@@ -2253,6 +2278,8 @@ def test_public_update_status_payload_is_browser_safe() -> None:
     assert payload["status"]["restart_mode"] == "self_exit"
     assert payload["status"]["restart_requested_at"] == 431.0
     assert payload["attempt"]["state"] == "awaiting_root_restart"
+    assert payload["attempt"]["contract_version"] == "1"
+    assert payload["attempt"]["authority"] == "supervisor"
     assert payload["attempt"]["action"] == "update"
     assert payload["attempt"]["awaiting_restart"] is True
     assert payload["attempt"]["planned_reason"] == "minimum_update_period"

@@ -344,20 +344,69 @@ def _terminal_update_states() -> set[str]:
     return {"failed", "validated", "succeeded", "rolled_back", "expired", "cancelled", "idle"}
 
 
+UPDATE_ATTEMPT_CONTRACT_VERSION = "1"
+
+
 def _new_runtime_instance_id(*, slot: str | None, transition_role: str) -> str:
     slot_token = str(slot or "x").strip().lower() or "x"
     role_token = str(transition_role or "active").strip().lower() or "active"
     return f"rt-{slot_token}-{role_token[:1]}-{uuid.uuid4().hex[:8]}"
 
 
+def _normalize_update_attempt(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    source = dict(payload)
+    state = str(source.get("state") or "").strip().lower()
+    action = str(source.get("action") or "").strip().lower() or None
+    normalized = {
+        "contract_version": str(source.get("contract_version") or UPDATE_ATTEMPT_CONTRACT_VERSION),
+        "authority": str(source.get("authority") or "supervisor"),
+        "state": state or None,
+        "action": action,
+        "requested_at": _epoch(source.get("requested_at")) or None,
+        "transitioned_at": _epoch(source.get("transitioned_at")) or None,
+        "scheduled_for": _epoch(source.get("scheduled_for")) or None,
+        "updated_at": _epoch(source.get("updated_at")) or None,
+        "completed_at": _epoch(source.get("completed_at")) or None,
+        "countdown_sec": _epoch(source.get("countdown_sec")) or None,
+        "drain_timeout_sec": _epoch(source.get("drain_timeout_sec")) or None,
+        "signal_delay_sec": _epoch(source.get("signal_delay_sec")) or None,
+        "target_rev": str(source.get("target_rev") or "").strip() or None,
+        "target_version": str(source.get("target_version") or "").strip() or None,
+        "reason": str(source.get("reason") or "").strip() or None,
+        "planned_reason": str(source.get("planned_reason") or "").strip() or None,
+        "completion_reason": str(source.get("completion_reason") or "").strip() or None,
+        "accepted": bool(source.get("accepted")),
+        "awaiting_restart": bool(source.get("awaiting_restart")),
+        "restart_required": bool(source.get("restart_required")),
+        "restart_mode": str(source.get("restart_mode") or "").strip() or None,
+        "restart_requested_at": _epoch(source.get("restart_requested_at")) or None,
+        "min_update_period_sec": _epoch(source.get("min_update_period_sec")) or None,
+        "subsequent_transition": bool(source.get("subsequent_transition")),
+        "subsequent_transition_requested_at": _epoch(source.get("subsequent_transition_requested_at")) or None,
+        "candidate_prewarm_state": str(source.get("candidate_prewarm_state") or "").strip() or None,
+        "candidate_prewarm_message": str(source.get("candidate_prewarm_message") or "").strip() or None,
+        "candidate_prewarm_ready_at": _epoch(source.get("candidate_prewarm_ready_at")) or None,
+        "subsequent_transition_request": dict(source.get("subsequent_transition_request") or {})
+        if isinstance(source.get("subsequent_transition_request"), dict)
+        else None,
+        "last_status": dict(source.get("last_status") or {}) if isinstance(source.get("last_status"), dict) else {},
+    }
+    if normalized["updated_at"] is None:
+        normalized["updated_at"] = time.time()
+    return normalized
+
+
 def _read_update_attempt() -> dict[str, Any] | None:
     payload = _read_json(_supervisor_update_attempt_path())
-    return payload if isinstance(payload, dict) else None
+    return _normalize_update_attempt(payload if isinstance(payload, dict) else None)
 
 
 def _write_update_attempt(payload: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(payload)
-    merged.setdefault("updated_at", time.time())
+    merged = _normalize_update_attempt(payload)
+    if not isinstance(merged, dict):
+        raise ValueError("update attempt payload must be a dict")
     _write_json(_supervisor_update_attempt_path(), merged)
     return merged
 
@@ -650,6 +699,8 @@ def _public_update_status_payload(payload: dict[str, Any] | None) -> dict[str, A
         "ok": True,
         "status": public_status,
         "attempt": {
+            "contract_version": str(attempt.get("contract_version") or UPDATE_ATTEMPT_CONTRACT_VERSION),
+            "authority": str(attempt.get("authority") or "supervisor"),
             "action": str(attempt.get("action") or "").strip().lower() or None,
             "state": str(attempt.get("state") or "").strip().lower() or None,
             "awaiting_restart": bool(attempt.get("awaiting_restart")),

@@ -651,6 +651,8 @@ def _autostart_update_get(*, token: Optional[str] = None) -> dict:
                 payload["memory"] = dict(memory_payload.get("memory"))
         return payload
     except RuntimeError:
+        with contextlib.suppress(RuntimeError):
+            return _autostart_supervisor_get("/api/supervisor/public/update-status", token=token)
         return _autostart_admin_get("/api/admin/update/status", token=token)
 
 
@@ -1381,6 +1383,8 @@ def autostart_update_status_cmd(
             )
     if attempt.get("state"):
         typer.echo(f"supervisor attempt: {attempt.get('state')}")
+        if attempt.get("contract_version"):
+            typer.echo(f"attempt contract: v{attempt.get('contract_version')}")
         if str(attempt.get("state") or "").strip().lower() == "awaiting_root_restart":
             typer.echo("next step: supervisor/bootstrap update is promoted; ensure adaos.service restart completes")
     if memory:
