@@ -746,6 +746,60 @@ def hub_root_memory_artifact(
         typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
 
 
+@root_link_app.command("memory-artifacts")
+def hub_root_memory_artifacts(
+    session_id: str,
+    root: str | None = typer.Option(None, "--root", help="Root server base URL"),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for root reports. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """List remotely published memory-profile artifacts and their publish policy status."""
+    ctx = get_ctx()
+    conf = ctx.config
+    root_base = _resolve_root_base_url(conf, root)
+    root_token = str(
+        token
+        or os.getenv("HUB_ROOT_TOKEN")
+        or os.getenv("ADAOS_ROOT_TOKEN")
+        or os.getenv("ROOT_TOKEN")
+        or ""
+    ).strip()
+    if not root_token:
+        raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
+    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
+    payload = client.root_memory_profile_artifacts(
+        root_token=root_token,
+        session_id=session_id,
+    )
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    policy = payload.get("artifact_policy") if isinstance(payload.get("artifact_policy"), dict) else {}
+    artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else []
+    typer.echo(
+        "memory artifacts: "
+        f"session={payload.get('session_id') or session_id} "
+        f"count={len(artifacts)} "
+        f"delivery={policy.get('delivery_mode') or '-'} "
+        f"limit={policy.get('max_inline_bytes') or 0}"
+    )
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        typer.echo(
+            "artifact: "
+            f"id={item.get('artifact_id') or '-'} "
+            f"kind={item.get('kind') or '-'} "
+            f"status={item.get('publish_status') or '-'} "
+            f"remote={bool(item.get('remote_available'))} "
+            f"size={item.get('size_bytes') or 0}"
+        )
+
+
 @sidecar_app.command("status")
 def hub_root_sidecar_status(
     json_output: bool = typer.Option(False, "--json", help="JSON output"),

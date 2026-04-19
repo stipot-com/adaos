@@ -202,8 +202,26 @@ def get_memory_profile_artifact(session_id: str, artifact_id: str) -> dict[str, 
     }
 
 
+def list_memory_profile_artifacts(session_id: str) -> dict[str, Any] | None:
+    report_item = get_memory_profile_report(session_id)
+    if report_item is None:
+        return None
+    report = report_item.get("report") if isinstance(report_item.get("report"), dict) else {}
+    session = report.get("session") if isinstance(report.get("session"), dict) else {}
+    refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+    artifacts = [dict(item) for item in refs if isinstance(item, dict)]
+    policy = report.get("artifact_policy") if isinstance(report.get("artifact_policy"), dict) else {}
+    return {
+        "session_id": str(session_id or "").strip(),
+        "hub_id": report_item.get("hub_id"),
+        "artifact_policy": dict(policy),
+        "artifacts": artifacts,
+    }
+
+
 __all__ = [
     "get_memory_profile_artifact",
+    "list_memory_profile_artifacts",
     "get_memory_profile_report",
     "ingest_memory_profile_report",
     "list_memory_profile_reports",

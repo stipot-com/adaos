@@ -85,6 +85,25 @@ def memory_profile_artifact_published_ref(*, session_id: str, artifact_id: str) 
     return f"root://hub-memory-profile/{str(session_id or '').strip()}/{str(artifact_id or '').strip()}"
 
 
+def _artifact_publish_status(*, kind: str, content_type: str | None, path_text: str) -> tuple[str, bool, Path | None, int | None]:
+    if kind not in _REMOTE_ARTIFACT_ALLOWED_KINDS:
+        return ("kind_not_allowed", False, None, None)
+    if content_type != "application/json":
+        return ("content_type_not_supported", False, None, None)
+    if not path_text:
+        return ("path_missing", False, None, None)
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        return ("file_missing", False, path, None)
+    try:
+        size_bytes = int(path.stat().st_size)
+    except Exception:
+        return ("stat_failed", False, path, None)
+    if size_bytes > _REMOTE_ARTIFACT_MAX_BYTES:
+        return ("size_limit_exceeded", False, path, size_bytes)
+    return ("inline_available", True, path, size_bytes)
+
+
 def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     summary = dict(session_summary or {})
     session_id = str(summary.get("session_id") or "").strip()
@@ -97,33 +116,30 @@ def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dic
         artifact_id = str(item.get("artifact_id") or "").strip()
         kind = str(item.get("kind") or "").strip()
         content_type = str(item.get("content_type") or "").strip() or None
+        path_text = str(item.get("path") or "").strip()
+        publish_status, inline_allowed, path, resolved_size = _artifact_publish_status(
+            kind=kind,
+            content_type=content_type,
+            path_text=path_text,
+        )
         published_ref = memory_profile_artifact_published_ref(session_id=session_id, artifact_id=artifact_id) if session_id and artifact_id else None
         compact_artifacts.append(
             {
                 "artifact_id": artifact_id,
                 "kind": kind,
                 "content_type": content_type,
-                "size_bytes": item.get("size_bytes"),
+                "size_bytes": resolved_size if resolved_size is not None else item.get("size_bytes"),
                 "created_at": item.get("created_at"),
                 "published_ref": published_ref,
+                "publish_status": publish_status,
+                "remote_available": publish_status == "inline_available",
             }
         )
         if len(inline_payloads) >= _REMOTE_ARTIFACT_MAX_COUNT:
             continue
-        if kind not in _REMOTE_ARTIFACT_ALLOWED_KINDS or content_type != "application/json":
+        if not inline_allowed or path is None:
             continue
-        path_text = str(item.get("path") or "").strip()
-        if not path_text:
-            continue
-        path = Path(path_text)
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            size_bytes = int(path.stat().st_size)
-        except Exception:
-            continue
-        if size_bytes > _REMOTE_ARTIFACT_MAX_BYTES:
-            continue
+        size_bytes = resolved_size if resolved_size is not None else int(item.get("size_bytes") or 0)
         try:
             content = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -138,6 +154,28 @@ def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dic
                 "content": content,
             }
         )
+    if len(inline_payloads) >= _REMOTE_ARTIFACT_MAX_COUNT:
+        published_ids = {
+            str(item.get("artifact_id") or "").strip()
+            for item in inline_payloads
+            if isinstance(item, dict)
+        }
+        compact_artifacts = [
+            {
+                **item,
+                "publish_status": (
+                    "inline_limit_reached"
+                    if item.get("publish_status") == "inline_available"
+                    and str(item.get("artifact_id") or "").strip() not in published_ids
+                    else item.get("publish_status")
+                ),
+                "remote_available": bool(
+                    item.get("publish_status") == "inline_available"
+                    and str(item.get("artifact_id") or "").strip() in published_ids
+                ),
+            }
+            for item in compact_artifacts
+        ]
     return compact_artifacts, inline_payloads
 
 
@@ -185,6 +223,12 @@ def build_memory_profile_report(
         "operations_tail": [dict(item) for item in (operations or [])[-20:] if isinstance(item, dict)],
         "telemetry_tail": [dict(item) for item in (telemetry or [])[-20:] if isinstance(item, dict)],
         "artifact_payloads": inline_payloads,
+        "artifact_policy": {
+            "delivery_mode": "inline_json_only",
+            "max_inline_artifacts": _REMOTE_ARTIFACT_MAX_COUNT,
+            "max_inline_bytes": _REMOTE_ARTIFACT_MAX_BYTES,
+            "allowed_kinds": sorted(_REMOTE_ARTIFACT_ALLOWED_KINDS),
+        },
     }
 
 
