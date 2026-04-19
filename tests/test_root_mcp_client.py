@@ -41,6 +41,9 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.issue_target_access_token("hub:test-zone", audience="codex-vscode", note="web-client")
     client.list_target_access_tokens("hub:test-zone", active_only=True)
     client.revoke_target_access_token("hub:test-zone", "tok-2", reason="rotate-target")
+    client.issue_target_mcp_session("hub:test-zone", audience="codex-vscode", capability_profile="ProfileOpsRead")
+    client.list_target_mcp_sessions("hub:test-zone", active_only=True, capability_profile="ProfileOpsRead")
+    client.revoke_target_mcp_session("hub:test-zone", "sess-2", reason="rotate-target-session")
     client.deploy_target_ref("hub:test-zone", ref="refs/heads/test-main", note="pilot")
     client.rollback_last_test_deploy("hub:test-zone")
     client.call("development.list_descriptor_sets", request_id="req-1")
@@ -80,7 +83,13 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[17][2]["json"]["arguments"]["active_only"] is True
     assert stub.calls[18][2]["json"]["tool_id"] == "hub.revoke_access_token"
     assert stub.calls[18][2]["json"]["arguments"]["token_id"] == "tok-2"
-    assert stub.calls[19][2]["json"]["tool_id"] == "hub.deploy_ref"
-    assert stub.calls[19][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
-    assert stub.calls[20][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
-    assert stub.calls[21][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[19][2]["json"]["tool_id"] == "hub.issue_mcp_session"
+    assert stub.calls[19][2]["json"]["arguments"]["capability_profile"] == "ProfileOpsRead"
+    assert stub.calls[20][2]["json"]["tool_id"] == "hub.list_mcp_sessions"
+    assert stub.calls[20][2]["json"]["arguments"]["active_only"] is True
+    assert stub.calls[21][2]["json"]["tool_id"] == "hub.revoke_mcp_session"
+    assert stub.calls[21][2]["json"]["arguments"]["session_id"] == "sess-2"
+    assert stub.calls[22][2]["json"]["tool_id"] == "hub.deploy_ref"
+    assert stub.calls[22][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
+    assert stub.calls[23][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
+    assert stub.calls[24][2]["json"]["tool_id"] == "development.list_descriptor_sets"

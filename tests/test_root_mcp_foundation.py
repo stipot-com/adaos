@@ -36,6 +36,8 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert foundation_payload["foundation"]["managed_targets"]["preferred_target_surface"] == "infra_access_skill"
     assert foundation_payload["foundation"]["client"]["recommended_client"] == "RootMcpClient"
     assert foundation_payload["foundation"]["registries"]["access_token_registry"]["available"] is True
+    assert foundation_payload["foundation"]["registries"]["mcp_session_registry"]["available"] is True
+    assert "ProfileOpsRead" in foundation_payload["foundation"]["capability_profiles"]["profiles"]
     assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)
@@ -51,6 +53,9 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "hub.get_capability_usage_summary" in contract_ids
     assert "hub.list_access_tokens" in contract_ids
     assert "hub.revoke_access_token" in contract_ids
+    assert "hub.issue_mcp_session" in contract_ids
+    assert "hub.list_mcp_sessions" in contract_ids
+    assert "hub.revoke_mcp_session" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -81,12 +86,20 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     descriptor_ids = {item["descriptor_id"] for item in descriptor_items}
     assert "capability_registry" in descriptor_ids
     assert "mcp_client_profile" in descriptor_ids
+    assert "capability_profiles" in descriptor_ids
+    assert "mcp_session_profile" in descriptor_ids
 
     capability_registry = client.get("/v1/root/mcp/descriptors/capability_registry", headers=scoped_headers)
     assert capability_registry.status_code == 200
     capability_payload = capability_registry.json()["descriptor"]["payload"]
     assert capability_payload["classes"]
     assert any(item["capability"] == "development.read.descriptors" for item in capability_payload["classes"])
+
+    session_profile = client.get("/v1/root/mcp/descriptors/mcp_session_profile", headers=scoped_headers)
+    assert session_profile.status_code == 200
+    session_profile_payload = session_profile.json()["descriptor"]["payload"]
+    assert session_profile_payload["session_registry"]["available"] is True
+    assert session_profile_payload["client_bootstrap"]["subnet_transport_params_required"] is False
 
 
 def test_root_mcp_call_records_audit(monkeypatch) -> None:
@@ -182,13 +195,26 @@ def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path
     assert "hub.issue_access_token" in surface["capabilities"]
     assert "hub.list_access_tokens" in surface["capabilities"]
     assert "hub.revoke_access_token" in surface["capabilities"]
+    assert "hub.issue_mcp_session" in surface["capabilities"]
+    assert "hub.list_mcp_sessions" in surface["capabilities"]
+    assert "hub.revoke_mcp_session" in surface["capabilities"]
     assert surface["webui"]["data_sources"][0]["tool_id"] == "hub.get_operational_surface"
     assert any(item["tool_id"] == "hub.get_activity_log" for item in surface["webui"]["data_sources"])
+    assert any(item["tool_id"] == "hub.list_mcp_sessions" for item in surface["webui"]["data_sources"])
     assert surface["observability"]["activity_tools"] == ["hub.get_activity_log", "hub.get_capability_usage_summary"]
     assert surface["token_management"]["manage_tools"] == [
         "hub.issue_access_token",
         "hub.list_access_tokens",
         "hub.revoke_access_token",
+        "hub.issue_mcp_session",
+        "hub.list_mcp_sessions",
+        "hub.revoke_mcp_session",
+    ]
+    assert surface["token_management"]["session_capability_profiles"] == ["ProfileOpsRead", "ProfileOpsControl"]
+    assert surface["token_management"]["session_tools"] == [
+        "hub.issue_mcp_session",
+        "hub.list_mcp_sessions",
+        "hub.revoke_mcp_session",
     ]
     assert surface["observability"]["channels"] == ["root_mcp.audit"]
 
@@ -461,6 +487,107 @@ def test_root_mcp_session_lease_lifecycle_and_bearer_scope(monkeypatch, tmp_path
         headers={"Authorization": f"Bearer {session['access_token']}"},
     )
     assert denied.status_code == 401
+
+
+def test_root_mcp_session_management_tools_project_through_infra_access_surface(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    from adaos.services.root_mcp import sessions as session_registry
+    from adaos.services.root_mcp import targets as target_registry
+
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    monkeypatch.setattr(session_registry, "_sessions_path", lambda: tmp_path / "mcp_sessions.json")
+
+    client = _make_client()
+    headers = {
+        "X-Owner-Token": "owner-secret",
+        "X-AdaOS-Subnet-Id": "subnet:profile",
+        "X-AdaOS-Zone": "lab-profile",
+    }
+    target_id = "hub:test-profileops"
+
+    register = client.post(
+        "/v1/root/mcp/targets",
+        headers={"X-Owner-Token": "owner-secret"},
+        json={
+            "target_id": target_id,
+            "title": "ProfileOps Test Hub",
+            "kind": "hub",
+            "environment": "test",
+            "status": "online",
+            "zone": "lab-profile",
+            "subnet_id": "subnet:profile",
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "execution_mode": "reported_only",
+                "token_management": {
+                    "enabled": True,
+                    "issuer_mode": "root_mcp",
+                    "web_client_ready": True,
+                },
+                "capabilities": [
+                    "hub.get_operational_surface",
+                    "hub.issue_mcp_session",
+                    "hub.list_mcp_sessions",
+                    "hub.revoke_mcp_session",
+                ],
+            },
+        },
+    )
+    assert register.status_code == 200
+
+    issued = client.post(
+        "/v1/root/mcp/call",
+        headers=headers,
+        json={
+            "tool_id": "hub.issue_mcp_session",
+            "arguments": {
+                "target_id": target_id,
+                "audience": "codex-vscode",
+                "capability_profile": "ProfileOpsRead",
+                "ttl_seconds": 900,
+            },
+        },
+    )
+    assert issued.status_code == 200
+    issued_payload = issued.json()["response"]["result"]
+    assert issued_payload["target_id"] == target_id
+    assert issued_payload["capability_profile"] == "ProfileOpsRead"
+    assert issued_payload["published_by"] == "skill:infra_access_skill"
+
+    listed = client.post(
+        "/v1/root/mcp/call",
+        headers=headers,
+        json={
+            "tool_id": "hub.list_mcp_sessions",
+            "arguments": {
+                "target_id": target_id,
+                "active_only": True,
+                "capability_profile": "ProfileOpsRead",
+            },
+        },
+    )
+    assert listed.status_code == 200
+    listed_sessions = listed.json()["response"]["result"]["sessions"]
+    assert len(listed_sessions) == 1
+    assert listed_sessions[0]["session_id"] == issued_payload["session_id"]
+    assert listed_sessions[0]["target_id"] == target_id
+
+    revoked = client.post(
+        "/v1/root/mcp/call",
+        headers=headers,
+        json={
+            "tool_id": "hub.revoke_mcp_session",
+            "arguments": {
+                "target_id": target_id,
+                "session_id": issued_payload["session_id"],
+                "reason": "rotate",
+            },
+        },
+    )
+    assert revoked.status_code == 200
+    revoked_session = revoked.json()["response"]["result"]["session"]
+    assert revoked_session["status"] == "revoked"
 
 
 def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path) -> None:

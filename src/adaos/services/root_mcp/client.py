@@ -333,6 +333,92 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def issue_target_mcp_session(
+        self,
+        target_id: str,
+        *,
+        audience: str,
+        ttl_seconds: int | None = None,
+        capability_profile: str | None = None,
+        capabilities: list[str] | None = None,
+        note: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "audience": str(audience),
+        }
+        if ttl_seconds is not None:
+            arguments["ttl_seconds"] = int(ttl_seconds)
+        if capability_profile:
+            arguments["capability_profile"] = str(capability_profile)
+        if capabilities is not None:
+            arguments["capabilities"] = [str(item) for item in capabilities]
+        if note:
+            arguments["note"] = str(note)
+        return self.call(
+            "hub.issue_mcp_session",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def list_target_mcp_sessions(
+        self,
+        target_id: str,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+        capability_profile: str | None = None,
+        active_only: bool = False,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "limit": int(limit),
+            "active_only": bool(active_only),
+        }
+        if status:
+            arguments["status"] = str(status)
+        if capability_profile:
+            arguments["capability_profile"] = str(capability_profile)
+        return self.call(
+            "hub.list_mcp_sessions",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def revoke_target_mcp_session(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        reason: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "target_id": str(target_id),
+            "session_id": str(session_id),
+        }
+        if reason:
+            arguments["reason"] = str(reason)
+        return self.call(
+            "hub.revoke_mcp_session",
+            arguments=arguments,
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def deploy_target_ref(
         self,
         target_id: str,

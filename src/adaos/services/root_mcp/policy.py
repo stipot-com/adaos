@@ -247,6 +247,27 @@ def list_capability_classes() -> list[dict[str, Any]]:
             default_grants=["owner_token"],
         ),
         _capability_entry(
+            "hub.issue_mcp_session",
+            surface="operations",
+            risk="medium",
+            summary="Issue a target-scoped MCP session lease for external MCP clients such as Codex.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "hub.list_mcp_sessions",
+            surface="operations",
+            risk="medium",
+            summary="List target-scoped MCP session leases with deadline and usage metadata for operator UX.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
+            "hub.revoke_mcp_session",
+            surface="operations",
+            risk="high",
+            summary="Revoke a previously issued target-scoped MCP session lease.",
+            default_grants=["owner_token"],
+        ),
+        _capability_entry(
             "hub.deploy_ref",
             surface="operations",
             risk="high",
@@ -534,7 +555,14 @@ def evaluate_tool_access(
                     meta={"published_capabilities": surface_capabilities},
                 )
 
-            if contract.id in {"hub.issue_access_token", "hub.list_access_tokens", "hub.revoke_access_token"}:
+            if contract.id in {
+                "hub.issue_access_token",
+                "hub.list_access_tokens",
+                "hub.revoke_access_token",
+                "hub.issue_mcp_session",
+                "hub.list_mcp_sessions",
+                "hub.revoke_mcp_session",
+            }:
                 if not bool(token_management.get("enabled")):
                     return RootMcpPolicyDecision(
                         allowed=False,

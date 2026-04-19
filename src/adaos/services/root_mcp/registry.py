@@ -18,6 +18,7 @@ from adaos.services.system_model.model import (
 
 from .policy import capability_registry_payload, capability_registry_summary
 from .reports import control_report_registry_summary
+from .sessions import DEFAULT_CAPABILITY_PROFILES, mcp_session_registry_summary
 from .targets import managed_target_registry_summary
 from .tokens import DEFAULT_ACCESS_TOKEN_CAPABILITIES, access_token_registry_summary
 
@@ -75,14 +76,19 @@ def _client_profile() -> dict[str, Any]:
         "recommended_client": "RootMcpClient",
         "connection": {
             "root_url": {"required": True, "type": "string"},
-            "subnet_id": {"required": True, "type": "string"},
+            "subnet_id": {"required": False, "type": "string"},
             "access_token": {"required": True, "type": "string"},
             "zone": {"required": False, "type": "string"},
+            "mcp_session_lease": {
+                "required": False,
+                "type": "bearer",
+                "summary": "When a root-issued MCP session lease is used, subnet and zone are restored server-side from the lease.",
+            },
         },
         "headers": {
             "Authorization": "Bearer <access_token>",
-            "X-AdaOS-Subnet-Id": "<subnet_id>",
-            "X-AdaOS-Zone": "<zone>",
+            "X-AdaOS-Subnet-Id": "<subnet_id> (optional with session lease)",
+            "X-AdaOS-Zone": "<zone> (optional with session lease)",
         },
         "access_token_defaults": {
             "capabilities": list(DEFAULT_ACCESS_TOKEN_CAPABILITIES),
@@ -189,6 +195,20 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             source_kind="root_mcp_access_token_registry",
             tags=["development", "auth", "tokens"],
         ),
+        _descriptor_entry(
+            "capability_profiles",
+            title="Capability profiles",
+            summary="Named capability profiles for root-issued MCP session leases and future plane-scoped bootstrap flows.",
+            source_kind="root_mcp_capability_profiles",
+            tags=["development", "auth", "profiles"],
+        ),
+        _descriptor_entry(
+            "mcp_session_profile",
+            title="MCP session profile",
+            summary="Root-issued MCP session lease registry and bearer-only client bootstrap guidance.",
+            source_kind="root_mcp_session_registry",
+            tags=["development", "auth", "sessions"],
+        ),
     ]
 
 
@@ -203,6 +223,7 @@ def descriptor_registry_summary() -> dict[str, Any]:
         "managed_target_registry": managed_target_registry_summary(),
         "control_report_registry": control_report_registry_summary(),
         "access_token_registry": access_token_registry_summary(),
+        "mcp_session_registry": mcp_session_registry_summary(),
     }
 
 
@@ -239,6 +260,35 @@ def get_descriptor_set(descriptor_id: str, *, level: str = "std") -> dict[str, A
     if token == "access_token_profile":
         entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
         return {**entry, "payload": access_token_registry_summary()}
+    if token == "capability_profiles":
+        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
+        return {
+            **entry,
+            "payload": {
+                "available": True,
+                "kind": "named_capability_profiles",
+                "profiles": [
+                    {
+                        "profile_id": profile_id,
+                        "capabilities": list(capabilities),
+                    }
+                    for profile_id, capabilities in sorted(DEFAULT_CAPABILITY_PROFILES.items())
+                ],
+            },
+        }
+    if token == "mcp_session_profile":
+        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
+        return {
+            **entry,
+            "payload": {
+                "session_registry": mcp_session_registry_summary(),
+                "client_bootstrap": {
+                    "mode": "bearer_only",
+                    "subnet_transport_params_required": False,
+                    "issuer": "root",
+                },
+            },
+        }
     raise KeyError(token)
 
 

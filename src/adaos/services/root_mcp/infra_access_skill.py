@@ -169,6 +169,9 @@ def build_operational_surface() -> dict[str, Any]:
         _ensure_capability(capabilities, "hub.issue_access_token")
         _ensure_capability(capabilities, "hub.list_access_tokens")
         _ensure_capability(capabilities, "hub.revoke_access_token")
+        _ensure_capability(capabilities, "hub.issue_mcp_session")
+        _ensure_capability(capabilities, "hub.list_mcp_sessions")
+        _ensure_capability(capabilities, "hub.revoke_mcp_session")
 
     enabled_default = bool(config.get("enabled", bool(state.get("available"))))
     enabled = _parse_bool(os.getenv("ADAOS_INFRA_ACCESS_SKILL_ENABLED"), default=enabled_default)
@@ -228,6 +231,14 @@ def build_operational_surface() -> dict[str, Any]:
                 "requires": ["target_id"],
             }
         )
+        webui_data_sources.append(
+            {
+                "id": "mcp_sessions",
+                "tool_id": "hub.list_mcp_sessions",
+                "kind": "session_management",
+                "requires": ["target_id"],
+            }
+        )
 
     availability = "enabled" if enabled else ("installed" if state.get("available") else "missing")
     return {
@@ -270,6 +281,15 @@ def build_operational_surface() -> dict[str, Any]:
                 "hub.issue_access_token",
                 "hub.list_access_tokens",
                 "hub.revoke_access_token",
+                "hub.issue_mcp_session",
+                "hub.list_mcp_sessions",
+                "hub.revoke_mcp_session",
+            ],
+            "session_capability_profiles": ["ProfileOpsRead", "ProfileOpsControl"],
+            "session_tools": [
+                "hub.issue_mcp_session",
+                "hub.list_mcp_sessions",
+                "hub.revoke_mcp_session",
             ],
         },
     }

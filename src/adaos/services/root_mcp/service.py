@@ -33,6 +33,14 @@ from .model import (
 from .policy import evaluate_tool_access
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
 from .reports import control_report_registry_summary, list_control_reports
+from .sessions import (
+    DEFAULT_CAPABILITY_PROFILES,
+    get_mcp_session_lease_record,
+    issue_mcp_session_lease,
+    list_mcp_session_leases,
+    mcp_session_registry_summary,
+    revoke_mcp_session_lease,
+)
 from .targets import get_managed_target as get_target_descriptor
 from .targets import list_managed_targets as list_target_descriptors
 from .targets import managed_target_registry_summary
@@ -85,6 +93,7 @@ def _foundation_summary() -> dict[str, Any]:
             "descriptors": "/v1/root/mcp/descriptors",
             "targets": "/v1/root/mcp/targets",
             "access_tokens": "/v1/root/mcp/access-tokens",
+            "mcp_sessions": "/v1/root/mcp/sessions",
             "call": "/v1/root/mcp/call",
             "audit": "/v1/root/mcp/audit",
             "control_reports": "/v1/hubs/control/reports",
@@ -94,6 +103,7 @@ def _foundation_summary() -> dict[str, Any]:
             "managed_target_registry": managed_target_registry_summary(),
             "control_report_registry": control_report_registry_summary(),
             "access_token_registry": access_token_registry_summary(),
+            "mcp_session_registry": mcp_session_registry_summary(),
         },
         "managed_targets": {
             "count": len(managed_targets),
@@ -107,8 +117,13 @@ def _foundation_summary() -> dict[str, Any]:
         },
         "client": {
             "recommended_client": "RootMcpClient",
-            "configuration_fields": ["root_url", "subnet_id", "access_token", "zone"],
+            "configuration_fields": ["root_url", "access_token", "subnet_id?", "zone?"],
             "intended_use": "external MCP clients such as Codex/VS Code integrations",
+            "preferred_bootstrap": "root-issued MCP Session Lease for bearer-only routing context",
+        },
+        "capability_profiles": {
+            "available": True,
+            "profiles": sorted(DEFAULT_CAPABILITY_PROFILES.keys()),
         },
         "tool_contract_count": len(contracts),
     }
@@ -504,6 +519,79 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
                 "token_management_route": "root_mcp",
             },
         ),
+        RootMcpToolContract(
+            id="hub.issue_mcp_session",
+            title="Issue target MCP session lease",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Issue a target-scoped MCP session lease for external MCP clients such as Codex and VS Code integrations.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "audience": {"type": "string"},
+                    "ttl_seconds": {"type": "integer", "minimum": 60},
+                    "capability_profile": {"type": "string"},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "note": {"type": "string"},
+                },
+                required=["target_id", "audience"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.issue_mcp_session",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_issue_mcp_session",
+                "environment_scope": "test-first",
+                "token_management_route": "root_mcp",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.list_mcp_sessions",
+            title="List target MCP session leases",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="List target-scoped MCP session leases with last-used and usage-count metadata for operator workflows.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string"},
+                    "active_only": {"type": "boolean"},
+                    "capability_profile": {"type": "string"},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.list_mcp_sessions",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_list_mcp_sessions",
+                "environment_scope": "test-first",
+                "token_management_route": "root_mcp",
+            },
+        ),
+        RootMcpToolContract(
+            id="hub.revoke_mcp_session",
+            title="Revoke target MCP session lease",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Revoke a target-scoped MCP session lease through the target's published infra_access_skill session-management route.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.revoke_mcp_session",
+            side_effects="write",
+            metadata={
+                "published_by": "skill:infra_access_skill",
+                "handler": "hub_revoke_mcp_session",
+                "environment_scope": "test-only",
+                "token_management_route": "root_mcp",
+            },
+        ),
     ]
 
 
@@ -833,6 +921,94 @@ def _handle_hub_revoke_access_token(arguments: dict[str, Any], *, dry_run: bool)
     }
 
 
+def _handle_hub_issue_mcp_session(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    audience = str(arguments.get("audience") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not audience:
+        raise ValueError("audience is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    surface, token_management = _require_root_token_management(target_id)
+    ttl_seconds = int(arguments.get("ttl_seconds") or 3600)
+    capability_profile = str(arguments.get("capability_profile") or "").strip() or None
+    raw_caps = arguments.get("capabilities")
+    capabilities = [str(item).strip() for item in raw_caps] if isinstance(raw_caps, list) else []
+    note = str(arguments.get("note") or "").strip() or None
+    issued = issue_mcp_session_lease(
+        audience=audience,
+        actor="root:tool",
+        auth_method="root_tool",
+        ttl_seconds=ttl_seconds,
+        capability_profile=capability_profile,
+        capabilities=capabilities,
+        subnet_id=target.subnet_id,
+        zone=target.zone,
+        target_id=target_id,
+        note=note,
+    )
+    return {
+        **issued,
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+    }
+
+
+def _handle_hub_list_mcp_sessions(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    surface, token_management = _require_root_token_management(target_id)
+    limit = max(1, min(int(arguments.get("limit") or 50), 200))
+    status = str(arguments.get("status") or "").strip() or None
+    capability_profile = str(arguments.get("capability_profile") or "").strip() or None
+    active_only = bool(arguments.get("active_only"))
+    return {
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+        "sessions": list_mcp_session_leases(
+            limit=limit,
+            status=status,
+            target_id=target_id,
+            capability_profile=capability_profile,
+            active_only=active_only,
+        ),
+    }
+
+
+def _handle_hub_revoke_mcp_session(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    surface, token_management = _require_root_token_management(target_id)
+    record = get_mcp_session_lease_record(session_id)
+    if record is None:
+        raise KeyError(session_id)
+    target_ids = [str(item).strip() for item in record.get("target_ids") or [] if str(item).strip()]
+    if target_id not in target_ids:
+        raise ValueError(f"session '{session_id}' is not scoped to target '{target_id}'")
+    reason = str(arguments.get("reason") or "").strip() or None
+    revoked = revoke_mcp_session_lease(
+        session_id,
+        actor="root:tool",
+        auth_method="root_tool",
+        reason=reason,
+    )
+    return {
+        "target_id": target_id,
+        "issuer_mode": str(token_management.get("issuer_mode") or "").strip() or "root_mcp",
+        "published_by": str(surface.get("published_by") or "").strip() or "skill:infra_access_skill",
+        "session": revoked,
+    }
+
+
 def _target_execution_mode(target_id: str) -> str:
     target = get_target_descriptor(target_id)
     if target is None:
@@ -987,6 +1163,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.issue_access_token": lambda arguments, dry_run=False: _handle_hub_issue_access_token(arguments, dry_run=dry_run),
     "hub.list_access_tokens": lambda arguments, dry_run=False: _handle_hub_list_access_tokens(arguments, dry_run=dry_run),
     "hub.revoke_access_token": lambda arguments, dry_run=False: _handle_hub_revoke_access_token(arguments, dry_run=dry_run),
+    "hub.issue_mcp_session": lambda arguments, dry_run=False: _handle_hub_issue_mcp_session(arguments, dry_run=dry_run),
+    "hub.list_mcp_sessions": lambda arguments, dry_run=False: _handle_hub_list_mcp_sessions(arguments, dry_run=dry_run),
+    "hub.revoke_mcp_session": lambda arguments, dry_run=False: _handle_hub_revoke_mcp_session(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
     "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),
@@ -1005,6 +1184,8 @@ def _result_summary(result: Any) -> dict[str, Any]:
 def _redactions_for_tool(tool_id: str) -> list[str]:
     token = str(tool_id or "").strip()
     if token in {"hub.issue_access_token", "root.access_tokens.issue"}:
+        return ["result.access_token"]
+    if token in {"hub.issue_mcp_session", "root.mcp_sessions.issue"}:
         return ["result.access_token"]
     return []
 
@@ -1037,6 +1218,12 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "root.access_token_registry"
     if token == "hub.revoke_access_token":
         return "root.access_token_revocation"
+    if token == "hub.issue_mcp_session":
+        return "root.mcp_session_issuer"
+    if token == "hub.list_mcp_sessions":
+        return "root.mcp_session_registry"
+    if token == "hub.revoke_mcp_session":
+        return "root.mcp_session_revocation"
     if token.startswith("development."):
         return "root.descriptor_registry"
     if token.startswith("operations."):
