@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
+from adaos.services.root_mcp.targets import get_managed_target
 
 
 def _iso_now() -> str:
@@ -167,6 +168,36 @@ def get_memory_profile_report(session_id: str) -> dict[str, Any] | None:
     }
 
 
+def _artifact_delivery_contract(*, hub_id: str | None, artifact: Mapping[str, Any], exists: bool) -> dict[str, Any]:
+    target = get_managed_target(str(hub_id or "").strip()) if hub_id else None
+    operational_surface = dict(getattr(target, "operational_surface", {}) or {}) if target is not None else {}
+    token_management = (
+        dict(operational_surface.get("token_management") or {})
+        if isinstance(operational_surface.get("token_management"), dict)
+        else {}
+    )
+    if exists:
+        return {
+            "mode": "root_inline_content",
+            "relay_supported": True,
+            "relay_reason": "inline_content_available_at_root",
+            "source_api_path": artifact.get("source_api_path"),
+            "published_ref": artifact.get("published_ref"),
+        }
+    relay_ready = bool(token_management.get("enabled")) and str(token_management.get("issuer_mode") or "").strip().lower() == "root_mcp"
+    return {
+        "mode": str(artifact.get("fetch_strategy") or "local_control_pull"),
+        "relay_supported": relay_ready,
+        "relay_reason": (
+            "target_token_management_available_but_control_endpoint_not_published"
+            if relay_ready
+            else "root_direct_relay_not_configured_for_target"
+        ),
+        "source_api_path": artifact.get("source_api_path"),
+        "published_ref": artifact.get("published_ref"),
+    }
+
+
 def get_memory_profile_artifact(
     session_id: str,
     artifact_id: str,
@@ -213,11 +244,11 @@ def get_memory_profile_artifact(
         "encoding": "unavailable",
         "pull_supported": exists,
     }
-    delivery: dict[str, Any] = {
-        "mode": "root_inline_content" if exists else str(artifact.get("fetch_strategy") or "local_control_pull"),
-        "source_api_path": artifact.get("source_api_path"),
-        "published_ref": artifact.get("published_ref"),
-    }
+    delivery = _artifact_delivery_contract(
+        hub_id=report_item.get("hub_id"),
+        artifact=artifact,
+        exists=exists,
+    )
     if exists and isinstance(content, dict):
         raw = json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         size_bytes = len(raw)

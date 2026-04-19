@@ -732,6 +732,8 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert artifact_payload["artifact"]["artifact_id"] == "mem-001-final"
     assert artifact_payload["artifact"]["fetch_strategy"] == "inline_content"
     assert artifact_payload["delivery"]["mode"] == "root_inline_content"
+    assert artifact_payload["delivery"]["relay_supported"] is True
+    assert artifact_payload["delivery"]["relay_reason"] == "inline_content_available_at_root"
     assert artifact_payload["transfer"]["encoding"] == "json"
     assert artifact_payload["content"]["top_allocations"] == []
 
@@ -744,6 +746,7 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     raw_artifact_payload = raw_artifact_item.json()
     assert raw_artifact_payload["exists"] is False
     assert raw_artifact_payload["delivery"]["mode"] == "local_control_pull"
+    assert raw_artifact_payload["delivery"]["relay_supported"] is False
     assert raw_artifact_payload["delivery"]["source_api_path"] == "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw"
     assert raw_artifact_payload["transfer"]["requested_max_bytes"] == 1024
 

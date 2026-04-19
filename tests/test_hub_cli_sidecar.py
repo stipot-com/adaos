@@ -267,7 +267,11 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
                     "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
                 },
                 "exists": True,
-                "delivery": {"mode": "root_inline_content"},
+                "delivery": {
+                    "mode": "root_inline_content",
+                    "relay_supported": True,
+                    "relay_reason": "inline_content_available_at_root",
+                },
                 "transfer": {"encoding": "json", "chunk_bytes": 64, "remaining_bytes": 0, "truncated": False},
                 "content": {"top_allocations": []},
             }
@@ -282,6 +286,7 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
     assert "fetch strategy: inline_content" in result.output
     assert "source api path: /api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final" in result.output
     assert "delivery mode: root_inline_content" in result.output
+    assert "relay: supported=True reason=inline_content_available_at_root" in result.output
     assert "transfer: encoding=json chunk=64 remaining=0 truncated=False" in result.output
     assert "content keys: top_allocations" in result.output
 
@@ -368,6 +373,8 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
                 "exists": False,
                 "delivery": {
                     "mode": "local_control_pull",
+                    "relay_supported": False,
+                    "relay_reason": "root_direct_relay_not_configured_for_target",
                     "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
                 },
                 "transfer": {
@@ -415,5 +422,6 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
     assert result.exit_code == 0
     assert "memory artifact pull: session=mem-001 id=mem-001-raw kind=heap_dump strategy=local_control_pull exists=True" in result.output
     assert "transfer: encoding=base64 chunk=256 remaining=1024 truncated=True" in result.output
+    assert "relay: supported=False reason=root_direct_relay_not_configured_for_target" in result.output
     assert "delivery: current_hub_control" in result.output
     assert "base64 chars: 4" in result.output

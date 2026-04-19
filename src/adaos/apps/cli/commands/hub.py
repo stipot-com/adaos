@@ -774,6 +774,11 @@ def hub_root_memory_artifact(
     delivery = payload.get("delivery") if isinstance(payload.get("delivery"), dict) else {}
     if delivery:
         typer.echo(f"delivery mode: {delivery.get('mode') or '-'}")
+        typer.echo(
+            "relay: "
+            f"supported={bool(delivery.get('relay_supported'))} "
+            f"reason={delivery.get('relay_reason') or '-'}"
+        )
     transfer = payload.get("transfer") if isinstance(payload.get("transfer"), dict) else {}
     if transfer:
         typer.echo(
@@ -918,6 +923,13 @@ def hub_root_memory_artifact_pull(
             f"chunk={transfer.get('chunk_bytes') or 0} "
             f"remaining={transfer.get('remaining_bytes') or 0} "
             f"truncated={bool(transfer.get('truncated'))}"
+        )
+    delivery = merged.get("delivery") if isinstance(merged.get("delivery"), dict) else {}
+    if delivery:
+        typer.echo(
+            "relay: "
+            f"supported={bool(delivery.get('relay_supported'))} "
+            f"reason={delivery.get('relay_reason') or '-'}"
         )
     if merged.get("local_pull"):
         typer.echo("delivery: current_hub_control")
