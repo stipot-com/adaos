@@ -63,6 +63,9 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "adaos_dev.get_architecture_catalog" in contract_ids
     assert "adaos_dev.get_sdk_metadata" in contract_ids
     assert "adaos_dev.get_public_skill_registry" in contract_ids
+    assert "hub.memory.get_status" in contract_ids
+    assert "hub.memory.list_sessions" in contract_ids
+    assert "hub.memory.get_artifact" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -929,8 +932,33 @@ def test_root_mcp_control_reports_enable_operational_tools(monkeypatch, tmp_path
 def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
     from adaos.services.root_mcp import memory_reports as report_registry
+    from adaos.services.root_mcp import targets as target_registry
 
     monkeypatch.setattr(report_registry, "_reports_path", lambda: tmp_path / "memory_profile_reports.json")
+    monkeypatch.setattr(target_registry, "_registry_path", lambda: tmp_path / "managed_targets.json")
+    target_registry.upsert_managed_target(
+        {
+            "target_id": "hub:subnet-test-1",
+            "title": "ProfileOps Hub",
+            "kind": "hub",
+            "environment": "test",
+            "status": "online",
+            "zone": "lab-b",
+            "subnet_id": "subnet-test-1",
+            "operational_surface": {
+                "published_by": "skill:infra_access_skill",
+                "enabled": True,
+                "capabilities": [
+                    "hub.memory.get_status",
+                    "hub.memory.list_sessions",
+                    "hub.memory.get_session",
+                    "hub.memory.list_incidents",
+                    "hub.memory.list_artifacts",
+                    "hub.memory.get_artifact",
+                ],
+            },
+        }
+    )
 
     client = _make_client()
     owner_headers = {"X-Owner-Token": "owner-secret"}
@@ -1055,6 +1083,45 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert raw_artifact_payload["delivery"]["relay_supported"] is False
     assert raw_artifact_payload["delivery"]["source_api_path"] == "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw"
     assert raw_artifact_payload["transfer"]["requested_max_bytes"] == 1024
+
+    profileops_status = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.memory.get_status", "arguments": {"target_id": "hub:subnet-test-1"}},
+    )
+    assert profileops_status.status_code == 200
+    status_payload = profileops_status.json()["response"]["result"]
+    assert status_payload["report_count"] == 1
+    assert status_payload["latest_session"]["session_id"] == "mem-001"
+
+    profileops_sessions = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.memory.list_sessions", "arguments": {"target_id": "hub:subnet-test-1", "state": "finished"}},
+    )
+    assert profileops_sessions.status_code == 200
+    sessions_payload = profileops_sessions.json()["response"]["result"]["sessions"]
+    assert len(sessions_payload) == 1
+    assert sessions_payload[0]["session_id"] == "mem-001"
+
+    profileops_artifacts = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={"tool_id": "hub.memory.list_artifacts", "arguments": {"target_id": "hub:subnet-test-1", "session_id": "mem-001"}},
+    )
+    assert profileops_artifacts.status_code == 200
+    assert len(profileops_artifacts.json()["response"]["result"]["artifacts"]) == 2
+
+    profileops_artifact = client.post(
+        "/v1/root/mcp/call",
+        headers=owner_headers,
+        json={
+            "tool_id": "hub.memory.get_artifact",
+            "arguments": {"target_id": "hub:subnet-test-1", "session_id": "mem-001", "artifact_id": "mem-001-final"},
+        },
+    )
+    assert profileops_artifact.status_code == 200
+    assert profileops_artifact.json()["response"]["result"]["artifact"]["artifact_id"] == "mem-001-final"
 
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:

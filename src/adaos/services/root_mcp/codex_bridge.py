@@ -279,6 +279,66 @@ class CodexRootMcpBridge:
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             },
             {
+                "name": "get_profileops_status",
+                "description": "Read root-published profiler status and latest session summary for the managed target.",
+                "inputSchema": {"type": "object", "properties": target_properties, "required": target_required, "additionalProperties": False},
+            },
+            {
+                "name": "list_profileops_sessions",
+                "description": "List root-published profiler sessions for the managed target.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "state": {"type": "string"},
+                        "suspected_only": {"type": "boolean", "default": False},
+                    },
+                    "required": target_required,
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_profileops_session",
+                "description": "Read one root-published profiler session for the managed target.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {**target_properties, "session_id": {"type": "string"}},
+                    "required": [*target_required, "session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "list_profileops_incidents",
+                "description": "List suspected profiler incidents for the managed target.",
+                "inputSchema": {"type": "object", "properties": target_properties, "required": target_required, "additionalProperties": False},
+            },
+            {
+                "name": "list_profileops_artifacts",
+                "description": "List root-published profiler artifacts for a profiler session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {**target_properties, "session_id": {"type": "string"}},
+                    "required": [*target_required, "session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_profileops_artifact",
+                "description": "Read one root-published profiler artifact for a profiler session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        **target_properties,
+                        "session_id": {"type": "string"},
+                        "artifact_id": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_bytes": {"type": "integer", "minimum": 1, "default": 262144},
+                    },
+                    "required": [*target_required, "session_id", "artifact_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "list_managed_targets",
                 "description": "List managed targets visible to the current Root MCP token scope.",
                 "inputSchema": {
@@ -410,6 +470,32 @@ class CodexRootMcpBridge:
             return _tool_text(client.get_adaos_dev_public_skill_registry())
         if tool == "get_public_scenario_registry":
             return _tool_text(client.get_adaos_dev_public_scenario_registry())
+        if tool == "get_profileops_status":
+            return _tool_text(client.get_profileops_status(self._effective_target_id(args)))
+        if tool == "list_profileops_sessions":
+            return _tool_text(
+                client.list_profileops_sessions(
+                    self._effective_target_id(args),
+                    state=_normalize_text(args.get("state")),
+                    suspected_only=bool(args.get("suspected_only")),
+                )
+            )
+        if tool == "get_profileops_session":
+            return _tool_text(client.get_profileops_session(self._effective_target_id(args), str(args.get("session_id") or "")))
+        if tool == "list_profileops_incidents":
+            return _tool_text(client.list_profileops_incidents(self._effective_target_id(args)))
+        if tool == "list_profileops_artifacts":
+            return _tool_text(client.list_profileops_artifacts(self._effective_target_id(args), str(args.get("session_id") or "")))
+        if tool == "get_profileops_artifact":
+            return _tool_text(
+                client.get_profileops_artifact(
+                    self._effective_target_id(args),
+                    str(args.get("session_id") or ""),
+                    str(args.get("artifact_id") or ""),
+                    offset=int(args.get("offset") or 0),
+                    max_bytes=int(args.get("max_bytes") or 256 * 1024),
+                )
+            )
         if tool == "list_managed_targets":
             return _tool_text(client.list_managed_targets(environment=_normalize_text(args.get("environment"))))
         if tool == "get_managed_target":

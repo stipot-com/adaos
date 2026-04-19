@@ -272,6 +272,101 @@ class RootMcpClient:
             dry_run=dry_run,
         )
 
+    def get_profileops_status(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("hub.memory.get_status", arguments={"target_id": str(target_id)}, request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def list_profileops_sessions(
+        self,
+        target_id: str,
+        *,
+        state: str | None = None,
+        suspected_only: bool = False,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"target_id": str(target_id), "suspected_only": bool(suspected_only)}
+        if state:
+            arguments["state"] = str(state)
+        return self.call("hub.memory.list_sessions", arguments=arguments, request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def get_profileops_session(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.get_session",
+            arguments={"target_id": str(target_id), "session_id": str(session_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def list_profileops_incidents(
+        self,
+        target_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("hub.memory.list_incidents", arguments={"target_id": str(target_id)}, request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def list_profileops_artifacts(
+        self,
+        target_id: str,
+        session_id: str,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.list_artifacts",
+            arguments={"target_id": str(target_id), "session_id": str(session_id)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def get_profileops_artifact(
+        self,
+        target_id: str,
+        session_id: str,
+        artifact_id: str,
+        *,
+        offset: int = 0,
+        max_bytes: int = 256 * 1024,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "hub.memory.get_artifact",
+            arguments={
+                "target_id": str(target_id),
+                "session_id": str(session_id),
+                "artifact_id": str(artifact_id),
+                "offset": int(offset),
+                "max_bytes": int(max_bytes),
+            },
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
     def get_target_logs(
         self,
         target_id: str,

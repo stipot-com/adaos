@@ -30,6 +30,12 @@ from .model import (
     RootMcpToolContract,
     schema_object,
 )
+from .memory_reports import (
+    get_memory_profile_artifact,
+    get_memory_profile_report,
+    list_memory_profile_artifacts,
+    list_memory_profile_reports,
+)
 from .policy import evaluate_tool_access
 from .registry import descriptor_registry_summary, get_descriptor_set, list_descriptor_sets
 from .reports import control_report_registry_summary, list_control_reports
@@ -656,6 +662,88 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
                 "token_management_route": "root_mcp",
             },
         ),
+        RootMcpToolContract(
+            id="hub.memory.get_status",
+            title="Get profiler status",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return root-published profiler status and latest session summary for a managed target.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.get_status",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_get_status", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.memory.list_sessions",
+            title="List profiler sessions",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="List root-published profiler sessions for a managed target.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "state": {"type": "string"},
+                    "suspected_only": {"type": "boolean"},
+                },
+                required=["target_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.list_sessions",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_list_sessions", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.memory.get_session",
+            title="Get profiler session",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Return one root-published profiler session for a managed target.",
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "session_id": {"type": "string"}},
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.get_session",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_get_session", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.memory.list_incidents",
+            title="List profiler incidents",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="List suspected profiler incidents for a managed target.",
+            input_schema=schema_object(properties={"target_id": {"type": "string"}}, required=["target_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.list_incidents",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_list_incidents", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.memory.list_artifacts",
+            title="List profiler artifacts",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="List root-published profiler artifacts for a profiler session.",
+            input_schema=schema_object(
+                properties={"target_id": {"type": "string"}, "session_id": {"type": "string"}},
+                required=["target_id", "session_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.list_artifacts",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_list_artifacts", "environment_scope": "test-first"},
+        ),
+        RootMcpToolContract(
+            id="hub.memory.get_artifact",
+            title="Get profiler artifact",
+            surface=RootMcpSurface.OPERATIONS,
+            summary="Read one root-published profiler artifact for a profiler session.",
+            input_schema=schema_object(
+                properties={
+                    "target_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "artifact_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "max_bytes": {"type": "integer", "minimum": 1},
+                },
+                required=["target_id", "session_id", "artifact_id"],
+            ),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="hub.memory.get_artifact",
+            metadata={"published_by": "plane:profile_ops", "handler": "hub_memory_get_artifact", "environment_scope": "test-first"},
+        ),
     ]
 
 
@@ -1078,6 +1166,134 @@ def _handle_hub_revoke_mcp_session(arguments: dict[str, Any], *, dry_run: bool) 
     }
 
 
+def _filter_memory_reports_for_target(target_id: str, *, state: str | None = None, suspected_only: bool = False) -> list[dict[str, Any]]:
+    return list_memory_profile_reports(hub_id=target_id, session_state=state, suspected_only=suspected_only)
+
+
+def _handle_hub_memory_get_status(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    target = get_target_descriptor(target_id)
+    if target is None:
+        raise KeyError(target_id)
+    sessions = _filter_memory_reports_for_target(target_id)
+    latest = sessions[0] if sessions else None
+    latest_report = dict(latest.get("report") or {}) if isinstance(latest, dict) else {}
+    latest_session = dict(latest_report.get("session") or {}) if isinstance(latest_report.get("session"), dict) else {}
+    return {
+        "target_id": target_id,
+        "report_count": len(sessions),
+        "latest_session": latest_session,
+        "latest_reported_at": latest_report.get("reported_at"),
+        "suspected_session_count": len(_filter_memory_reports_for_target(target_id, suspected_only=True)),
+    }
+
+
+def _handle_hub_memory_list_sessions(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    state = str(arguments.get("state") or "").strip() or None
+    suspected_only = bool(arguments.get("suspected_only"))
+    sessions = _filter_memory_reports_for_target(target_id, state=state, suspected_only=suspected_only)
+    return {
+        "target_id": target_id,
+        "sessions": [
+            {
+                "session_id": item.get("session_id"),
+                "report": dict(item.get("report") or {}),
+                "ingest_auth": dict(item.get("ingest_auth") or {}),
+                "event_id": item.get("event_id"),
+                "server_time_utc": item.get("server_time_utc"),
+            }
+            for item in sessions
+        ],
+    }
+
+
+def _handle_hub_memory_get_session(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    item = get_memory_profile_report(session_id)
+    if item is None:
+        raise KeyError(session_id)
+    if str(item.get("hub_id") or "").strip() != target_id:
+        raise ValueError(f"session '{session_id}' is not scoped to target '{target_id}'")
+    return {"target_id": target_id, "session": item}
+
+
+def _handle_hub_memory_list_incidents(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    sessions = _filter_memory_reports_for_target(target_id, suspected_only=True)
+    incidents: list[dict[str, Any]] = []
+    for item in sessions:
+        report = dict(item.get("report") or {})
+        session = dict(report.get("session") or {}) if isinstance(report.get("session"), dict) else {}
+        incidents.append(
+            {
+                "session_id": item.get("session_id"),
+                "reported_at": report.get("reported_at"),
+                "profile_mode": session.get("profile_mode"),
+                "session_state": session.get("session_state"),
+                "rss_growth_bytes": session.get("rss_growth_bytes"),
+                "peak_rss_bytes": session.get("peak_rss_bytes"),
+                "top_growth_sites": list(session.get("top_growth_sites") or [])[:10],
+            }
+        )
+    return {"target_id": target_id, "incidents": incidents}
+
+
+def _handle_hub_memory_list_artifacts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    session = get_memory_profile_report(session_id)
+    if session is None:
+        raise KeyError(session_id)
+    if str(session.get("hub_id") or "").strip() != target_id:
+        raise ValueError(f"session '{session_id}' is not scoped to target '{target_id}'")
+    artifacts = list_memory_profile_artifacts(session_id)
+    if artifacts is None:
+        raise KeyError(session_id)
+    return {"target_id": target_id, **artifacts}
+
+
+def _handle_hub_memory_get_artifact(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    target_id = str(arguments.get("target_id") or "").strip()
+    session_id = str(arguments.get("session_id") or "").strip()
+    artifact_id = str(arguments.get("artifact_id") or "").strip()
+    if not target_id:
+        raise ValueError("target_id is required")
+    if not session_id:
+        raise ValueError("session_id is required")
+    if not artifact_id:
+        raise ValueError("artifact_id is required")
+    session = get_memory_profile_report(session_id)
+    if session is None:
+        raise KeyError(session_id)
+    if str(session.get("hub_id") or "").strip() != target_id:
+        raise ValueError(f"session '{session_id}' is not scoped to target '{target_id}'")
+    artifact = get_memory_profile_artifact(
+        session_id,
+        artifact_id,
+        offset=int(arguments.get("offset") or 0),
+        max_bytes=int(arguments.get("max_bytes") or 256 * 1024),
+    )
+    if artifact is None:
+        raise KeyError(artifact_id)
+    return {"target_id": target_id, **artifact}
+
+
 def _target_execution_mode(target_id: str) -> str:
     target = get_target_descriptor(target_id)
     if target is None:
@@ -1240,6 +1456,12 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "hub.issue_mcp_session": lambda arguments, dry_run=False: _handle_hub_issue_mcp_session(arguments, dry_run=dry_run),
     "hub.list_mcp_sessions": lambda arguments, dry_run=False: _handle_hub_list_mcp_sessions(arguments, dry_run=dry_run),
     "hub.revoke_mcp_session": lambda arguments, dry_run=False: _handle_hub_revoke_mcp_session(arguments, dry_run=dry_run),
+    "hub.memory.get_status": lambda arguments, dry_run=False: _handle_hub_memory_get_status(arguments, dry_run=dry_run),
+    "hub.memory.list_sessions": lambda arguments, dry_run=False: _handle_hub_memory_list_sessions(arguments, dry_run=dry_run),
+    "hub.memory.get_session": lambda arguments, dry_run=False: _handle_hub_memory_get_session(arguments, dry_run=dry_run),
+    "hub.memory.list_incidents": lambda arguments, dry_run=False: _handle_hub_memory_list_incidents(arguments, dry_run=dry_run),
+    "hub.memory.list_artifacts": lambda arguments, dry_run=False: _handle_hub_memory_list_artifacts(arguments, dry_run=dry_run),
+    "hub.memory.get_artifact": lambda arguments, dry_run=False: _handle_hub_memory_get_artifact(arguments, dry_run=dry_run),
     "operations.list_contracts": lambda arguments, dry_run=False: _handle_operational_contracts(arguments, dry_run=dry_run),
     "operations.list_managed_targets": lambda arguments, dry_run=False: _handle_managed_targets(arguments, dry_run=dry_run),
     "operations.get_managed_target": lambda arguments, dry_run=False: _handle_get_managed_target(arguments, dry_run=dry_run),
@@ -1298,6 +1520,18 @@ def _execution_adapter_for_tool(tool_id: str) -> str:
         return "root.mcp_session_registry"
     if token == "hub.revoke_mcp_session":
         return "root.mcp_session_revocation"
+    if token == "hub.memory.get_status":
+        return "root.memory_profile_projection.status"
+    if token == "hub.memory.list_sessions":
+        return "root.memory_profile_projection.sessions"
+    if token == "hub.memory.get_session":
+        return "root.memory_profile_projection.session"
+    if token == "hub.memory.list_incidents":
+        return "root.memory_profile_projection.incidents"
+    if token == "hub.memory.list_artifacts":
+        return "root.memory_profile_projection.artifacts"
+    if token == "hub.memory.get_artifact":
+        return "root.memory_profile_projection.artifact"
     if token.startswith("development."):
         return "root.descriptor_registry"
     if token.startswith("operations."):

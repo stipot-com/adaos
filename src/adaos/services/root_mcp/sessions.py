@@ -20,12 +20,24 @@ DEFAULT_CAPABILITY_PROFILES: dict[str, list[str]] = {
     "ProfileOpsRead": [
         *DEFAULT_BEARER_CAPABILITIES,
         "operations.read.targets",
+        "hub.memory.get_status",
+        "hub.memory.list_sessions",
+        "hub.memory.get_session",
+        "hub.memory.list_incidents",
+        "hub.memory.list_artifacts",
+        "hub.memory.get_artifact",
     ],
     "ProfileOpsControl": [
         *DEFAULT_BEARER_CAPABILITIES,
         "operations.read.targets",
         "operations.issue.tokens",
         "operations.revoke.tokens",
+        "hub.memory.get_status",
+        "hub.memory.list_sessions",
+        "hub.memory.get_session",
+        "hub.memory.list_incidents",
+        "hub.memory.list_artifacts",
+        "hub.memory.get_artifact",
     ],
 }
 

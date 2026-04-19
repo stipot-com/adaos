@@ -167,7 +167,7 @@ This milestone is the first point where live Codex trials should cover AdaOS arc
 
 ### Milestone D. ProfileOps Live Trial
 
-- [ ] `ProfileOpsRead` is available through MCP
+- [x] `ProfileOpsRead` is available through MCP
 - [ ] `ProfileOpsControl` is available through bounded typed writes
 - [ ] profiler reads/writes appear in shared Root MCP audit history
 - [ ] Infrascope and Codex consume the same profiler contracts
@@ -197,11 +197,11 @@ Phase is complete when:
 
 ### `ProfileOps-1`. Read-Only MCP Projection
 
-- [ ] add profiler tool contracts to Root MCP for status, sessions, incidents, artifact catalogs, and artifact retrieval
-- [ ] project already-published root profiling summaries through typed MCP responses
-- [ ] expose the read surface through `RootMcpClient`
-- [ ] expose the same read surface through the local Codex `stdio` bridge
-- [ ] package read capabilities as a named profile such as `ProfileOpsRead`
+- [x] add profiler tool contracts to Root MCP for status, sessions, incidents, artifact catalogs, and artifact retrieval
+- [x] project already-published root profiling summaries through typed MCP responses
+- [x] expose the read surface through `RootMcpClient`
+- [x] expose the same read surface through the local Codex `stdio` bridge
+- [x] package read capabilities as a named profile such as `ProfileOpsRead`
 
 Phase is complete when:
 
