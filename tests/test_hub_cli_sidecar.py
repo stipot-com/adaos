@@ -250,10 +250,12 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
             pass
 
         @staticmethod
-        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str) -> dict:
+        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
             assert root_token == "root-token"
             assert session_id == "mem-001"
             assert artifact_id == "mem-001-final"
+            assert offset == 0
+            assert max_bytes == 256 * 1024
             return {
                 "ok": True,
                 "session_id": "mem-001",
@@ -265,6 +267,8 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
                     "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
                 },
                 "exists": True,
+                "delivery": {"mode": "root_inline_content"},
+                "transfer": {"encoding": "json", "chunk_bytes": 64, "remaining_bytes": 0, "truncated": False},
                 "content": {"top_allocations": []},
             }
 
@@ -277,6 +281,8 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
     assert "published ref: root://hub-memory-profile/mem-001/mem-001-final" in result.output
     assert "fetch strategy: inline_content" in result.output
     assert "source api path: /api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final" in result.output
+    assert "delivery mode: root_inline_content" in result.output
+    assert "transfer: encoding=json chunk=64 remaining=0 truncated=False" in result.output
     assert "content keys: top_allocations" in result.output
 
 
@@ -344,10 +350,12 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
             pass
 
         @staticmethod
-        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str) -> dict:
+        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
             assert root_token == "root-token"
             assert session_id == "mem-001"
             assert artifact_id == "mem-001-raw"
+            assert offset == 0
+            assert max_bytes == 256 * 1024
             return {
                 "ok": True,
                 "session_id": "mem-001",
@@ -358,6 +366,20 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
                     "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
                 },
                 "exists": False,
+                "delivery": {
+                    "mode": "local_control_pull",
+                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
+                },
+                "transfer": {
+                    "offset": 0,
+                    "requested_max_bytes": 262144,
+                    "size_bytes": 4096,
+                    "chunk_bytes": 0,
+                    "remaining_bytes": 0,
+                    "truncated": False,
+                    "encoding": "unavailable",
+                    "pull_supported": False,
+                },
                 "content": None,
             }
 

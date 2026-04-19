@@ -737,6 +737,8 @@ class RootHttpClient:
         root_token: str,
         session_id: str,
         artifact_id: str,
+        offset: int = 0,
+        max_bytes: int = 256 * 1024,
         verify: str | bool | ssl.SSLContext | None = None,
     ) -> dict:
         headers = {"X-Root-Token": root_token}
@@ -744,6 +746,10 @@ class RootHttpClient:
             self._request(
                 "GET",
                 f"/v1/hubs/memory_profile/reports/{session_id}/artifacts/{artifact_id}",
+                params={
+                    "offset": int(offset or 0),
+                    "max_bytes": int(max_bytes or 256 * 1024),
+                },
                 headers=headers,
                 verify=(verify if verify is not None else self.verify),
                 timeout=30.0,

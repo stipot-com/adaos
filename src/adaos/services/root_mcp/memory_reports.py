@@ -167,7 +167,13 @@ def get_memory_profile_report(session_id: str) -> dict[str, Any] | None:
     }
 
 
-def get_memory_profile_artifact(session_id: str, artifact_id: str) -> dict[str, Any] | None:
+def get_memory_profile_artifact(
+    session_id: str,
+    artifact_id: str,
+    *,
+    offset: int = 0,
+    max_bytes: int = 256 * 1024,
+) -> dict[str, Any] | None:
     report_item = get_memory_profile_report(session_id)
     if report_item is None:
         return None
@@ -193,12 +199,42 @@ def get_memory_profile_artifact(session_id: str, artifact_id: str) -> dict[str, 
         ),
         None,
     )
+    start = max(0, int(offset or 0))
+    chunk_limit = max(1, min(int(max_bytes or 256 * 1024), 1024 * 1024))
+    exists = payload is not None
+    content = payload.get("content") if isinstance(payload, dict) else None
+    transfer: dict[str, Any] = {
+        "offset": start,
+        "requested_max_bytes": chunk_limit,
+        "size_bytes": int(artifact.get("size_bytes") or 0),
+        "chunk_bytes": 0,
+        "remaining_bytes": 0,
+        "truncated": False,
+        "encoding": "unavailable",
+        "pull_supported": exists,
+    }
+    delivery: dict[str, Any] = {
+        "mode": "root_inline_content" if exists else str(artifact.get("fetch_strategy") or "local_control_pull"),
+        "source_api_path": artifact.get("source_api_path"),
+        "published_ref": artifact.get("published_ref"),
+    }
+    if exists and isinstance(content, dict):
+        raw = json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        size_bytes = len(raw)
+        transfer["size_bytes"] = size_bytes
+        transfer["chunk_bytes"] = size_bytes
+        transfer["remaining_bytes"] = 0
+        transfer["truncated"] = False
+        transfer["encoding"] = "json"
+        transfer["pull_supported"] = True
     return {
         "session_id": str(session_id or "").strip(),
         "hub_id": report_item.get("hub_id"),
         "artifact": artifact,
-        "exists": payload is not None,
-        "content": payload.get("content") if isinstance(payload, dict) else None,
+        "exists": exists,
+        "content": content if isinstance(content, dict) else None,
+        "transfer": transfer,
+        "delivery": delivery,
     }
 
 

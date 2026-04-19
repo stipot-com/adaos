@@ -768,6 +768,8 @@ async def hub_memory_profile_report(
 async def hub_memory_profile_artifact(
     session_id: str,
     artifact_id: str,
+    offset: int = 0,
+    max_bytes: int = 256 * 1024,
     authorization: str | None = Header(default=None),
     owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
     root_token: str | None = Header(default=None, alias="X-Root-Token"),
@@ -795,7 +797,12 @@ async def hub_memory_profile_artifact(
         raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
     if scope.get("zone") and target_zone and scope["zone"] != target_zone:
         raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Managed target is outside the requested zone scope."})
-    artifact = get_memory_profile_artifact(session_id, artifact_id)
+    artifact = get_memory_profile_artifact(
+        session_id,
+        artifact_id,
+        offset=offset,
+        max_bytes=max_bytes,
+    )
     if artifact is None:
         raise HTTPException(status_code=404, detail="memory profile artifact was not found")
     return {

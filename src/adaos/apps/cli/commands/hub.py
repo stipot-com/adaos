@@ -724,6 +724,7 @@ def hub_root_memory_session(
 def hub_root_memory_artifact(
     session_id: str,
     artifact_id: str,
+    max_bytes: int = typer.Option(256 * 1024, "--max-bytes", min=1, max=1024 * 1024, help="Requested transfer chunk from root"),
     root: str | None = typer.Option(None, "--root", help="Root server base URL"),
     token: str | None = typer.Option(
         None,
@@ -750,6 +751,8 @@ def hub_root_memory_artifact(
         root_token=root_token,
         session_id=session_id,
         artifact_id=artifact_id,
+        offset=0,
+        max_bytes=max_bytes,
     )
     if json_output:
         _print(payload, json_output=True)
@@ -768,6 +771,18 @@ def hub_root_memory_artifact(
         typer.echo(f"fetch strategy: {artifact.get('fetch_strategy')}")
     if artifact.get("source_api_path"):
         typer.echo(f"source api path: {artifact.get('source_api_path')}")
+    delivery = payload.get("delivery") if isinstance(payload.get("delivery"), dict) else {}
+    if delivery:
+        typer.echo(f"delivery mode: {delivery.get('mode') or '-'}")
+    transfer = payload.get("transfer") if isinstance(payload.get("transfer"), dict) else {}
+    if transfer:
+        typer.echo(
+            "transfer: "
+            f"encoding={transfer.get('encoding') or '-'} "
+            f"chunk={transfer.get('chunk_bytes') or 0} "
+            f"remaining={transfer.get('remaining_bytes') or 0} "
+            f"truncated={bool(transfer.get('truncated'))}"
+        )
     content = payload.get("content")
     if isinstance(content, dict):
         typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
@@ -858,6 +873,8 @@ def hub_root_memory_artifact_pull(
         root_token=root_token,
         session_id=session_id,
         artifact_id=artifact_id,
+        offset=0,
+        max_bytes=max_bytes,
     )
     artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
     merged = dict(payload)

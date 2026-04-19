@@ -731,7 +731,21 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert artifact_payload["exists"] is True
     assert artifact_payload["artifact"]["artifact_id"] == "mem-001-final"
     assert artifact_payload["artifact"]["fetch_strategy"] == "inline_content"
+    assert artifact_payload["delivery"]["mode"] == "root_inline_content"
+    assert artifact_payload["transfer"]["encoding"] == "json"
     assert artifact_payload["content"]["top_allocations"] == []
+
+    raw_artifact_item = client.get(
+        "/v1/hubs/memory_profile/reports/mem-001/artifacts/mem-001-raw",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+        params={"offset": 0, "max_bytes": 1024},
+    )
+    assert raw_artifact_item.status_code == 200
+    raw_artifact_payload = raw_artifact_item.json()
+    assert raw_artifact_payload["exists"] is False
+    assert raw_artifact_payload["delivery"]["mode"] == "local_control_pull"
+    assert raw_artifact_payload["delivery"]["source_api_path"] == "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw"
+    assert raw_artifact_payload["transfer"]["requested_max_bytes"] == 1024
 
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
