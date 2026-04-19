@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -31,9 +32,12 @@ DESCRIPTOR_CACHE_CLASS_DEFAULTS: dict[str, dict[str, Any]] = {
     "vocabulary": {"ttl_seconds": 3600, "stability": "stable", "freshness": "fresh"},
     "schema": {"ttl_seconds": 3600, "stability": "stable", "freshness": "fresh"},
     "templates": {"ttl_seconds": 900, "stability": "experimental", "freshness": "fresh"},
+    "architecture": {"ttl_seconds": 1800, "stability": "experimental", "freshness": "fresh"},
     "policy": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
     "client": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
     "auth": {"ttl_seconds": 300, "stability": "experimental", "freshness": "fresh"},
+    "registry": {"ttl_seconds": 300, "stability": "experimental", "freshness": "fresh"},
+    "build": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
     "bundle": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
 }
 
@@ -99,6 +103,98 @@ def _template_catalog() -> dict[str, Any]:
     return {
         "skills": _template_names(getattr(ctx.paths, "skill_templates_dir", None)),
         "scenarios": _template_names(getattr(ctx.paths, "scenario_templates_dir", None)),
+    }
+
+
+def _workspace_registry_path() -> Path:
+    ctx = get_ctx()
+    return Path(ctx.paths.workspace_dir()) / "registry.json"
+
+
+def _workspace_registry() -> dict[str, Any]:
+    return _load_json(_workspace_registry_path())
+
+
+def _registry_entries(kind: str) -> list[dict[str, Any]]:
+    registry = _workspace_registry()
+    items = registry.get(kind) if isinstance(registry.get(kind), list) else []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _public_registry_summary(kind: str) -> dict[str, Any]:
+    token = str(kind or "").strip().lower()
+    items = _registry_entries(token)
+    normalized: list[dict[str, Any]] = []
+    for item in items[:50]:
+        normalized.append(
+            {
+                "id": str(item.get("id") or item.get("name") or "").strip(),
+                "name": str(item.get("name") or item.get("id") or "").strip(),
+                "version": str(item.get("version") or "").strip() or None,
+                "updated_at": str(item.get("updated_at") or "").strip() or None,
+                "description": str(item.get("description") or "").strip() or None,
+                "manifest": str(item.get("manifest") or "").strip() or None,
+            }
+        )
+    registry_payload = _workspace_registry()
+    return {
+        "kind": token,
+        "available": True,
+        "registry_path": str(_workspace_registry_path()),
+        "updated_at": str(registry_payload.get("updated_at") or "").strip() or None,
+        "item_count": len(items),
+        "items": normalized,
+    }
+
+
+def _architecture_catalog() -> dict[str, Any]:
+    path = Path(__file__).resolve().parents[4] / "docs" / "architecture" / "index.md"
+    pages: list[dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    pattern = re.compile(r"^- \[(?P<title>[^\]]+)\]\((?P<link>[^\)]+)\):\s*(?P<summary>.+)$", re.MULTILINE)
+    for match in pattern.finditer(text):
+        pages.append(
+            {
+                "title": match.group("title").strip(),
+                "path": match.group("link").strip(),
+                "summary": match.group("summary").strip(),
+            }
+        )
+    return {
+        "available": True,
+        "index_path": str(path),
+        "page_count": len(pages),
+        "pages": pages,
+    }
+
+
+def _descriptor_build_profile() -> dict[str, Any]:
+    sdk_meta = dict(sdk_export(level="mini").get("meta") or {})
+    return {
+        "available": True,
+        "build_pipeline": "prototype",
+        "generator": "adaos.sdk.core.exporter.export",
+        "input_sources": [
+            "adaos.sdk.manage",
+            "adaos.sdk.data",
+            "docs/architecture/index.md",
+            ".adaos/workspace/registry.json",
+        ],
+        "published_descriptor_ids": [
+            "sdk_metadata",
+            "system_model_vocabulary",
+            "skill_manifest_schema",
+            "scenario_manifest_schema",
+            "template_catalog",
+            "architecture_catalog",
+            "public_skill_registry_summary",
+            "public_scenario_registry_summary",
+            "descriptor_bundle",
+        ],
+        "sdk_export_meta": sdk_meta,
     }
 
 
@@ -246,6 +342,14 @@ def _descriptor_payload(descriptor_id: str, *, level: str = "std") -> Any:
                 "issuer": "root",
             },
         }
+    if token == "architecture_catalog":
+        return _architecture_catalog()
+    if token == "public_skill_registry_summary":
+        return _public_registry_summary("skills")
+    if token == "public_scenario_registry_summary":
+        return _public_registry_summary("scenarios")
+    if token == "descriptor_build_profile":
+        return _descriptor_build_profile()
     if token == "descriptor_bundle":
         descriptor_ids = [
             item["descriptor_id"]
@@ -304,6 +408,14 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             tags=["development", "templates", "scaffold"],
         ),
         _descriptor_entry(
+            "architecture_catalog",
+            title="Architecture catalog",
+            summary="Root-curated catalog of AdaOS architecture pages and control-plane references.",
+            source_kind="docs_architecture_index",
+            descriptor_class="architecture",
+            tags=["development", "architecture", "docs"],
+        ),
+        _descriptor_entry(
             "capability_registry",
             title="Capability registry",
             summary="Root MCP capability classes, default grants, and risk hints.",
@@ -342,6 +454,30 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             source_kind="root_mcp_session_registry",
             descriptor_class="auth",
             tags=["development", "auth", "sessions"],
+        ),
+        _descriptor_entry(
+            "public_skill_registry_summary",
+            title="Public skill registry summary",
+            summary="Root-curated summary of published workspace skill entries for descriptive MCP clients.",
+            source_kind="workspace_registry",
+            descriptor_class="registry",
+            tags=["development", "skills", "registry"],
+        ),
+        _descriptor_entry(
+            "public_scenario_registry_summary",
+            title="Public scenario registry summary",
+            summary="Root-curated summary of published workspace scenario entries for descriptive MCP clients.",
+            source_kind="workspace_registry",
+            descriptor_class="registry",
+            tags=["development", "scenarios", "registry"],
+        ),
+        _descriptor_entry(
+            "descriptor_build_profile",
+            title="Descriptor build profile",
+            summary="Prototype build profile that turns SDK export, docs, and workspace registry inputs into root-curated descriptive bundles.",
+            source_kind="root_descriptor_build_profile",
+            descriptor_class="build",
+            tags=["development", "build", "pipeline"],
         ),
         _descriptor_entry(
             "descriptor_bundle",

@@ -90,6 +90,10 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "mcp_client_profile" in descriptor_ids
     assert "capability_profiles" in descriptor_ids
     assert "mcp_session_profile" in descriptor_ids
+    assert "architecture_catalog" in descriptor_ids
+    assert "public_skill_registry_summary" in descriptor_ids
+    assert "public_scenario_registry_summary" in descriptor_ids
+    assert "descriptor_build_profile" in descriptor_ids
     assert "descriptor_bundle" in descriptor_ids
 
     capability_registry = client.get("/v1/root/mcp/descriptors/capability_registry", headers=scoped_headers)
@@ -107,6 +111,32 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     session_profile_payload = session_profile.json()["descriptor"]["payload"]
     assert session_profile_payload["session_registry"]["available"] is True
     assert session_profile_payload["client_bootstrap"]["subnet_transport_params_required"] is False
+
+    architecture = client.get("/v1/root/mcp/descriptors/architecture_catalog", headers=scoped_headers)
+    assert architecture.status_code == 200
+    architecture_payload = architecture.json()["descriptor"]["payload"]
+    assert architecture_payload["available"] is True
+    assert architecture_payload["page_count"] >= 1
+
+    skills_registry = client.get("/v1/root/mcp/descriptors/public_skill_registry_summary", headers=scoped_headers)
+    assert skills_registry.status_code == 200
+    skills_payload = skills_registry.json()["descriptor"]["payload"]
+    assert skills_payload["available"] is True
+    assert skills_payload["kind"] == "skills"
+
+    scenarios_registry = client.get("/v1/root/mcp/descriptors/public_scenario_registry_summary", headers=scoped_headers)
+    assert scenarios_registry.status_code == 200
+    scenarios_payload = scenarios_registry.json()["descriptor"]["payload"]
+    assert scenarios_payload["available"] is True
+    assert scenarios_payload["kind"] == "scenarios"
+
+    build_profile = client.get("/v1/root/mcp/descriptors/descriptor_build_profile", headers=scoped_headers)
+    assert build_profile.status_code == 200
+    build_profile_payload = build_profile.json()["descriptor"]["payload"]
+    assert build_profile_payload["available"] is True
+    assert build_profile_payload["build_pipeline"] == "prototype"
+    assert "sdk_metadata" in build_profile_payload["published_descriptor_ids"]
+    assert "architecture_catalog" in build_profile_payload["published_descriptor_ids"]
 
     bundle = client.get("/v1/root/mcp/descriptors/descriptor_bundle", headers=scoped_headers)
     assert bundle.status_code == 200

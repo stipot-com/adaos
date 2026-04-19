@@ -82,8 +82,8 @@ It proves the first `hub -> root -> Root MCP` operational loop and the first end
 ## Phase 2. Root Descriptor Cache and Descriptor Build Pipeline
 
 - [x] define descriptor bundle formats and provenance fields
-- [ ] promote current `build SDK` work into a descriptor-build pipeline prototype
-- [ ] publish architecture, SDK, schema, manifest, and template descriptors through root cache
+- [x] promote current `build SDK` work into a descriptor-build pipeline prototype
+- [x] publish architecture, SDK, schema, manifest, and template descriptors through root cache
 - [ ] add CI/CD and publish hooks so public skills and scenarios refresh root descriptors as part of lifecycle
 - [x] expose freshness metadata and TTL semantics in descriptor responses
 
