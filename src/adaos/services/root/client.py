@@ -599,6 +599,24 @@ class RootHttpClient:
             )
         )
 
+    def hub_memory_profile_report(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        verify: str | bool | ssl.SSLContext | None = None,
+        cert: tuple[str, str] | None = None,
+    ) -> dict:
+        return dict(
+            self._request(
+                "POST",
+                "/v1/hub/memory_profile/report",
+                json=dict(payload),
+                verify=(self.verify if verify is None else verify),
+                cert=(self.cert if cert is None else cert),
+                timeout=30.0,
+            )
+        )
+
     def root_dispatch_core_update(
         self,
         *,
@@ -658,6 +676,74 @@ class RootHttpClient:
                 "GET",
                 "/v1/hubs/control/reports",
                 params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def root_memory_profile_reports(
+        self,
+        *,
+        root_token: str,
+        hub_id: str | None = None,
+        session_id: str | None = None,
+        session_state: str | None = None,
+        suspected_only: bool | None = None,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        params: dict[str, Any] = {}
+        if hub_id:
+            params["hub_id"] = hub_id
+        if session_id:
+            params["session_id"] = session_id
+        if session_state:
+            params["state"] = session_state
+        if suspected_only is not None:
+            params["suspected_only"] = "true" if suspected_only else "false"
+        return dict(
+            self._request(
+                "GET",
+                "/v1/hubs/memory_profile/reports",
+                params=params,
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def root_memory_profile_report(
+        self,
+        *,
+        root_token: str,
+        session_id: str,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/hubs/memory_profile/reports/{session_id}",
+                headers=headers,
+                verify=(verify if verify is not None else self.verify),
+                timeout=30.0,
+            )
+        )
+
+    def root_memory_profile_artifact(
+        self,
+        *,
+        root_token: str,
+        session_id: str,
+        artifact_id: str,
+        verify: str | bool | ssl.SSLContext | None = None,
+    ) -> dict:
+        headers = {"X-Root-Token": root_token}
+        return dict(
+            self._request(
+                "GET",
+                f"/v1/hubs/memory_profile/reports/{session_id}/artifacts/{artifact_id}",
                 headers=headers,
                 verify=(verify if verify is not None else self.verify),
                 timeout=30.0,

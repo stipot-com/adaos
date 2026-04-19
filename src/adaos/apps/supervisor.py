@@ -51,6 +51,7 @@ from adaos.services.core_update import resolved_root_promotion_requirement
 from adaos.services.core_update import rollback_installed_skill_runtimes
 from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
+from adaos.services.node_config import load_config
 from adaos.services.realtime_sidecar import (
     realtime_sidecar_enabled,
     realtime_sidecar_listener_snapshot,
@@ -58,17 +59,33 @@ from adaos.services.realtime_sidecar import (
     start_realtime_sidecar_subprocess,
     stop_realtime_sidecar_subprocess,
 )
+from adaos.services.root.memory_profile_sync import (
+    memory_profile_artifact_published_ref,
+    report_hub_memory_profile,
+)
 from adaos.services.runtime_paths import current_base_dir
 from adaos.services.supervisor_memory import (
     DEFAULT_PROFILER_ADAPTER,
+    IMPLEMENTED_PROFILE_CONTROL_ACTIONS,
+    IMPLEMENTED_PROFILE_CONTROL_MODE,
+    MEMORY_OPERATION_CONTRACT_VERSION,
+    PROFILE_LAUNCH_ENV_KEYS,
     TOP_LEVEL_OPERATION_EVENTS,
+    append_memory_telemetry_sample,
+    append_memory_session_operation,
     ensure_memory_store,
+    read_memory_telemetry_tail,
     read_memory_runtime_state,
+    read_memory_session_operations,
     read_memory_session_index,
     read_memory_session_summary,
     supervisor_memory_runtime_state_path,
+    supervisor_memory_session_artifacts_dir,
+    supervisor_memory_session_operations_path,
     supervisor_memory_sessions_index_path,
     supervisor_memory_telemetry_path,
+    write_memory_session_index,
+    write_memory_session_summary,
     write_memory_runtime_state,
 )
 
@@ -127,6 +144,71 @@ def _supervisor_update_attempt_path() -> Path:
 def _memory_profiler_adapter() -> str:
     token = str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILER") or "").strip().lower()
     return token or DEFAULT_PROFILER_ADAPTER
+
+
+def _memory_telemetry_interval_sec() -> float:
+    try:
+        return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC") or "15").strip()))
+    except Exception:
+        return 15.0
+
+
+def _memory_telemetry_window_sec() -> float:
+    try:
+        return max(60.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC") or "180").strip()))
+    except Exception:
+        return 180.0
+
+
+def _memory_suspicion_growth_threshold_bytes() -> int:
+    try:
+        return max(32 * 1024 * 1024, int(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES") or str(192 * 1024 * 1024)).strip()))
+    except Exception:
+        return 192 * 1024 * 1024
+
+
+def _memory_suspicion_slope_threshold_bytes_per_min() -> float:
+    try:
+        return max(
+            float(8 * 1024 * 1024),
+            float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN") or str(48 * 1024 * 1024)).strip()),
+        )
+    except Exception:
+        return float(48 * 1024 * 1024)
+
+
+def _memory_auto_profile_cooldown_sec() -> float:
+    try:
+        return max(60.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_COOLDOWN_SEC") or "600").strip()))
+    except Exception:
+        return 600.0
+
+
+def _memory_auto_profile_circuit_window_sec() -> float:
+    try:
+        return max(300.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_CIRCUIT_WINDOW_SEC") or "1800").strip()))
+    except Exception:
+        return 1800.0
+
+
+def _memory_auto_profile_circuit_limit() -> int:
+    try:
+        return max(1, int(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_CIRCUIT_LIMIT") or "3").strip()))
+    except Exception:
+        return 3
+
+
+def _available_memory_bytes() -> int | None:
+    if psutil is None:
+        return None
+    try:
+        vm = psutil.virtual_memory()
+    except Exception:
+        return None
+    try:
+        return int(vm.available)
+    except Exception:
+        return None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -751,9 +833,383 @@ class SupervisorManager:
         self._service_restart_thread: threading.Thread | None = None
         self._memory_profiler_adapter = _memory_profiler_adapter()
         self._memory_profile_mode = "normal"
+        self._memory_requested_profile_mode: str | None = None
+        self._memory_publish_request_session_id: str | None = None
         self._memory_suspicion_state = "idle"
+        self._memory_suspicion_reason: str | None = None
+        self._memory_suspicion_since: float | None = None
         self._memory_active_session_id: str | None = None
         self._memory_last_session_id: str | None = None
+        self._memory_baseline_family_rss_bytes: int | None = None
+        self._memory_last_growth_bytes: int | None = None
+        self._memory_last_growth_bytes_per_min: float | None = None
+        self._memory_last_available_bytes: int | None = None
+        self._memory_last_telemetry_at: float | None = None
+
+    def _desired_memory_profile_mode(self) -> str:
+        mode = str(self._memory_requested_profile_mode or "").strip().lower() or "normal"
+        return mode if mode in {"normal", "sampled_profile", "trace_profile"} else "normal"
+
+    def _memory_session_index_items(self) -> list[dict[str, Any]]:
+        index = read_memory_session_index()
+        items = index.get("sessions") if isinstance(index.get("sessions"), list) else []
+        return [dict(item) for item in items if isinstance(item, dict)]
+
+    def _memory_session_telemetry_window(self, session: dict[str, Any], *, limit: int = 50) -> list[dict[str, Any]]:
+        runtime_instance_id = str(session.get("runtime_instance_id") or "").strip() or None
+        started_at = float(session.get("started_at") or session.get("requested_at") or 0.0)
+        finished_at = float(session.get("finished_at") or time.time())
+        items = read_memory_telemetry_tail(limit=5000)
+        window: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sampled_at = float(item.get("sampled_at") or 0.0)
+            if sampled_at and sampled_at < started_at:
+                continue
+            if finished_at and sampled_at and sampled_at > finished_at:
+                continue
+            if runtime_instance_id and str(item.get("runtime_instance_id") or "").strip() not in {"", runtime_instance_id}:
+                continue
+            window.append(item)
+        return window[-max(1, int(limit or 1)) :]
+
+    def _fail_active_memory_session(self, *, reason: str, exit_code: int | None = None) -> None:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id:
+            return
+        summary = read_memory_session_summary(session_id)
+        if not isinstance(summary, dict):
+            return
+        state = str(summary.get("session_state") or "").strip().lower()
+        if state in {"finished", "stopped", "cancelled", "failed"}:
+            return
+        now = time.time()
+        summary["session_state"] = "failed"
+        summary["stop_reason"] = reason
+        summary["stopped_at"] = now
+        summary["finished_at"] = summary.get("finished_at") or now
+        if exit_code is not None:
+            summary["operation_window"] = {
+                **(summary.get("operation_window") if isinstance(summary.get("operation_window"), dict) else {}),
+                "exit_code": int(exit_code),
+            }
+        updated = self._upsert_memory_session_summary(summary)
+        self._append_memory_operation(
+            session_id=session_id,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or self._memory_profile_mode),
+            details={
+                "action": "profile_failed",
+                "reason": reason,
+                "exit_code": int(exit_code) if exit_code is not None else None,
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            },
+        )
+        self._memory_active_session_id = None
+        self._memory_requested_profile_mode = None
+        self._memory_profile_mode = "normal"
+
+    def _persist_memory_session_index_items(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = {
+            "contract_version": "1",
+            "sessions": items,
+            "updated_at": time.time(),
+        }
+        return write_memory_session_index(payload)
+
+    def _upsert_memory_session_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        summary = write_memory_session_summary(str(payload.get("session_id") or "session"), payload)
+        items = self._memory_session_index_items()
+        summary_item = dict(
+            {
+                "session_id": summary.get("session_id"),
+                "slot": summary.get("slot"),
+                "profile_mode": summary.get("profile_mode"),
+                "session_state": summary.get("session_state"),
+                "trigger_source": summary.get("trigger_source"),
+                "trigger_reason": summary.get("trigger_reason"),
+                "requested_at": summary.get("requested_at"),
+                "started_at": summary.get("started_at"),
+                "finished_at": summary.get("finished_at"),
+                "suspected_leak": bool(summary.get("suspected_leak")),
+                "retry_of_session_id": summary.get("retry_of_session_id"),
+                "retry_depth": int(summary.get("retry_depth") or 0),
+                "published_to_root": bool(summary.get("published_to_root")),
+                "publish_state": summary.get("publish_state"),
+                "published_ref": summary.get("published_ref"),
+            }
+        )
+        replaced = False
+        for index, item in enumerate(items):
+            if str(item.get("session_id") or "").strip() == str(summary.get("session_id") or "").strip():
+                items[index] = summary_item
+                replaced = True
+                break
+        if not replaced:
+            items.append(summary_item)
+        self._persist_memory_session_index_items(items)
+        self._memory_last_session_id = str(summary.get("session_id") or "").strip() or self._memory_last_session_id
+        return summary
+
+    def _append_memory_operation(
+        self,
+        *,
+        session_id: str,
+        event: str,
+        profile_mode: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        operations = read_memory_session_operations(session_id, limit=5000)
+        payload = {
+            "event_id": f"op-{uuid.uuid4().hex[:10]}",
+            "event": event,
+            "emitted_at": time.time(),
+            "contract_version": MEMORY_OPERATION_CONTRACT_VERSION,
+            "session_id": session_id,
+            "profile_mode": profile_mode or self._memory_profile_mode,
+            "slot": str(active_slot() or "").strip().upper() or None,
+            "runtime_instance_id": self._managed_runtime_instance_id,
+            "transition_role": self._managed_transition_role,
+            "sample_source": "supervisor",
+            "sequence": len(operations) + 1,
+            "details": dict(details or {}),
+        }
+        return append_memory_session_operation(session_id, payload)
+
+    def _request_memory_profile_session(
+        self,
+        *,
+        profile_mode: str,
+        reason: str,
+        trigger_source: str,
+        trigger_threshold: str | None = None,
+    ) -> dict[str, Any]:
+        requested_mode = str(profile_mode or "").strip().lower() or "sampled_profile"
+        if requested_mode not in {"sampled_profile", "trace_profile"}:
+            raise HTTPException(status_code=400, detail="unsupported profile_mode")
+        if _is_transition_in_progress(read_core_update_status(), _read_update_attempt()):
+            raise HTTPException(status_code=409, detail="memory profiling intent is blocked during active transition")
+        active_session_id = str(self._memory_active_session_id or "").strip()
+        if active_session_id:
+            active_session = read_memory_session_summary(active_session_id) or {}
+            active_state = str(active_session.get("session_state") or "").strip().lower()
+            if active_state in {"planned", "requested", "running"}:
+                raise HTTPException(status_code=409, detail="a memory profiling session is already active")
+        session_id = f"mem-{uuid.uuid4().hex[:8]}"
+        now = time.time()
+        summary = self._upsert_memory_session_summary(
+            {
+                "session_id": session_id,
+                "slot": str(active_slot() or "").strip().upper() or None,
+                "runtime_instance_id": self._managed_runtime_instance_id,
+                "transition_role": self._managed_transition_role,
+                "profile_mode": requested_mode,
+                "session_state": "requested",
+                "trigger_source": trigger_source,
+                "trigger_reason": str(reason or "supervisor.memory.request"),
+                "trigger_threshold": str(trigger_threshold or "").strip() or None,
+                "baseline_rss_bytes": self._memory_baseline_family_rss_bytes,
+                "peak_rss_bytes": None,
+                "rss_growth_bytes": self._memory_last_growth_bytes,
+                "requested_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "publish_state": "local_only",
+                "suspected_leak": trigger_source == "policy",
+                "retry_of_session_id": None,
+                "retry_root_session_id": None,
+                "retry_depth": 0,
+                "operation_window": {
+                    "contract_version": MEMORY_OPERATION_CONTRACT_VERSION,
+                    "events_path": str(supervisor_memory_session_operations_path(session_id)),
+                },
+            }
+        )
+        self._memory_active_session_id = session_id
+        self._memory_last_session_id = session_id
+        self._memory_requested_profile_mode = requested_mode
+        self._append_memory_operation(
+            session_id=session_id,
+            event="tool_invoked",
+            profile_mode=requested_mode,
+            details={
+                "action": "profile_start",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "reason": str(reason or "supervisor.memory.request"),
+                "trigger_source": trigger_source,
+                "trigger_threshold": str(trigger_threshold or "").strip() or None,
+                "note": "Supervisor will apply requested profile mode via controlled runtime restart",
+            },
+        )
+        self._persist_runtime_state()
+        return summary
+
+    def _mark_active_memory_session_running(self, *, runtime_instance_id: str | None, transition_role: str) -> None:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id:
+            return
+        summary = read_memory_session_summary(session_id)
+        if not isinstance(summary, dict):
+            return
+        now = time.time()
+        summary["slot"] = str(active_slot() or "").strip().upper() or summary.get("slot")
+        summary["runtime_instance_id"] = runtime_instance_id
+        summary["transition_role"] = transition_role
+        summary["session_state"] = "running"
+        summary["started_at"] = summary.get("started_at") or now
+        summary["baseline_rss_bytes"] = summary.get("baseline_rss_bytes") or self._memory_baseline_family_rss_bytes
+        summary["rss_growth_bytes"] = self._memory_last_growth_bytes
+        updated = self._upsert_memory_session_summary(summary)
+        self._append_memory_operation(
+            session_id=session_id,
+            event="slot_started",
+            profile_mode=str(updated.get("profile_mode") or self._memory_profile_mode),
+            details={
+                "action": "profile_mode_applied",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "runtime_instance_id": runtime_instance_id,
+                "transition_role": transition_role,
+            },
+        )
+
+    def _update_memory_session_peak(self, family_rss_bytes: int | None) -> None:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id or family_rss_bytes is None:
+            return
+        summary = read_memory_session_summary(session_id)
+        if not isinstance(summary, dict):
+            return
+        peak = summary.get("peak_rss_bytes")
+        if peak is None or int(family_rss_bytes) > int(peak):
+            summary["peak_rss_bytes"] = int(family_rss_bytes)
+        summary["rss_growth_bytes"] = self._memory_last_growth_bytes
+        self._upsert_memory_session_summary(summary)
+
+    def _memory_policy_auto_profile_guard(self, *, now: float) -> tuple[bool, str | None]:
+        cooldown_cutoff = now - _memory_auto_profile_cooldown_sec()
+        circuit_cutoff = now - _memory_auto_profile_circuit_window_sec()
+        recent_policy_sessions = 0
+        for item in reversed(self._memory_session_index_items()):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("trigger_source") or "").strip().lower() != "policy":
+                continue
+            requested_at = float(item.get("requested_at") or 0.0)
+            if requested_at >= cooldown_cutoff:
+                return False, "auto_profile_cooldown"
+            if requested_at >= circuit_cutoff:
+                recent_policy_sessions += 1
+                if recent_policy_sessions >= _memory_auto_profile_circuit_limit():
+                    return False, "auto_profile_circuit_open"
+        return True, None
+
+    async def _maybe_apply_memory_profile_mode(self) -> None:
+        desired_mode = self._desired_memory_profile_mode()
+        if desired_mode == self._memory_profile_mode:
+            return
+        if self._stopping or not self._desired_running:
+            return
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        if _is_transition_in_progress(read_core_update_status(), _read_update_attempt()):
+            return
+        await self.restart_runtime(reason=f"supervisor.memory.apply_profile_mode.{desired_mode}")
+
+    def _sample_memory_telemetry(self) -> dict[str, Any] | None:
+        now = time.time()
+        interval_sec = _memory_telemetry_interval_sec()
+        if self._memory_last_telemetry_at and now - self._memory_last_telemetry_at < interval_sec:
+            return None
+        managed = _proc_details(self._proc, cwd_hint=self._managed_runtime_cwd)
+        managed_pid = managed.get("managed_pid")
+        if not managed_pid:
+            return None
+        process_rss_bytes, family_rss_bytes = _process_family_rss_bytes(managed_pid)
+        if family_rss_bytes is None:
+            return None
+        self._memory_last_telemetry_at = now
+        self._memory_last_available_bytes = _available_memory_bytes()
+        if self._memory_baseline_family_rss_bytes is None:
+            self._memory_baseline_family_rss_bytes = int(family_rss_bytes)
+        elif family_rss_bytes < self._memory_baseline_family_rss_bytes:
+            self._memory_baseline_family_rss_bytes = int(family_rss_bytes)
+        growth_bytes = max(0, int(family_rss_bytes) - int(self._memory_baseline_family_rss_bytes or 0))
+        tail = read_memory_telemetry_tail(limit=256)
+        window_start = now - _memory_telemetry_window_sec()
+        window = [item for item in tail if float(item.get("sampled_at") or 0.0) >= window_start]
+        first = window[0] if window else None
+        slope = 0.0
+        if isinstance(first, dict):
+            first_family = int(first.get("family_rss_bytes") or family_rss_bytes)
+            first_at = float(first.get("sampled_at") or now)
+            elapsed_min = max((now - first_at) / 60.0, 1.0 / 60.0)
+            slope = max(0.0, (int(family_rss_bytes) - first_family) / elapsed_min)
+        suspicion_state = "stable"
+        suspicion_reason: str | None = None
+        growth_threshold = _memory_suspicion_growth_threshold_bytes()
+        slope_threshold = _memory_suspicion_slope_threshold_bytes_per_min()
+        if growth_bytes >= growth_threshold and slope >= slope_threshold:
+            suspicion_state = "suspected"
+            suspicion_reason = "growth_and_slope_threshold"
+            if self._memory_suspicion_since is None:
+                self._memory_suspicion_since = now
+        elif growth_bytes >= growth_threshold:
+            suspicion_state = "watch"
+            suspicion_reason = "growth_threshold"
+            self._memory_suspicion_since = None
+        elif slope >= slope_threshold:
+            suspicion_state = "watch"
+            suspicion_reason = "slope_threshold"
+            self._memory_suspicion_since = None
+        else:
+            self._memory_suspicion_since = None
+        self._memory_suspicion_state = suspicion_state
+        self._memory_suspicion_reason = suspicion_reason
+        self._memory_last_growth_bytes = growth_bytes
+        self._memory_last_growth_bytes_per_min = slope
+        sample = append_memory_telemetry_sample(
+            {
+                "sampled_at": now,
+                "slot": str(active_slot() or "").strip().upper() or None,
+                "runtime_instance_id": self._managed_runtime_instance_id,
+                "transition_role": self._managed_transition_role,
+                "managed_pid": managed_pid,
+                "profile_mode": self._memory_profile_mode,
+                "suspicion_state": suspicion_state,
+                "process_rss_bytes": process_rss_bytes,
+                "family_rss_bytes": family_rss_bytes,
+                "available_memory_bytes": self._memory_last_available_bytes,
+                "baseline_rss_bytes": self._memory_baseline_family_rss_bytes,
+                "rss_growth_bytes": growth_bytes,
+                "rss_growth_bytes_per_min": slope,
+                "sample_source": "supervisor",
+            }
+        )
+        self._update_memory_session_peak(family_rss_bytes)
+        if (
+            suspicion_state == "suspected"
+            and self._desired_memory_profile_mode() == "normal"
+            and not str(self._memory_active_session_id or "").strip()
+        ):
+            auto_allowed, auto_block_reason = self._memory_policy_auto_profile_guard(now=now)
+            if auto_allowed:
+                try:
+                    self._request_memory_profile_session(
+                        profile_mode="sampled_profile",
+                        reason=f"memory.{suspicion_reason or 'threshold'}",
+                        trigger_source="policy",
+                        trigger_threshold=(
+                            f"growth>={growth_threshold}; slope>={int(slope_threshold)}"
+                        ),
+                    )
+                except HTTPException:
+                    pass
+            else:
+                self._memory_suspicion_state = "suppressed"
+                self._memory_suspicion_reason = auto_block_reason
+        self._persist_runtime_state()
+        return sample
 
     def _schedule_service_restart(self, *, reason: str) -> dict[str, Any]:
         delay_sec = _root_restart_delay_sec()
@@ -1188,6 +1644,9 @@ class SupervisorManager:
         slot_port: int,
         transition_role: str,
         runtime_instance_id: str,
+        profile_mode: str = "normal",
+        profile_session_id: str | None = None,
+        profile_trigger: str | None = None,
         skip_pending_update: bool = False,
     ) -> dict[str, str]:
         env = dict(os.environ)
@@ -1204,6 +1663,15 @@ class SupervisorManager:
         if slot:
             env["ADAOS_ACTIVE_CORE_SLOT"] = slot
             env["ADAOS_ACTIVE_CORE_SLOT_DIR"] = slot_dir
+        env["ADAOS_SUPERVISOR_PROFILE_MODE"] = str(profile_mode or "normal")
+        if profile_session_id:
+            env["ADAOS_SUPERVISOR_PROFILE_SESSION_ID"] = str(profile_session_id)
+        else:
+            env.pop("ADAOS_SUPERVISOR_PROFILE_SESSION_ID", None)
+        if profile_trigger:
+            env["ADAOS_SUPERVISOR_PROFILE_TRIGGER"] = str(profile_trigger)
+        else:
+            env.pop("ADAOS_SUPERVISOR_PROFILE_TRIGGER", None)
         if skip_pending_update:
             env[_SKIP_PENDING_UPDATE_ENV] = "1"
         return env
@@ -1214,6 +1682,9 @@ class SupervisorManager:
         slot: str | None = None,
         transition_role: str = "active",
         runtime_instance_id: str | None = None,
+        profile_mode: str | None = None,
+        profile_session_id: str | None = None,
+        profile_trigger: str | None = None,
         skip_pending_update: bool = False,
     ) -> tuple[list[str] | None, str | None, dict[str, str], str | None, str, str]:
         resolved_slot = str(slot or active_slot() or "").strip().upper() or None
@@ -1223,12 +1694,26 @@ class SupervisorManager:
         resolved_runtime_instance_id = str(
             runtime_instance_id or _new_runtime_instance_id(slot=resolved_slot, transition_role=transition_role)
         )
+        requested_session_id = profile_session_id
+        requested_mode = str(profile_mode or "").strip().lower() or ""
+        resolved_profile_trigger = str(profile_trigger or "").strip() or None
+        if not requested_mode:
+            requested_session_id = str(self._memory_active_session_id or "").strip() or None
+            requested_mode = self._desired_memory_profile_mode()
+        if requested_session_id and not resolved_profile_trigger:
+            session = read_memory_session_summary(requested_session_id) or {}
+            trigger_source = str(session.get("trigger_source") or "").strip() or "operator"
+            trigger_reason = str(session.get("trigger_reason") or "").strip() or "supervisor.memory.request"
+            resolved_profile_trigger = f"{trigger_source}:{trigger_reason}"
         env = self._runtime_env(
             slot=resolved_slot,
             slot_dir=slot_dir,
             slot_port=slot_port,
             transition_role=transition_role,
             runtime_instance_id=resolved_runtime_instance_id,
+            profile_mode=requested_mode,
+            profile_session_id=requested_session_id,
+            profile_trigger=resolved_profile_trigger,
             skip_pending_update=skip_pending_update,
         )
         if isinstance(manifest, dict):
@@ -1446,6 +1931,7 @@ class SupervisorManager:
         managed = _proc_details(self._proc, cwd_hint=self._managed_runtime_cwd)
         managed_pid = managed.get("managed_pid")
         process_rss_bytes, family_rss_bytes = _process_family_rss_bytes(managed_pid)
+        telemetry_tail = read_memory_telemetry_tail(limit=5000)
         sessions_index = read_memory_session_index()
         session_items = sessions_index.get("sessions") if isinstance(sessions_index.get("sessions"), list) else []
         last_session_id = self._memory_last_session_id
@@ -1459,9 +1945,17 @@ class SupervisorManager:
             "implemented_profiler_adapters": ["tracemalloc"],
             "planned_profiler_adapters": ["tracemalloc", "memray"],
             "current_profile_mode": self._memory_profile_mode,
-            "implemented_profile_modes": ["normal"],
+            "implemented_profile_modes": ["normal", "sampled_profile", "trace_profile"],
             "planned_profile_modes": ["normal", "sampled_profile", "trace_profile"],
+            "profile_control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "implemented_profile_control_actions": list(IMPLEMENTED_PROFILE_CONTROL_ACTIONS),
+            "implemented_profile_launch_env": list(PROFILE_LAUNCH_ENV_KEYS),
+            "requested_profile_mode": self._memory_requested_profile_mode,
+            "requested_session_id": self._memory_active_session_id,
+            "publish_request_session_id": self._memory_publish_request_session_id,
             "suspicion_state": self._memory_suspicion_state,
+            "suspicion_reason": self._memory_suspicion_reason,
+            "suspicion_since": self._memory_suspicion_since,
             "active_session_id": self._memory_active_session_id,
             "last_session_id": last_session_id,
             "active_slot": current_slot,
@@ -1470,9 +1964,19 @@ class SupervisorManager:
             "managed_pid": managed_pid,
             "current_process_rss_bytes": process_rss_bytes,
             "current_family_rss_bytes": family_rss_bytes,
+            "available_memory_bytes": self._memory_last_available_bytes,
+            "telemetry_interval_sec": _memory_telemetry_interval_sec(),
+            "telemetry_window_sec": _memory_telemetry_window_sec(),
+            "telemetry_samples_total": len(telemetry_tail),
+            "baseline_family_rss_bytes": self._memory_baseline_family_rss_bytes,
+            "rss_growth_bytes": self._memory_last_growth_bytes,
+            "rss_growth_bytes_per_min": self._memory_last_growth_bytes_per_min,
+            "suspicion_growth_threshold_bytes": _memory_suspicion_growth_threshold_bytes(),
+            "suspicion_slope_threshold_bytes_per_min": _memory_suspicion_slope_threshold_bytes_per_min(),
             "telemetry_path": str(supervisor_memory_telemetry_path()),
             "sessions_index_path": str(supervisor_memory_sessions_index_path()),
             "implemented_operation_events": list(TOP_LEVEL_OPERATION_EVENTS),
+            "operation_log_contract_version": MEMORY_OPERATION_CONTRACT_VERSION,
             "sessions_total": len(session_items),
             "updated_at": time.time(),
         }
@@ -1483,6 +1987,16 @@ class SupervisorManager:
         payload["sessions_index"] = read_memory_session_index()
         payload["runtime_state_path"] = str(supervisor_memory_runtime_state_path())
         return payload
+
+    def memory_telemetry(self, *, limit: int = 100) -> dict[str, Any]:
+        items = read_memory_telemetry_tail(limit=max(1, min(int(limit or 100), 1000)))
+        return {
+            "ok": True,
+            "items": items,
+            "total": len(items),
+            "telemetry_path": str(supervisor_memory_telemetry_path()),
+            "runtime": self._memory_runtime_state_payload(),
+        }
 
     def memory_sessions(self) -> dict[str, Any]:
         index = read_memory_session_index()
@@ -1495,6 +2009,27 @@ class SupervisorManager:
             "updated_at": index.get("updated_at"),
         }
 
+    def memory_incidents(self, *, limit: int = 50) -> dict[str, Any]:
+        items = self._memory_session_index_items()
+        incidents: list[dict[str, Any]] = []
+        for item in reversed(items):
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("session_state") or "").strip().lower()
+            suspected = bool(item.get("suspected_leak"))
+            publish_state = str(item.get("publish_state") or "").strip().lower()
+            if state not in {"failed", "finished", "stopped"} and not suspected and publish_state != "publish_requested":
+                continue
+            incidents.append(dict(item))
+            if len(incidents) >= max(1, min(int(limit or 50), 200)):
+                break
+        return {
+            "ok": True,
+            "incidents": incidents,
+            "total": len(incidents),
+            "updated_at": read_memory_session_index().get("updated_at"),
+        }
+
     def memory_session(self, session_id: str) -> dict[str, Any] | None:
         token = str(session_id or "").strip()
         if not token:
@@ -1502,7 +2037,294 @@ class SupervisorManager:
         payload = read_memory_session_summary(token)
         if payload is None:
             return None
-        return {"ok": True, "session": payload}
+        artifacts_dir = supervisor_memory_session_artifacts_dir(token)
+        return {
+            "ok": True,
+            "session": payload,
+            "operations": read_memory_session_operations(token, limit=100),
+            "operations_path": str(supervisor_memory_session_operations_path(token)),
+            "artifacts_dir": str(artifacts_dir),
+            "telemetry": self._memory_session_telemetry_window(payload, limit=100),
+        }
+
+    def memory_session_artifact(self, session_id: str, artifact_id: str) -> dict[str, Any] | None:
+        token = str(session_id or "").strip()
+        ref_id = str(artifact_id or "").strip()
+        if not token or not ref_id:
+            return None
+        session = read_memory_session_summary(token)
+        if not isinstance(session, dict):
+            return None
+        refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+        artifact = next(
+            (
+                dict(item)
+                for item in refs
+                if isinstance(item, dict) and str(item.get("artifact_id") or "").strip() == ref_id
+            ),
+            None,
+        )
+        if artifact is None:
+            return None
+        path = Path(str(artifact.get("path") or "").strip()) if artifact.get("path") else None
+        payload: dict[str, Any] = {
+            "ok": True,
+            "session_id": token,
+            "artifact": artifact,
+        }
+        if path and path.exists():
+            payload["exists"] = True
+            if str(artifact.get("content_type") or "").strip().lower() == "application/json":
+                try:
+                    payload["content"] = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    payload["content"] = None
+            else:
+                payload["content"] = None
+        else:
+            payload["exists"] = False
+            payload["content"] = None
+        return payload
+
+    def start_memory_profile(
+        self,
+        *,
+        profile_mode: str,
+        reason: str,
+        trigger_source: str = "operator",
+    ) -> dict[str, Any]:
+        summary = self._request_memory_profile_session(
+            profile_mode=profile_mode,
+            reason=reason,
+            trigger_source=trigger_source,
+        )
+        return {
+            "ok": True,
+            "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "session": summary,
+            "runtime": self.memory_status(),
+        }
+
+    def retry_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        token = str(session_id or "").strip()
+        summary = read_memory_session_summary(token)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="memory profiling session was not found")
+        state = str(summary.get("session_state") or "").strip().lower()
+        if state not in {"failed", "cancelled", "stopped", "finished"}:
+            raise HTTPException(status_code=409, detail="memory profiling session is not retryable yet")
+        trigger_source = str(summary.get("trigger_source") or "operator").strip() or "operator"
+        retried = self._request_memory_profile_session(
+            profile_mode=str(summary.get("profile_mode") or "sampled_profile"),
+            reason=str(reason or "operator.retry"),
+            trigger_source=trigger_source,
+            trigger_threshold=str(summary.get("trigger_threshold") or "").strip() or None,
+        )
+        retry_root_session_id = str(summary.get("retry_root_session_id") or token).strip() or token
+        retry_depth = max(1, int(summary.get("retry_depth") or 0) + 1)
+        retried["retry_of_session_id"] = token
+        retried["retry_root_session_id"] = retry_root_session_id
+        retried["retry_depth"] = retry_depth
+        retried_window = (
+            retried.get("operation_window") if isinstance(retried.get("operation_window"), dict) else {}
+        )
+        retried_window["retry_of_session_id"] = token
+        retried_window["retry_root_session_id"] = retry_root_session_id
+        retried_window["retry_depth"] = retry_depth
+        retried_window["retry_reason"] = str(reason or "operator.retry")
+        retried["operation_window"] = retried_window
+        retried = self._upsert_memory_session_summary(retried)
+        self._append_memory_operation(
+            session_id=str(retried.get("session_id") or ""),
+            event="tool_invoked",
+            profile_mode=str(retried.get("profile_mode") or ""),
+            details={
+                "action": "profile_retry",
+                "retry_of_session_id": token,
+                "retry_root_session_id": retry_root_session_id,
+                "retry_depth": retry_depth,
+                "reason": str(reason or "operator.retry"),
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            },
+        )
+        return {
+            "ok": True,
+            "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "retry_of_session_id": token,
+            "session": retried,
+            "runtime": self.memory_status(),
+        }
+
+    def stop_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        token = str(session_id or "").strip()
+        summary = read_memory_session_summary(token)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="memory profiling session was not found")
+        now = time.time()
+        state = str(summary.get("session_state") or "").strip().lower() or "planned"
+        next_state = "cancelled" if state in {"planned", "requested"} else "stopped"
+        summary["session_state"] = next_state
+        summary["stop_reason"] = str(reason or "operator.stop")
+        summary["stopped_at"] = now
+        summary["finished_at"] = summary.get("finished_at") or now
+        updated = self._upsert_memory_session_summary(summary)
+        self._append_memory_operation(
+            session_id=token,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or ""),
+            details={
+                "action": "profile_stop",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "reason": str(reason or "operator.stop"),
+            },
+        )
+        if token == str(self._memory_active_session_id or "").strip():
+            self._memory_active_session_id = None
+            self._memory_requested_profile_mode = None
+        self._persist_runtime_state()
+        return {
+            "ok": True,
+            "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "session": updated,
+            "runtime": self.memory_status(),
+        }
+
+    def _publish_memory_profile_to_root(
+        self,
+        *,
+        summary: dict[str, Any],
+        reason: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        token = str(summary.get("session_id") or "").strip()
+        operations = read_memory_session_operations(token, limit=200)
+        telemetry = self._memory_session_telemetry_window(summary, limit=200)
+        try:
+            conf = load_config()
+        except Exception as exc:
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reason": "root_config_unavailable",
+                },
+                None,
+            )
+        try:
+            result = report_hub_memory_profile(
+                conf,
+                session_summary=summary,
+                operations=operations,
+                telemetry=telemetry,
+            )
+        except Exception as exc:
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reason": str(reason or "operator.publish"),
+                },
+                None,
+            )
+        if not isinstance(result, dict):
+            return (
+                {
+                    "ok": False,
+                    "state": "publish_failed",
+                    "error": "root client is unavailable",
+                    "reason": str(reason or "operator.publish"),
+                },
+                None,
+            )
+        protocol_meta = result.get("_protocol") if isinstance(result.get("_protocol"), dict) else {}
+        published_ref = (
+            str(result.get("published_ref") or "").strip()
+            or str(protocol_meta.get("message_id") or "").strip()
+            or f"root://hub-memory-profile/{token}"
+        )
+        return (
+            {
+                "ok": True,
+                "state": "published",
+                "reason": str(reason or "operator.publish"),
+                "reported_at": result.get("reported_at"),
+                "published_ref": published_ref,
+                "duplicate": bool(result.get("duplicate")),
+                "message_id": protocol_meta.get("message_id") or result.get("message_id"),
+                "cursor": protocol_meta.get("cursor"),
+            },
+            result,
+        )
+
+    def publish_memory_profile(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        token = str(session_id or "").strip()
+        summary = read_memory_session_summary(token)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="memory profiling session was not found")
+        now = time.time()
+        summary["publish_state"] = "publish_requested"
+        summary["publish_requested_at"] = now
+        self._memory_publish_request_session_id = token
+        updated = self._upsert_memory_session_summary(summary)
+        self._append_memory_operation(
+            session_id=token,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or ""),
+            details={
+                "action": "publish_request",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "reason": str(reason or "operator.publish"),
+            },
+        )
+        publish_result, raw_result = self._publish_memory_profile_to_root(summary=updated, reason=reason)
+        updated["publish_result"] = publish_result
+        updated["published_to_root"] = bool(publish_result.get("ok"))
+        updated["publish_state"] = str(publish_result.get("state") or "publish_failed")
+        updated["published_ref"] = publish_result.get("published_ref")
+        if bool(publish_result.get("ok")):
+            artifact_refs = updated.get("artifact_refs") if isinstance(updated.get("artifact_refs"), list) else []
+            published_artifacts: list[dict[str, Any]] = []
+            for item in artifact_refs:
+                if not isinstance(item, dict):
+                    continue
+                artifact_id = str(item.get("artifact_id") or "").strip()
+                published_artifacts.append(
+                    {
+                        **item,
+                        "published_ref": memory_profile_artifact_published_ref(
+                            session_id=token,
+                            artifact_id=artifact_id,
+                        ) if artifact_id else item.get("published_ref"),
+                    }
+                )
+            updated["artifact_refs"] = published_artifacts
+        updated_window = updated.get("operation_window") if isinstance(updated.get("operation_window"), dict) else {}
+        updated_window["publish_result"] = publish_result
+        updated["operation_window"] = updated_window
+        updated = self._upsert_memory_session_summary(updated)
+        self._append_memory_operation(
+            session_id=token,
+            event="tool_invoked",
+            profile_mode=str(updated.get("profile_mode") or ""),
+            details={
+                "action": "publish_complete" if bool(publish_result.get("ok")) else "publish_failed",
+                "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+                "reason": str(reason or "operator.publish"),
+                "publish_state": updated.get("publish_state"),
+                "published_ref": updated.get("published_ref"),
+                "error": publish_result.get("error"),
+            },
+        )
+        self._persist_runtime_state()
+        return {
+            "ok": True,
+            "control_mode": IMPLEMENTED_PROFILE_CONTROL_MODE,
+            "session": updated,
+            "publish_result": publish_result,
+            "root_result": raw_result,
+            "runtime": self.memory_status(),
+        }
 
     def _runtime_self_heal_decision(self, *, now: float | None = None) -> dict[str, Any] | None:
         proc = self._proc
@@ -1571,7 +2393,12 @@ class SupervisorManager:
     async def _spawn_runtime_locked(self, *, reason: str = "supervisor.start") -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
-        argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec()
+        profile_mode = self._desired_memory_profile_mode()
+        profile_session_id = str(self._memory_active_session_id or "").strip() or None
+        argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec(
+            profile_mode=profile_mode,
+            profile_session_id=profile_session_id,
+        )
         proc = subprocess.Popen(
             argv or command or [],
             shell=bool(command),
@@ -1588,10 +2415,13 @@ class SupervisorManager:
         self._managed_transition_role = transition_role
         self._managed_runtime_cwd = str(cwd or os.getcwd())
         self._managed_start_reason = str(reason or "supervisor.start")
+        self._memory_profile_mode = profile_mode
         self._last_start_at = time.time()
         self._last_error = None
         self._runtime_unhealthy_since = None
         self._runtime_unhealthy_kind = None
+        if profile_mode != "normal":
+            self._mark_active_memory_session_running(runtime_instance_id=runtime_instance_id, transition_role=transition_role)
         self._persist_runtime_state()
 
     async def _spawn_sidecar_locked(self) -> None:
@@ -1619,6 +2449,9 @@ class SupervisorManager:
         argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec(
             slot=resolved_slot,
             transition_role="candidate",
+            profile_mode="normal",
+            profile_session_id=None,
+            profile_trigger=None,
             skip_pending_update=True,
         )
         proc = subprocess.Popen(
@@ -1979,6 +2812,12 @@ class SupervisorManager:
                 continue
             rc = proc.poll()
             if rc is None:
+                with contextlib.suppress(Exception):
+                    self._sample_memory_telemetry()
+                try:
+                    await self._maybe_apply_memory_profile_mode()
+                except Exception:
+                    _LOG.warning("failed to apply requested memory profile mode", exc_info=True)
                 restart_decision = self._runtime_self_heal_decision()
                 if restart_decision is not None:
                     self._last_error = str(restart_decision.get("message") or "active runtime became unhealthy")
@@ -1996,12 +2835,18 @@ class SupervisorManager:
             self._last_exit_code = int(rc)
             self._last_exit_at = time.time()
             self._last_stop_reason = self._last_stop_reason or "supervisor.runtime.exited"
+            if self._memory_profile_mode != "normal" and not self._stopping and self._desired_running:
+                self._fail_active_memory_session(
+                    reason="runtime_exited_during_profile_mode",
+                    exit_code=int(rc),
+                )
             self._proc = None
             self._managed_runtime_instance_id = None
             self._managed_transition_role = None
             self._managed_runtime_cwd = None
             self._runtime_unhealthy_since = None
             self._runtime_unhealthy_kind = None
+            self._memory_profile_mode = "normal"
             self._persist_runtime_state()
             if self._stopping or not self._desired_running:
                 continue
@@ -2066,6 +2911,52 @@ class SupervisorManager:
 
     def public_update_status(self) -> dict[str, Any]:
         return _public_update_status_payload(self._local_supervisor_update_status_payload())
+
+    def public_memory_status(self) -> dict[str, Any]:
+        runtime = self._memory_runtime_state_payload()
+        last_session_id = str(runtime.get("last_session_id") or "").strip() or None
+        active_session_id = str(runtime.get("active_session_id") or "").strip() or None
+        last_session = read_memory_session_summary(last_session_id) if last_session_id else None
+        active_session = read_memory_session_summary(active_session_id) if active_session_id else None
+        session = active_session if isinstance(active_session, dict) and active_session else last_session
+        compact_session = None
+        if isinstance(session, dict):
+            compact_session = {
+                "session_id": str(session.get("session_id") or "").strip() or None,
+                "profile_mode": str(session.get("profile_mode") or "").strip() or None,
+                "session_state": str(session.get("session_state") or "").strip() or None,
+                "trigger_source": str(session.get("trigger_source") or "").strip() or None,
+                "trigger_reason": str(session.get("trigger_reason") or "").strip() or None,
+                "requested_at": session.get("requested_at"),
+                "finished_at": session.get("finished_at"),
+                "publish_state": str(session.get("publish_state") or "").strip() or None,
+                "published_ref": str(session.get("published_ref") or "").strip() or None,
+                "retry_depth": int(session.get("retry_depth") or 0),
+                "suspected_leak": bool(session.get("suspected_leak")),
+            }
+        return {
+            "ok": True,
+            "memory": {
+                "authority": str(runtime.get("authority") or "supervisor"),
+                "profile_control_mode": str(runtime.get("profile_control_mode") or IMPLEMENTED_PROFILE_CONTROL_MODE),
+                "current_profile_mode": str(runtime.get("current_profile_mode") or "normal"),
+                "requested_profile_mode": str(runtime.get("requested_profile_mode") or "").strip() or None,
+                "requested_session_id": str(runtime.get("requested_session_id") or "").strip() or None,
+                "active_session_id": active_session_id,
+                "last_session_id": last_session_id,
+                "publish_request_session_id": str(runtime.get("publish_request_session_id") or "").strip() or None,
+                "suspicion_state": str(runtime.get("suspicion_state") or "idle"),
+                "suspicion_reason": str(runtime.get("suspicion_reason") or "").strip() or None,
+                "baseline_family_rss_bytes": runtime.get("baseline_family_rss_bytes"),
+                "rss_growth_bytes": runtime.get("rss_growth_bytes"),
+                "rss_growth_bytes_per_min": runtime.get("rss_growth_bytes_per_min"),
+                "selected_profiler_adapter": str(runtime.get("selected_profiler_adapter") or DEFAULT_PROFILER_ADAPTER),
+                "sessions_total": int(runtime.get("sessions_total") or 0),
+                "last_session": compact_session,
+                "updated_at": runtime.get("updated_at"),
+            },
+            "_served_by": "supervisor",
+        }
 
     async def _request_runtime_shutdown(self, *, reason: str, drain_timeout_sec: float, signal_delay_sec: float) -> dict[str, Any]:
         async with self._lock:
@@ -3147,9 +4038,24 @@ async def supervisor_memory_status() -> dict[str, Any]:
     return _manager().memory_status()
 
 
+@app.get("/api/supervisor/memory/telemetry", dependencies=[Depends(require_token)])
+async def supervisor_memory_telemetry(limit: int = 100) -> dict[str, Any]:
+    return _manager().memory_telemetry(limit=limit)
+
+
+@app.get("/api/supervisor/public/memory-status")
+async def supervisor_public_memory_status() -> dict[str, Any]:
+    return _manager().public_memory_status()
+
+
 @app.get("/api/supervisor/memory/sessions", dependencies=[Depends(require_token)])
 async def supervisor_memory_sessions() -> dict[str, Any]:
     return _manager().memory_sessions()
+
+
+@app.get("/api/supervisor/memory/incidents", dependencies=[Depends(require_token)])
+async def supervisor_memory_incidents(limit: int = 50) -> dict[str, Any]:
+    return _manager().memory_incidents(limit=limit)
 
 
 @app.get("/api/supervisor/memory/sessions/{session_id}", dependencies=[Depends(require_token)])
@@ -3158,6 +4064,45 @@ async def supervisor_memory_session(session_id: str) -> dict[str, Any]:
     if payload is None:
         raise HTTPException(status_code=404, detail="memory profiling session was not found")
     return payload
+
+
+@app.get("/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}", dependencies=[Depends(require_token)])
+async def supervisor_memory_session_artifact(session_id: str, artifact_id: str) -> dict[str, Any]:
+    payload = _manager().memory_session_artifact(session_id, artifact_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="memory profiling artifact was not found")
+    return payload
+
+
+@app.post("/api/supervisor/memory/profile/start", dependencies=[Depends(require_token)])
+async def supervisor_memory_profile_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    return _manager().start_memory_profile(
+        profile_mode=str(body.get("profile_mode") or "sampled_profile"),
+        reason=str(body.get("reason") or "operator.request"),
+        trigger_source=str(body.get("trigger_source") or "operator"),
+    )
+
+
+@app.post("/api/supervisor/memory/profile/{session_id}/stop", dependencies=[Depends(require_token)])
+async def supervisor_memory_profile_stop(session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    return _manager().stop_memory_profile(session_id, reason=str(body.get("reason") or "operator.stop"))
+
+
+@app.post("/api/supervisor/memory/profile/{session_id}/retry", dependencies=[Depends(require_token)])
+async def supervisor_memory_profile_retry(session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    return _manager().retry_memory_profile(session_id, reason=str(body.get("reason") or "operator.retry"))
+
+
+@app.post("/api/supervisor/memory/publish", dependencies=[Depends(require_token)])
+async def supervisor_memory_publish(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    session_id = str(body.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    return _manager().publish_memory_profile(session_id, reason=str(body.get("reason") or "operator.publish"))
 
 
 @app.get("/api/supervisor/sidecar/status", dependencies=[Depends(require_token)])

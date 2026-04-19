@@ -5,11 +5,26 @@
 ```bash
 adaos runtime status
 adaos runtime logs
+adaos runtime memory-status
+adaos runtime memory-telemetry --limit 20
+adaos runtime memory-incidents --limit 20
+adaos runtime memory-sessions
+adaos runtime memory-session <SESSION_ID>
+adaos runtime memory-artifact <SESSION_ID> <ARTIFACT_ID>
+adaos runtime memory-profile-start --profile-mode sampled_profile
+adaos runtime memory-profile-stop <SESSION_ID>
+adaos runtime memory-profile-retry <SESSION_ID>
+adaos runtime memory-publish <SESSION_ID>
 adaos node status
 adaos node reliability
 ```
 
 These commands are useful for checking local readiness, runtime slots, and the broader node health model.
+If `node reliability` falls back to the supervisor during a controlled restart, it also prints the compact public memory summary when available.
+The `runtime memory-*` commands expose the supervisor-owned profiling workflow directly through the memory APIs.
+In the current Phase 2 baseline, `memory-profile-start` creates a requested profiling session and supervisor converges the runtime into the requested mode through a controlled restart.
+`memory-session` now includes compact operation/telemetry/artifact context for one profiling session, `memory-telemetry` gives a quick tail view of rolling growth samples, and `memory-incidents`/`memory-artifact` make it easier to inspect completed or failed profiling incidents without opening state files directly. If a profiling session failed or was cancelled, `memory-profile-retry` opens a fresh requested session using the same profile mode and preserves retry-chain metadata.
+`memory-publish` now attempts the first Phase 3 root publication path for the session summary and prints the resulting `published_ref` when root ingestion accepts the report.
 
 ## Autostart and service mode
 
@@ -48,6 +63,7 @@ In service mode the authoritative update surface is the supervisor, not the tran
 - production runtime is launched from the active slot manifest, not from the root checkout
 - `update-status` should remain inspectable through supervisor-backed state even while `:8777` is restarting
 - root/bootstrap code may be promoted after a successful slot validation, but the restarted production runtime still comes from slot `A|B`
+- `update-status` may also include the compact Phase 1 supervisor memory summary so operators can see profiling intent/session state during the same rollout window
 
 Current autostart-managed flow for bootstrap/self-update:
 
@@ -75,12 +91,18 @@ If a promoted supervisor/bootstrap revision fails to come back cleanly, `update-
 ## Hub and member operations
 
 ```bash
+adaos hub root reports --kind memory-profile
+adaos hub root reports --kind memory-profile --state finished --suspected-only
+adaos hub root memory-session <SESSION_ID>
+adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>
 adaos hub join-code create
 adaos hub root status
 adaos hub root reconnect
 adaos node join --join-code <CODE>
 adaos node role set --role member
 ```
+
+`adaos hub root reports --kind memory-profile` is the first operator-facing Phase 3 retrieval path for remotely published memory-profile summaries. It complements the local `runtime memory-*` commands by showing what root has already ingested for one hub, can be narrowed further with `--session-id`, and now also supports compact remote filtering such as `--state finished --suspected-only`. `adaos hub root memory-session <SESSION_ID>` opens one remotely published profiling incident directly and prints the compact RSS / retry / artifact summary without requiring raw JSON output. `adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>` fetches the currently supported remote artifact payloads for that session; at this stage Phase 3 only inlines small JSON artifacts that pass the publish policy, while heavier files remain local-first.
 
 ## Yjs webspace operations
 

@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from adaos.apps import supervisor
 from adaos.services.supervisor_memory import (
+    MemoryOperationEvent,
     MemorySessionSummary,
     MemoryTelemetrySample,
+    append_memory_session_operation,
     append_memory_telemetry_sample,
     ensure_memory_store,
+    read_memory_session_operations,
     read_memory_telemetry_tail,
     read_memory_runtime_state,
     read_memory_session_index,
     supervisor_memory_runtime_state_path,
+    supervisor_memory_session_operations_path,
     supervisor_memory_sessions_index_path,
     write_memory_session_index,
 )
@@ -39,6 +45,8 @@ def test_memory_session_summary_normalizes_artifact_refs() -> None:
         {
             "session_id": "mem-001",
             "profile_mode": "sampled_profile",
+            "session_state": "planned",
+            "trigger_source": "operator",
             "artifact_refs": [
                 {"artifact_id": "trace-1", "kind": "snapshot", "size_bytes": "128"},
                 {"artifact_id": "report-1", "kind": "summary", "published_ref": "root://report-1"},
@@ -48,8 +56,35 @@ def test_memory_session_summary_normalizes_artifact_refs() -> None:
 
     assert payload["session_id"] == "mem-001"
     assert payload["profile_mode"] == "sampled_profile"
+    assert payload["session_state"] == "planned"
+    assert payload["trigger_source"] == "operator"
     assert payload["artifact_refs"][0]["size_bytes"] == 128
     assert payload["artifact_refs"][1]["published_ref"] == "root://report-1"
+
+
+def test_memory_session_operations_round_trip(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+
+    append_memory_session_operation(
+        "mem-001",
+        MemoryOperationEvent(
+            event_id="op-1",
+            event="tool_invoked",
+            emitted_at=11.0,
+            session_id="mem-001",
+            profile_mode="sampled_profile",
+            sequence=1,
+            details={"action": "profile_start"},
+        ),
+    )
+
+    path = supervisor_memory_session_operations_path("mem-001")
+    items = read_memory_session_operations("mem-001", limit=10)
+
+    assert path.exists()
+    assert len(items) == 1
+    assert items[0]["event"] == "tool_invoked"
+    assert items[0]["details"]["action"] == "profile_start"
 
 
 def test_memory_telemetry_tail_round_trips_samples(monkeypatch, tmp_path) -> None:
@@ -97,6 +132,388 @@ def test_supervisor_manager_memory_status_reports_live_rss(monkeypatch, tmp_path
     assert payload["current_family_rss_bytes"] == 222
     assert payload["sessions_total"] == 1
     assert payload["last_session_id"] == "mem-001"
+    assert payload["profile_control_mode"] == "phase2_supervisor_restart"
+    assert payload["operation_log_contract_version"] == "1"
+
+
+def test_supervisor_manager_profile_intent_flow_updates_session_state(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    monkeypatch.setattr(supervisor, "load_config", lambda: object())
+    monkeypatch.setattr(
+        supervisor,
+        "report_hub_memory_profile",
+        lambda conf, session_summary, operations=None, telemetry=None: {
+            "ok": True,
+            "reported_at": 33.0,
+            "_protocol": {"message_id": "root-msg-1", "cursor": 1},
+        },
+    )
+
+    started = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
+    session_id = started["session"]["session_id"]
+
+    assert started["control_mode"] == "phase2_supervisor_restart"
+    assert started["session"]["session_state"] == "requested"
+    assert started["runtime"]["requested_profile_mode"] == "sampled_profile"
+    assert started["runtime"]["requested_session_id"] == session_id
+
+    details = manager.memory_session(session_id)
+    assert details is not None
+    assert details["operations"][0]["details"]["action"] == "profile_start"
+
+    published = manager.publish_memory_profile(session_id, reason="operator.publish")
+    assert published["session"]["publish_state"] == "published"
+    assert published["session"]["published_to_root"] is True
+    assert published["session"]["published_ref"] == "root-msg-1"
+    assert published["runtime"]["publish_request_session_id"] == session_id
+
+
+def test_publish_memory_profile_stamps_artifact_published_refs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    monkeypatch.setattr(supervisor, "load_config", lambda: object())
+    monkeypatch.setattr(
+        supervisor,
+        "report_hub_memory_profile",
+        lambda conf, session_summary, operations=None, telemetry=None: {
+            "ok": True,
+            "reported_at": 33.0,
+            "_protocol": {"message_id": "root-msg-1", "cursor": 1},
+        },
+    )
+    started = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")
+    session_id = started["session"]["session_id"]
+    manager._upsert_memory_session_summary(
+        {
+            **started["session"],
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-final",
+                    "kind": "tracemalloc_final_snapshot",
+                    "content_type": "application/json",
+                    "size_bytes": 128,
+                }
+            ],
+        }
+    )
+
+    published = manager.publish_memory_profile(session_id, reason="operator.publish")
+
+    assert published["session"]["artifact_refs"][0]["published_ref"] == f"root://hub-memory-profile/{session_id}/mem-001-final"
+
+    stopped = manager.stop_memory_profile(session_id, reason="operator.stop")
+    assert stopped["session"]["session_state"] == "cancelled"
+    assert stopped["runtime"]["requested_session_id"] is None
+    assert stopped["runtime"]["requested_profile_mode"] is None
+
+
+def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC", "60")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    samples = iter(
+        [
+            (100 * 1024 * 1024, 100 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+        ]
+    )
+    times = iter([10.0, 70.0, 71.0, 72.0, 73.0, 74.0])
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
+    monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
+    monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
+
+    first = manager._sample_memory_telemetry()
+    second = manager._sample_memory_telemetry()
+    monkeypatch.setattr(
+        supervisor,
+        "_process_family_rss_bytes",
+        lambda pid: (100 * 1024 * 1024, 160 * 1024 * 1024),
+    )
+    monkeypatch.setattr(supervisor.time, "time", lambda: 80.0)
+    status = manager.memory_status()
+
+    assert first is not None
+    assert second is not None
+    assert status["telemetry_samples_total"] == 2
+    assert status["baseline_family_rss_bytes"] == 100 * 1024 * 1024
+    assert status["rss_growth_bytes"] == 60 * 1024 * 1024
+    assert status["suspicion_state"] == "suspected"
+    assert status["suspicion_reason"] == "growth_and_slope_threshold"
+    assert status["requested_profile_mode"] == "sampled_profile"
+    assert status["requested_session_id"]
+
+
+def test_spawn_runtime_locked_sets_profile_launch_env_for_requested_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "active_slot_manifest", lambda: {"slot": "A", "argv": ["/slot/python"], "cwd": "/slot/repo"})
+    monkeypatch.setattr(supervisor, "core_slot_status", lambda: {"slots": {"A": {"path": "/slots/A"}}})
+    monkeypatch.setattr(supervisor.subprocess, "Popen", _fake_popen)
+
+    started = manager.start_memory_profile(profile_mode="trace_profile", reason="operator.request")
+    session_id = started["session"]["session_id"]
+    asyncio.run(manager._spawn_runtime_locked(reason="test.memory.profile"))
+
+    env = captured["kwargs"]["env"]
+    assert env["ADAOS_SUPERVISOR_PROFILE_MODE"] == "trace_profile"
+    assert env["ADAOS_SUPERVISOR_PROFILE_SESSION_ID"] == session_id
+    assert env["ADAOS_SUPERVISOR_PROFILE_TRIGGER"].startswith("operator:")
+    assert manager.memory_status()["current_profile_mode"] == "trace_profile"
+
+
+def test_supervisor_memory_telemetry_endpoint_and_session_details_include_tail(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    session = manager.start_memory_profile(profile_mode="sampled_profile", reason="operator.request")["session"]
+    session_id = session["session_id"]
+    manager._upsert_memory_session_summary({**session, "runtime_instance_id": "rt-a-a-1", "session_state": "running", "started_at": 10.0})
+    append_memory_telemetry_sample(
+        MemoryTelemetrySample(
+            sampled_at=11.0,
+            slot="A",
+            runtime_instance_id="rt-a-a-1",
+            profile_mode="sampled_profile",
+            suspicion_state="suspected",
+            family_rss_bytes=256,
+            rss_growth_bytes=64,
+        )
+    )
+
+    telemetry = manager.memory_telemetry(limit=10)
+    details = manager.memory_session(session_id)
+
+    assert telemetry["total"] == 1
+    assert telemetry["items"][0]["profile_mode"] == "sampled_profile"
+    assert details is not None
+    assert details["telemetry"][0]["runtime_instance_id"] == "rt-a-a-1"
+    assert details["artifacts_dir"].endswith(f"{session_id}\\artifacts") or details["artifacts_dir"].endswith(f"{session_id}/artifacts")
+
+
+def test_supervisor_memory_incidents_and_artifact_lookup(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    session = manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "failed",
+            "trigger_source": "policy",
+            "suspected_leak": True,
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-growth",
+                    "kind": "tracemalloc_top_growth",
+                    "path": str((tmp_path / "artifact.json").resolve()),
+                    "content_type": "application/json",
+                }
+            ],
+        }
+    )
+    (tmp_path / "artifact.json").write_text('{"top_growth_sites":[{"size_diff_bytes":128}]}', encoding="utf-8")
+
+    incidents = manager.memory_incidents(limit=10)
+    artifact = manager.memory_session_artifact("mem-001", "mem-001-growth")
+
+    assert incidents["total"] == 1
+    assert incidents["incidents"][0]["session_id"] == "mem-001"
+    assert artifact is not None
+    assert artifact["artifact"]["artifact_id"] == "mem-001-growth"
+    assert artifact["content"]["top_growth_sites"][0]["size_diff_bytes"] == 128
+
+
+def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC", "60")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_COOLDOWN_SEC", "600")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+    manager._persist_runtime_state = lambda: None
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-prev",
+            "profile_mode": "sampled_profile",
+            "session_state": "finished",
+            "trigger_source": "policy",
+            "trigger_reason": "memory.growth_and_slope_threshold",
+            "requested_at": 50.0,
+            "finished_at": 55.0,
+        }
+    )
+
+    samples = iter(
+        [
+            (100 * 1024 * 1024, 100 * 1024 * 1024),
+            (100 * 1024 * 1024, 160 * 1024 * 1024),
+        ]
+    )
+    times = iter([100.0, 160.0])
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
+    monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
+    monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+
+    manager._sample_memory_telemetry()
+    manager._sample_memory_telemetry()
+    monkeypatch.setattr(
+        supervisor,
+        "_process_family_rss_bytes",
+        lambda pid: (100 * 1024 * 1024, 160 * 1024 * 1024),
+    )
+    monkeypatch.setattr(supervisor.time, "time", lambda: 170.0)
+
+    status = manager.memory_status()
+
+    assert status["suspicion_state"] == "suppressed"
+    assert status["suspicion_reason"] == "auto_profile_cooldown"
+    assert status["requested_session_id"] is None
+
+
+def test_supervisor_marks_profile_session_failed_when_profiled_runtime_exits(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return 17
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    manager._proc = _Proc()
+    manager._managed_runtime_instance_id = "rt-a-a-1"
+    manager._managed_transition_role = "active"
+    manager._memory_profile_mode = "sampled_profile"
+    manager._desired_running = True
+    manager._stopping = False
+    manager._persist_runtime_state = lambda: None
+    manager._memory_active_session_id = "mem-001"
+    manager._memory_requested_profile_mode = "sampled_profile"
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "runtime_instance_id": "rt-a-a-1",
+            "started_at": 10.0,
+            "requested_at": 9.0,
+        }
+    )
+
+    calls = {"sleep": 0}
+
+    async def _sleep(_: float) -> None:
+        calls["sleep"] += 1
+        if calls["sleep"] > 1:
+            raise RuntimeError("stop-monitor")
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _sleep)
+
+    try:
+        asyncio.run(manager.monitor_forever())
+    except RuntimeError as exc:
+        assert str(exc) == "stop-monitor"
+
+    session = manager.memory_session("mem-001")
+    assert session is not None
+    assert session["session"]["session_state"] == "failed"
+    assert session["session"]["stop_reason"] == "runtime_exited_during_profile_mode"
+    assert session["operations"][-1]["details"]["action"] == "profile_failed"
+
+
+def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "idle", "phase": ""})
+    monkeypatch.setattr(supervisor, "_read_update_attempt", lambda: None)
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-old",
+            "profile_mode": "trace_profile",
+            "session_state": "failed",
+            "trigger_source": "operator",
+            "trigger_reason": "operator.request",
+            "trigger_threshold": "growth>=1",
+            "requested_at": 10.0,
+        }
+    )
+
+    retried = manager.retry_memory_profile("mem-old", reason="operator.retry")
+
+    assert retried["retry_of_session_id"] == "mem-old"
+    assert retried["session"]["profile_mode"] == "trace_profile"
+    assert retried["session"]["session_state"] == "requested"
+    assert retried["session"]["retry_of_session_id"] == "mem-old"
+    assert retried["session"]["retry_root_session_id"] == "mem-old"
+    assert retried["session"]["retry_depth"] == 1
+    assert retried["session"]["operation_window"]["retry_of_session_id"] == "mem-old"
+    details = manager.memory_session(retried["session"]["session_id"])
+    assert details is not None
+    assert details["operations"][-1]["details"]["action"] == "profile_retry"
 
 
 def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatch) -> None:
@@ -104,27 +521,106 @@ def test_supervisor_memory_endpoints_expose_read_only_phase1_surfaces(monkeypatc
         def memory_status(self) -> dict:
             return {"contract_version": "1", "current_profile_mode": "normal"}
 
+        def memory_telemetry(self, *, limit: int = 100) -> dict:
+            return {"ok": True, "items": [{"sampled_at": 1.0}], "total": 1, "limit": limit}
+
+        def memory_incidents(self, *, limit: int = 50) -> dict:
+            return {"ok": True, "incidents": [{"session_id": "mem-001", "session_state": "failed"}], "total": 1}
+
         def memory_sessions(self) -> dict:
             return {"ok": True, "sessions": [{"session_id": "mem-001"}], "total": 1}
 
         def memory_session(self, session_id: str) -> dict | None:
             if session_id == "mem-001":
-                return {"ok": True, "session": {"session_id": session_id}}
+                return {"ok": True, "session": {"session_id": session_id, "artifact_refs": [{"artifact_id": "art-1"}]}}
             return None
+
+        def memory_session_artifact(self, session_id: str, artifact_id: str) -> dict | None:
+            if session_id == "mem-001" and artifact_id == "art-1":
+                return {"ok": True, "artifact": {"artifact_id": "art-1"}, "exists": True, "content": {"ok": True}}
+            return None
+
+        def start_memory_profile(self, *, profile_mode: str, reason: str, trigger_source: str = "operator") -> dict:
+            return {
+                "ok": True,
+                "control_mode": "phase2_supervisor_restart",
+                "session": {"session_id": "mem-001", "profile_mode": profile_mode, "trigger_source": trigger_source},
+            }
+
+        def stop_memory_profile(self, session_id: str, *, reason: str) -> dict:
+            return {"ok": True, "session": {"session_id": session_id, "session_state": "cancelled"}}
+
+        def retry_memory_profile(self, session_id: str, *, reason: str) -> dict:
+            return {
+                "ok": True,
+                "retry_of_session_id": session_id,
+                "control_mode": "phase2_supervisor_restart",
+                "session": {"session_id": "mem-002", "session_state": "requested", "profile_mode": "trace_profile"},
+            }
+
+        def publish_memory_profile(self, session_id: str, *, reason: str) -> dict:
+            return {
+                "ok": True,
+                "session": {
+                    "session_id": session_id,
+                    "publish_state": "published",
+                    "published_ref": "root-msg-1",
+                },
+            }
 
     monkeypatch.setattr(supervisor, "_manager", lambda: _Manager())
     client = TestClient(supervisor.app)
     headers = {"X-AdaOS-Token": "dev-local-token"}
 
     status_response = client.get("/api/supervisor/memory/status", headers=headers)
+    telemetry_response = client.get("/api/supervisor/memory/telemetry?limit=5", headers=headers)
+    incidents_response = client.get("/api/supervisor/memory/incidents?limit=5", headers=headers)
     sessions_response = client.get("/api/supervisor/memory/sessions", headers=headers)
     session_response = client.get("/api/supervisor/memory/sessions/mem-001", headers=headers)
+    artifact_response = client.get("/api/supervisor/memory/sessions/mem-001/artifacts/art-1", headers=headers)
     missing_response = client.get("/api/supervisor/memory/sessions/missing", headers=headers)
+    missing_artifact_response = client.get("/api/supervisor/memory/sessions/mem-001/artifacts/missing", headers=headers)
+    start_response = client.post(
+        "/api/supervisor/memory/profile/start",
+        headers=headers,
+        json={"profile_mode": "sampled_profile", "reason": "operator.request"},
+    )
+    stop_response = client.post(
+        "/api/supervisor/memory/profile/mem-001/stop",
+        headers=headers,
+        json={"reason": "operator.stop"},
+    )
+    retry_response = client.post(
+        "/api/supervisor/memory/profile/mem-001/retry",
+        headers=headers,
+        json={"reason": "operator.retry"},
+    )
+    publish_response = client.post(
+        "/api/supervisor/memory/publish",
+        headers=headers,
+        json={"session_id": "mem-001", "reason": "operator.publish"},
+    )
 
     assert status_response.status_code == 200
     assert status_response.json()["current_profile_mode"] == "normal"
+    assert telemetry_response.status_code == 200
+    assert telemetry_response.json()["total"] == 1
+    assert incidents_response.status_code == 200
+    assert incidents_response.json()["incidents"][0]["session_state"] == "failed"
     assert sessions_response.status_code == 200
     assert sessions_response.json()["total"] == 1
     assert session_response.status_code == 200
     assert session_response.json()["session"]["session_id"] == "mem-001"
+    assert artifact_response.status_code == 200
+    assert artifact_response.json()["artifact"]["artifact_id"] == "art-1"
     assert missing_response.status_code == 404
+    assert missing_artifact_response.status_code == 404
+    assert start_response.status_code == 200
+    assert start_response.json()["session"]["profile_mode"] == "sampled_profile"
+    assert stop_response.status_code == 200
+    assert stop_response.json()["session"]["session_state"] == "cancelled"
+    assert retry_response.status_code == 200
+    assert retry_response.json()["retry_of_session_id"] == "mem-001"
+    assert retry_response.json()["session"]["session_id"] == "mem-002"
+    assert publish_response.status_code == 200
+    assert publish_response.json()["session"]["publish_state"] == "published"

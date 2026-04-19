@@ -279,19 +279,43 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
         return {"ok": True, "closed_tunnels": 1, "notify_browser": notify_browser, "reason": reason}
 
     room = _FakeRoom()
-    compaction_reasons: list[str] = []
+    backup_jobs_deleted: list[str] = []
 
-    async def _fake_request_runtime_compaction(*, reason: str = "manual") -> bool:
-        compaction_reasons.append(reason)
-        return True
+    async def _fake_delete(name: str) -> None:
+        backup_jobs_deleted.append(name)
 
-    room.ystore.request_runtime_compaction = _fake_request_runtime_compaction  # type: ignore[attr-defined]
+    async def _fake_evict_ystore_for_webspace(
+        webspace_id: str,
+        *,
+        store=None,
+        persist_snapshot: bool = True,
+        compact_runtime: bool = True,
+        backup_kind: str = "evict",
+        delete_snapshot: bool = False,
+    ) -> dict[str, object]:
+        assert webspace_id == "gateway-room-reset"
+        assert store is room.ystore
+        assert persist_snapshot is True
+        assert compact_runtime is True
+        assert delete_snapshot is False
+        return {
+            "ok": True,
+            "webspace_id": webspace_id,
+            "ystore_found": True,
+            "persisted": True,
+            "backup_skipped": False,
+            "released_update_entries": 3,
+            "released_update_bytes": 128,
+        }
+
     gateway_module.y_server.rooms["gateway-room-reset"] = room
     gateway_module._room_locks["gateway-room-reset"] = asyncio.Lock()
 
     monkeypatch.setattr(gateway_module, "close_webspace_yws_connections", _fake_close)
     monkeypatch.setattr(gateway_module, "close_webspace_webrtc_peers", _fake_close_webrtc)
     monkeypatch.setattr(gateway_module, "reset_hub_route_runtime", _fake_route_reset)
+    monkeypatch.setattr(gateway_module, "evict_ystore_for_webspace", _fake_evict_ystore_for_webspace)
+    monkeypatch.setattr(gateway_module, "get_scheduler", lambda: SimpleNamespace(delete=_fake_delete))
     monkeypatch.setattr(gateway_module.gc, "collect", lambda: 7)
 
     result = asyncio.run(gateway_module.reset_live_webspace_room("gateway-room-reset"))
@@ -304,12 +328,45 @@ def test_reset_live_webspace_room_releases_refs_and_requests_compaction(monkeypa
     assert result["room_dropped"] is True
     assert result["room_stopped"] is True
     assert result["ystore_stopped"] is True
+    assert result["ystore_evicted"] is True
+    assert result["ystore_snapshot_persisted"] is True
+    assert result["scheduler_job_deleted"] is True
     assert result["closed_webrtc_peers"] == 2
     assert result["route_reset"]["closed_tunnels"] == 1
     assert result["runtime_compaction_requested"] is True
     assert result["room_refs_released"] is True
     assert result["gc_collected"] == 7
-    assert compaction_reasons == ["room_reset"]
+    assert backup_jobs_deleted == ["ystores.backup.gateway-room-reset"]
+
+
+def test_yws_tracking_cancels_pending_idle_room_reset(monkeypatch) -> None:
+    gateway_module.y_server.rooms["idle-room"] = object()
+    gateway_module._IDLE_ROOM_RESET_TASKS.clear()
+
+    reset_calls: list[tuple[str, str]] = []
+
+    async def _fake_reset(webspace_id: str, *, close_reason: str = "webspace_reload") -> dict[str, object]:
+        reset_calls.append((webspace_id, close_reason))
+        return {"ok": True}
+
+    monkeypatch.setattr(gateway_module, "_IDLE_ROOM_EVICT_SEC", 0.05)
+    monkeypatch.setattr(gateway_module, "reset_live_webspace_room", _fake_reset)
+    monkeypatch.setattr(gateway_module, "_active_webrtc_peer_total_for_webspace", lambda _webspace_id: 0)
+
+    async def _exercise() -> None:
+        websocket = SimpleNamespace(query_params={"dev": "dev-1"})
+        gateway_module._track_yws_connection("idle-room", websocket, device_id="dev-1")
+        gateway_module._untrack_yws_connection("idle-room", websocket)
+        gateway_module._track_yws_connection("idle-room", websocket, device_id="dev-1")
+        await asyncio.sleep(0.08)
+
+    asyncio.run(_exercise())
+
+    assert reset_calls == []
+    gateway_module._ACTIVE_YWS_CONNECTIONS.clear()
+    gateway_module._ACTIVE_YWS_CLIENTS.clear()
+    gateway_module._IDLE_ROOM_RESET_TASKS.clear()
+    gateway_module.y_server.rooms.clear()
 
 
 def test_gateway_transport_snapshot_reports_room_diagnostics() -> None:

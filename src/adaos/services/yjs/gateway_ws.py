@@ -32,7 +32,7 @@ except ImportError as exc:  # pragma: no cover - import guard for dev envs
 from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
-from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -77,6 +77,18 @@ _COMMAND_TRACE_STATS: dict[str, int] = {
     "reset_duplicate_total": 0,
 }
 _COMMAND_TRACE_SEQ = 0
+_IDLE_ROOM_RESET_TASKS: dict[str, asyncio.Task[None]] = {}
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        value = float(default)
+    return max(float(minimum), value)
+
+
+_IDLE_ROOM_EVICT_SEC = _env_float("ADAOS_YJS_IDLE_ROOM_EVICT_SEC", 60.0, minimum=0.0)
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -494,12 +506,6 @@ async def _release_room_refs(webspace_id: str, room: Any) -> bool:
             forget_room_observers(webspace_id, ydoc)
         except Exception:
             pass
-        try:
-            from adaos.services.weather.observer import forget_weather_room_observer
-
-            forget_weather_room_observer(webspace_id, id(ydoc))
-        except Exception:
-            pass
     for attr in ("_update_send_stream", "_update_receive_stream"):
         try:
             stream = getattr(room, attr, None)
@@ -539,6 +545,100 @@ async def _release_room_refs(webspace_id: str, room: Any) -> bool:
         except Exception:
             continue
     return released
+
+
+async def _delete_ystore_backup_job(webspace_id: str) -> bool:
+    try:
+        sched = get_scheduler()
+        await sched.delete(f"ystores.backup.{str(webspace_id or '').strip() or 'default'}")
+        return True
+    except Exception:
+        _ylog.debug("failed to delete YStore backup job webspace=%s", webspace_id, exc_info=True)
+        return False
+
+
+def _cancel_idle_room_reset(webspace_id: str) -> bool:
+    key = str(webspace_id or "").strip() or "default"
+    task = _IDLE_ROOM_RESET_TASKS.pop(key, None)
+    if task is None:
+        return False
+    current = asyncio.current_task()
+    if task is not current and not task.done():
+        task.cancel()
+    return True
+
+
+def _active_webrtc_peer_total_for_webspace(webspace_id: str) -> int:
+    key = str(webspace_id or "").strip() or "default"
+    try:
+        from adaos.services.webrtc.peer import webrtc_peer_snapshot
+
+        snapshot = webrtc_peer_snapshot()
+    except Exception:
+        return 0
+    peers = snapshot.get("peers") if isinstance(snapshot, dict) else None
+    if not isinstance(peers, list):
+        return 0
+    return sum(
+        1
+        for peer in peers
+        if isinstance(peer, dict)
+        and str(peer.get("webspace_id") or "").strip() == key
+    )
+
+
+def _active_yws_connection_total_for_webspace(webspace_id: str) -> int:
+    key = str(webspace_id or "").strip() or "default"
+    with _ACTIVE_YWS_LOCK:
+        return len(_ACTIVE_YWS_CONNECTIONS.get(key) or [])
+
+
+def _webspace_has_live_transports(webspace_id: str) -> bool:
+    key = str(webspace_id or "").strip() or "default"
+    if _active_yws_connection_total_for_webspace(key) > 0:
+        return True
+    return _active_webrtc_peer_total_for_webspace(key) > 0
+
+
+def _schedule_idle_room_reset(webspace_id: str, *, reason: str = "idle_room_eviction") -> bool:
+    key = str(webspace_id or "").strip() or "default"
+    if _IDLE_ROOM_EVICT_SEC <= 0.0:
+        return False
+    if key not in getattr(y_server, "rooms", {}):
+        return False
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _cancel_idle_room_reset(key)
+
+    async def _runner() -> None:
+        try:
+            await asyncio.sleep(_IDLE_ROOM_EVICT_SEC)
+            if _webspace_has_live_transports(key):
+                if _active_yws_connection_total_for_webspace(key) <= 0:
+                    _schedule_idle_room_reset(key, reason=reason)
+                return
+            await reset_live_webspace_room(key, close_reason=reason)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _ylog.warning(
+                "idle room eviction failed webspace=%s reason=%s",
+                key,
+                reason,
+                exc_info=True,
+            )
+        finally:
+            current = asyncio.current_task()
+            if _IDLE_ROOM_RESET_TASKS.get(key) is current:
+                _IDLE_ROOM_RESET_TASKS.pop(key, None)
+
+    _IDLE_ROOM_RESET_TASKS[key] = asyncio.create_task(
+        _runner(),
+        name=f"adaos-yjs-idle-room-reset-{key}",
+    )
+    return True
 
 
 async def _accept_websocket(websocket: WebSocket, *, channel: str) -> bool:
@@ -775,6 +875,7 @@ def _forward_ws_bus_event(ev: DomainEvent) -> None:
 def _track_yws_connection(webspace_id: str, websocket: WebSocket, *, device_id: str | None = None) -> None:
     key = str(webspace_id or "").strip() or "default"
     device_key = str(device_id or "").strip() or "unknown"
+    _cancel_idle_room_reset(key)
     with _ACTIVE_YWS_LOCK:
         items = _ACTIVE_YWS_CONNECTIONS.setdefault(key, [])
         if websocket not in items:
@@ -837,6 +938,7 @@ def _yws_storm_snapshot(now: float) -> dict[str, Any]:
 
 def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
     key = str(webspace_id or "").strip() or "default"
+    remaining_connections = 0
     with _ACTIVE_YWS_LOCK:
         items = _ACTIVE_YWS_CONNECTIONS.get(key)
         if not items:
@@ -846,6 +948,7 @@ def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
                 items.remove(websocket)
             except ValueError:
                 pass
+            remaining_connections = len(items)
         if not items:
             _ACTIVE_YWS_CONNECTIONS.pop(key, None)
         params = getattr(websocket, "query_params", {}) or {}
@@ -859,6 +962,8 @@ def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
                 clients.pop(device_key, None)
             if not clients:
                 _ACTIVE_YWS_CLIENTS.pop(key, None)
+    if remaining_connections <= 0:
+        _schedule_idle_room_reset(key)
 
 
 def active_browser_session_snapshot(*, now_ts: float | None = None) -> dict[str, Any]:
@@ -975,6 +1080,7 @@ async def reset_live_webspace_room(
     close_reason: str = "webspace_reload",
 ) -> dict[str, Any]:
     key = str(webspace_id or "").strip() or "default"
+    _cancel_idle_room_reset(key)
     route_reset = await reset_hub_route_runtime(
         reason=f"yjs:{close_reason}",
         notify_browser=True,
@@ -1005,9 +1111,14 @@ async def reset_live_webspace_room(
     _room_locks.pop(key, None)
     room_stopped = False
     ystore_stopped = False
+    ystore_evicted = False
+    ystore_snapshot_persisted = False
+    scheduler_job_deleted = False
     runtime_compaction_requested = False
     room_refs_released = False
     gc_collected = 0
+
+    scheduler_job_deleted = await _delete_ystore_backup_job(key)
 
     if room is not None:
         stop_room = getattr(room, "stop", None)
@@ -1026,19 +1137,65 @@ async def reset_live_webspace_room(
                 ystore_stopped = True
             except Exception:
                 ystore_stopped = False
-            request_compaction = getattr(ystore, "request_runtime_compaction", None)
-            if callable(request_compaction):
-                try:
-                    result = request_compaction(reason="room_reset")
-                    runtime_compaction_requested = bool(await result) if inspect.isawaitable(result) else bool(result)
-                except Exception:
-                    runtime_compaction_requested = False
+            try:
+                eviction = await evict_ystore_for_webspace(
+                    key,
+                    store=ystore,
+                    persist_snapshot=True,
+                    compact_runtime=True,
+                    backup_kind=f"room_reset:{close_reason}",
+                )
+            except Exception:
+                eviction = {
+                    "ok": False,
+                    "persisted": False,
+                    "backup_skipped": False,
+                    "ystore_found": False,
+                }
+                _ylog.warning(
+                    "failed to evict YStore for webspace=%s close_reason=%s",
+                    key,
+                    close_reason,
+                    exc_info=True,
+                )
+            ystore_evicted = bool(eviction.get("ystore_found"))
+            ystore_snapshot_persisted = bool(eviction.get("persisted"))
+            runtime_compaction_requested = bool(
+                ystore_snapshot_persisted or eviction.get("backup_skipped")
+            )
         room_refs_released = await _release_room_refs(key, room)
         if room_refs_released:
             try:
                 gc_collected = int(gc.collect() or 0)
             except Exception:
                 gc_collected = 0
+    else:
+        try:
+            eviction = await evict_ystore_for_webspace(
+                key,
+                persist_snapshot=True,
+                compact_runtime=True,
+                backup_kind=f"room_reset:{close_reason}",
+            )
+        except Exception:
+            eviction = {
+                "ok": False,
+                "persisted": False,
+                "backup_skipped": False,
+                "ystore_found": False,
+            }
+            _ylog.warning(
+                "failed to evict detached YStore for webspace=%s close_reason=%s",
+                key,
+                close_reason,
+                exc_info=True,
+            )
+        ystore_evicted = bool(eviction.get("ystore_found"))
+        ystore_snapshot_persisted = bool(eviction.get("persisted"))
+        ystore_stopped = ystore_evicted
+        runtime_compaction_requested = bool(
+            ystore_snapshot_persisted or eviction.get("backup_skipped")
+        )
 
     return {
         "webspace_id": key,
@@ -1048,6 +1205,9 @@ async def reset_live_webspace_room(
         "room_dropped": room is not None,
         "room_stopped": room_stopped,
         "ystore_stopped": ystore_stopped,
+        "ystore_evicted": ystore_evicted,
+        "ystore_snapshot_persisted": ystore_snapshot_persisted,
+        "scheduler_job_deleted": scheduler_job_deleted,
         "runtime_compaction_requested": runtime_compaction_requested,
         "room_refs_released": room_refs_released,
         "gc_collected": gc_collected,
@@ -1057,7 +1217,8 @@ async def reset_live_webspace_room(
 def _y_server_runtime_snapshot() -> dict[str, Any]:
     task = _y_server_task
     requested = bool(_y_server_started)
-    started_event = bool(getattr(y_server, "started", None) and y_server.started.is_set())
+    started_handle = getattr(y_server, "started", None)
+    started_event = bool(getattr(started_handle, "is_set", lambda: False)())
     task_running = bool(task is not None and not task.done())
     task_done = bool(task is not None and task.done())
     task_cancelled = bool(task is not None and task.cancelled())
@@ -1221,6 +1382,8 @@ class WorkspaceWebsocketServer(WebsocketServer):
         created_room = False
         seed_result: dict[str, Any] | None = None
 
+        _cancel_idle_room_reset(webspace_id)
+
         def _space_mode(ws_id: str) -> str:
             try:
                 row = get_workspace(ws_id)
@@ -1331,6 +1494,13 @@ async def stop_y_server() -> None:
     global _y_server_started, _y_server_task
     if not _y_server_started:
         return
+    for webspace_id in list(_IDLE_ROOM_RESET_TASKS.keys()):
+        _cancel_idle_room_reset(webspace_id)
+    for webspace_id in list(getattr(y_server, "rooms", {}).keys()):
+        try:
+            await reset_live_webspace_room(str(webspace_id), close_reason="y_server_shutdown")
+        except Exception:
+            _ylog.debug("failed to reset room during y_server shutdown webspace=%s", webspace_id, exc_info=True)
     try:
         y_server.stop()
     except Exception:

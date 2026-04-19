@@ -1289,6 +1289,25 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
         calls.append(str(kwargs.get("path") or ""))
         if kwargs.get("path") == "/api/node/reliability":
             return None, {"error": "connection_error", "detail": "connection refused"}
+        if kwargs.get("path") == "/api/supervisor/public/memory-status":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "memory": {
+                        "current_profile_mode": "normal",
+                        "profile_control_mode": "phase2_supervisor_restart",
+                        "suspicion_state": "idle",
+                        "sessions_total": 1,
+                        "last_session": {
+                            "session_id": "mem-001",
+                            "session_state": "planned",
+                            "profile_mode": "sampled_profile",
+                            "publish_state": "local_only",
+                        },
+                    },
+                },
+            )
         return (
             200,
             {
@@ -1310,5 +1329,7 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
     assert result.exit_code == 0
     assert "/api/node/reliability" in calls
     assert "/api/supervisor/public/update-status" in calls
+    assert "/api/supervisor/public/memory-status" in calls
     assert "runtime_restarting_under_supervisor: yes" in result.output
     assert "supervisor.attempt: awaiting_root_restart" in result.output
+    assert "supervisor.memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output

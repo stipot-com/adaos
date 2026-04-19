@@ -71,6 +71,18 @@ def _supervisor_transition_probe(*, control: str, token: str) -> tuple[int | Non
     )
 
 
+def _supervisor_memory_probe(*, control: str, token: str) -> tuple[int | None, Any]:
+    base = _supervisor_public_base_url(control)
+    if not base:
+        return None, {"error": "connection_error", "detail": "unable to resolve supervisor base url"}
+    return _control_get_json(
+        control=base,
+        path="/api/supervisor/public/memory-status",
+        token=token,
+        timeout=2.5,
+    )
+
+
 def _is_local_control_url(control: str | None) -> bool:
     raw = str(control or "").strip()
     if not raw:
@@ -206,6 +218,31 @@ def _print_supervisor_transition_summary(payload: dict[str, Any]) -> None:
         typer.echo(f"supervisor.active_slot: {runtime.get('active_slot')}")
     if status.get("message"):
         typer.echo(f"supervisor.message: {status.get('message')}")
+    memory = payload.get("memory") if isinstance(payload.get("memory"), dict) else {}
+    if memory:
+        summary = (
+            "supervisor.memory: "
+            f"mode={memory.get('current_profile_mode') or 'normal'} "
+            f"control={memory.get('profile_control_mode') or '-'} "
+            f"suspicion={memory.get('suspicion_state') or 'idle'} "
+            f"sessions={memory.get('sessions_total') or 0}"
+        )
+        if memory.get("requested_profile_mode"):
+            summary += f" requested={memory.get('requested_profile_mode')}"
+        if memory.get("suspicion_reason"):
+            summary += f" reason={memory.get('suspicion_reason')}"
+        if memory.get("rss_growth_bytes") is not None:
+            summary += f" growth={memory.get('rss_growth_bytes')}"
+        typer.echo(summary)
+        last_session = memory.get("last_session") if isinstance(memory.get("last_session"), dict) else {}
+        if last_session:
+            typer.echo(
+                "supervisor.memory.last_session: "
+                f"id={last_session.get('session_id') or '-'} "
+                f"state={last_session.get('session_state') or '-'} "
+                f"mode={last_session.get('profile_mode') or '-'} "
+                f"publish={last_session.get('publish_state') or '-'}"
+            )
 
 
 def _control_get_json(*, control: str, path: str, token: str, timeout: float = 2.5) -> tuple[int | None, Any]:
@@ -1982,6 +2019,11 @@ def node_reliability(
     if status_code is None:
         supervisor_status, supervisor_payload = _supervisor_transition_probe(control=control0, token=token)
         if supervisor_status == 200 and isinstance(supervisor_payload, dict) and _is_supervisor_controlled_transition(supervisor_payload):
+            memory_status, memory_payload = _supervisor_memory_probe(control=control0, token=token)
+            if memory_status == 200 and isinstance(memory_payload, dict):
+                supervisor_payload["memory"] = (
+                    memory_payload.get("memory") if isinstance(memory_payload.get("memory"), dict) else {}
+                )
             fallback_payload = {
                 "ok": True,
                 "fallback": "supervisor_public_update_status",
