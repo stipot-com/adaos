@@ -547,6 +547,8 @@ def prepare_codex(
     root_url: str | None = typer.Option(None, "--root-url", help="Explicit Root base URL."),
     subnet_id: str | None = typer.Option(None, "--subnet-id", help="Explicit subnet scope for the generated profile."),
     zone: str | None = typer.Option(None, "--zone", help="Explicit zone for the generated profile."),
+    capability_profile: str = typer.Option("ProfileOpsRead", "--capability-profile", help="Named capability profile for MCP session lease bootstrap."),
+    bootstrap_mode: str = typer.Option("mcp-session", "--bootstrap-mode", help="Bootstrap mode: mcp-session or access-token."),
     ttl_seconds: int = typer.Option(28_800, "--ttl-seconds", help="Issued MCP token TTL in seconds."),
     owner_token: str | None = typer.Option(None, "--owner-token", help="Owner token for direct root auth when device login is not configured."),
     ensure_target: bool = typer.Option(True, "--ensure-target/--no-ensure-target", help="Create a minimal test-hub target descriptor if it is missing."),
@@ -596,13 +598,27 @@ def prepare_codex(
         if token and token not in requested_capabilities:
             requested_capabilities.append(token)
 
-    issued = client.issue_target_access_token(
-        effective_target_id,
-        audience="codex-vscode",
-        ttl_seconds=ttl_seconds,
-        capabilities=requested_capabilities,
-        note="Codex VS Code MCP bridge",
-    )
+    bootstrap_token = str(bootstrap_mode or "").strip().lower().replace("_", "-")
+    if bootstrap_token not in {"mcp-session", "access-token"}:
+        raise RootServiceError("bootstrap_mode must be either 'mcp-session' or 'access-token'.")
+
+    if bootstrap_token == "mcp-session":
+        issued = client.issue_target_mcp_session(
+            effective_target_id,
+            audience="codex-vscode",
+            ttl_seconds=ttl_seconds,
+            capability_profile=capability_profile,
+            capabilities=requested_capabilities,
+            note="Codex VS Code MCP bridge",
+        )
+    else:
+        issued = client.issue_target_access_token(
+            effective_target_id,
+            audience="codex-vscode",
+            ttl_seconds=ttl_seconds,
+            capabilities=requested_capabilities,
+            note="Codex VS Code MCP bridge",
+        )
     response = dict(issued.get("response") or {})
     result = dict(response.get("result") or {})
     access_token = str(result.get("access_token") or "").strip()
@@ -614,8 +630,11 @@ def prepare_codex(
     stored_profile = CodexBridgeProfile(
         root_url=str(root_url or getattr(cfg.root_settings, "base_url", None) or get_ctx().settings.api_base or "").strip(),
         target_id=effective_target_id,
-        subnet_id=effective_subnet_id,
-        zone=effective_zone,
+        subnet_id=None if bootstrap_token == "mcp-session" else effective_subnet_id,
+        zone=None if bootstrap_token == "mcp-session" else effective_zone,
+        bootstrap_mode="mcp_session_lease" if bootstrap_token == "mcp-session" else "access_token",
+        session_id=result.get("session_id") if bootstrap_token == "mcp-session" else None,
+        capability_profile=capability_profile if bootstrap_token == "mcp-session" else None,
         server_name=name,
         audience="codex-vscode",
         generated_at=result.get("issued_at") if isinstance(result.get("issued_at"), str) else None,
@@ -645,10 +664,13 @@ def prepare_codex(
         "ok": True,
         "auth_mode": auth_mode,
         "server_name": name,
+        "bootstrap_mode": bootstrap_token,
         "root_url": stored_profile.root_url,
-        "subnet_id": effective_subnet_id,
-        "zone": effective_zone,
+        "subnet_id": stored_profile.subnet_id,
+        "zone": stored_profile.zone,
         "target_id": effective_target_id,
+        "session_id": result.get("session_id"),
+        "capability_profile": stored_profile.capability_profile,
         "profile_file": str(resolved_profile_file),
         "token_file": str(resolved_token_file),
         "token_id": result.get("token_id"),
@@ -661,6 +683,7 @@ def prepare_codex(
         return
 
     typer.secho("Codex test-hub MCP profile prepared.", fg=typer.colors.GREEN)
+    typer.echo(f"Bootstrap mode: {payload['bootstrap_mode']}")
     typer.echo(f"Root URL: {payload['root_url']}")
     typer.echo(f"Target ID: {payload['target_id']}")
     if payload["subnet_id"]:
@@ -696,6 +719,9 @@ def serve_codex(
                 target_id=target_id or (fallback.target_id if fallback else None),
                 subnet_id=subnet_id or (fallback.subnet_id if fallback else None),
                 zone=zone or (fallback.zone if fallback else None),
+                bootstrap_mode=(fallback.bootstrap_mode if fallback else "mcp_session_lease"),
+                session_id=(fallback.session_id if fallback else None),
+                capability_profile=(fallback.capability_profile if fallback else None),
                 access_token=access_token or (fallback.access_token if fallback else None),
                 access_token_file=access_token_file or (fallback.access_token_file if fallback else None),
                 server_name=(fallback.server_name if fallback else "adaos-test-hub"),

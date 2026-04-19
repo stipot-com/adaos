@@ -52,6 +52,9 @@ class CodexBridgeProfile:
     target_id: str | None = None
     subnet_id: str | None = None
     zone: str | None = None
+    bootstrap_mode: str = "mcp_session_lease"
+    session_id: str | None = None
+    capability_profile: str | None = None
     access_token: str | None = None
     access_token_file: str | None = None
     server_name: str = "adaos-test-hub"
@@ -93,6 +96,9 @@ class CodexBridgeProfile:
             "target_id": self.target_id,
             "subnet_id": self.subnet_id,
             "zone": self.zone,
+            "bootstrap_mode": self.bootstrap_mode,
+            "session_id": self.session_id,
+            "capability_profile": self.capability_profile,
             "access_token_file": self.access_token_file,
             "audience": self.audience,
             "generated_at": self.generated_at or _iso_now(),
@@ -129,6 +135,9 @@ def load_codex_bridge_profile(
         target_id=_normalize_text(payload.get("target_id")) or _normalize_text(environment.get("ADAOS_MCP_TARGET_ID")),
         subnet_id=_normalize_text(payload.get("subnet_id")) or _normalize_text(environment.get("ADAOS_MCP_SUBNET_ID")),
         zone=_normalize_text(payload.get("zone")) or _normalize_text(environment.get("ADAOS_MCP_ZONE")),
+        bootstrap_mode=_normalize_text(payload.get("bootstrap_mode")) or "mcp_session_lease",
+        session_id=_normalize_text(payload.get("session_id")) or _normalize_text(environment.get("ADAOS_MCP_SESSION_ID")),
+        capability_profile=_normalize_text(payload.get("capability_profile")) or _normalize_text(environment.get("ADAOS_MCP_CAPABILITY_PROFILE")),
         access_token=_normalize_text(payload.get("access_token")) or _normalize_text(environment.get("ADAOS_MCP_ACCESS_TOKEN")),
         access_token_file=_normalize_text(payload.get("access_token_file")) or _normalize_text(environment.get("ADAOS_MCP_ACCESS_TOKEN_FILE")),
         server_name=_normalize_text(payload.get("server_name")) or "adaos-test-hub",
@@ -155,6 +164,9 @@ def write_codex_bridge_profile(
         target_id=profile.target_id,
         subnet_id=profile.subnet_id,
         zone=profile.zone,
+        bootstrap_mode=profile.bootstrap_mode,
+        session_id=profile.session_id,
+        capability_profile=profile.capability_profile,
         access_token_file=str(token_file),
         server_name=profile.server_name,
         audience=profile.audience,
@@ -215,9 +227,10 @@ class CodexRootMcpBridge:
 
     def instructions(self) -> str:
         target = self.profile.target_id or "the configured managed target"
+        bootstrap = "MCP Session Lease" if self.profile.bootstrap_mode == "mcp_session_lease" else "bounded access token"
         return (
             "This MCP server is a local stdio bridge from Codex to AdaOS Root MCP. "
-            f"It is currently bound to {target}. Prefer get_status, get_runtime_summary, "
+            f"It is currently bound to {target} using {bootstrap}. Prefer get_status, get_runtime_summary, "
             "and get_operational_surface before requesting logs or healthchecks."
         )
 

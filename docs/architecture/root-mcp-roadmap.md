@@ -153,7 +153,7 @@ This milestone is the earliest point for repeated live trials with `Codex in VS 
 - [x] root can issue `MCP Session Lease` objects for a chosen target and capability profile
 - [x] bearer-only access resolves subnet/zone/target context from the lease itself
 - [x] session list/revoke UX is available for operators through `infra_access_skill`
-- [ ] Codex bootstrap no longer depends on explicit `subnet_id` transport parameters
+- [x] Codex bootstrap no longer depends on explicit `subnet_id` transport parameters
 
 This milestone is the first clean live-aprroval point for `Codex in VS Code` with target-scoped bearer access that matches MCP client limitations.
 

@@ -106,6 +106,7 @@ def test_codex_bridge_profile_roundtrip(tmp_path: Path) -> None:
     assert loaded.target_id == "hub:test-subnet"
     assert loaded.subnet_id == "test-subnet"
     assert loaded.zone == "lab-a"
+    assert loaded.bootstrap_mode == "mcp_session_lease"
     assert loaded.resolved_access_token() == "secret-token"
 
 
@@ -177,6 +178,31 @@ def test_prepare_codex_writes_profile_and_prints_command(tmp_path: Path, monkeyp
         def get_managed_target(self, target_id: str) -> dict:
             return {"target": {"target_id": target_id, "subnet_id": "test-subnet", "zone": "lab-a"}}
 
+        def issue_target_mcp_session(
+            self,
+            target_id: str,
+            *,
+            audience: str,
+            ttl_seconds: int | None = None,
+            capability_profile: str | None = None,
+            capabilities: list[str] | None = None,
+            note: str | None = None,
+            request_id: str | None = None,
+            trace_id: str | None = None,
+            dry_run: bool = False,
+        ) -> dict:
+            return {
+                "response": {
+                    "result": {
+                        "session_id": "sess-1",
+                        "access_token": "mcp-session-secret",
+                        "expires_at": "2026-04-08T12:00:00+00:00",
+                        "capability_profile": capability_profile,
+                        "capabilities": list(capabilities or []),
+                    }
+                }
+            }
+
         def issue_target_access_token(
             self,
             target_id: str,
@@ -212,11 +238,19 @@ def test_prepare_codex_writes_profile_and_prints_command(tmp_path: Path, monkeyp
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
+    assert payload["bootstrap_mode"] == "mcp-session"
     assert payload["target_id"] == "hub:test-subnet"
+    assert payload["session_id"] == "sess-1"
+    assert payload["capability_profile"] == "ProfileOpsRead"
+    assert payload["subnet_id"] is None
+    assert payload["zone"] is None
     assert Path(payload["profile_file"]).exists()
     assert Path(payload["token_file"]).exists()
-    assert Path(payload["token_file"]).read_text(encoding="utf-8").strip() == "mcp-secret"
+    assert Path(payload["token_file"]).read_text(encoding="utf-8").strip() == "mcp-session-secret"
     stored_profile = json.loads(Path(payload["profile_file"]).read_text(encoding="utf-8"))
     assert stored_profile["root_url"] == "https://root.example.test"
     assert stored_profile["target_id"] == "hub:test-subnet"
+    assert stored_profile["bootstrap_mode"] == "mcp_session_lease"
+    assert stored_profile["session_id"] == "sess-1"
+    assert stored_profile["capability_profile"] == "ProfileOpsRead"
     assert payload["codex_add_command"][:4] == ["codex", "mcp", "add", "adaos-test-hub"]
