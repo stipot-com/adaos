@@ -57,6 +57,58 @@ class RootMcpClient:
             params["level"] = level
         return dict(self._request("GET", f"/v1/root/mcp/descriptors/{descriptor_id}", params=params))
 
+    def get_adaos_dev_architecture_catalog(
+        self,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("adaos_dev.get_architecture_catalog", request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def get_adaos_dev_sdk_metadata(
+        self,
+        *,
+        level: str = "std",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "adaos_dev.get_sdk_metadata",
+            arguments={"level": str(level)},
+            request_id=request_id,
+            trace_id=trace_id,
+            dry_run=dry_run,
+        )
+
+    def get_adaos_dev_template_catalog(
+        self,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("adaos_dev.get_template_catalog", request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def get_adaos_dev_public_skill_registry(
+        self,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("adaos_dev.get_public_skill_registry", request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
+    def get_adaos_dev_public_scenario_registry(
+        self,
+        *,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self.call("adaos_dev.get_public_scenario_registry", request_id=request_id, trace_id=trace_id, dry_run=dry_run)
+
     def list_managed_targets(self, *, environment: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if environment:

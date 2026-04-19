@@ -25,6 +25,11 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.foundation()
     client.list_descriptors()
     client.get_descriptor("capability_registry")
+    client.get_adaos_dev_architecture_catalog()
+    client.get_adaos_dev_sdk_metadata(level="mini")
+    client.get_adaos_dev_template_catalog()
+    client.get_adaos_dev_public_skill_registry()
+    client.get_adaos_dev_public_scenario_registry()
     client.list_managed_targets(environment="test")
     client.upsert_managed_target({"target_id": "hub:test-zone"})
     client.get_managed_target("hub:test-zone")
@@ -54,42 +59,48 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[0][1] == "/v1/root/mcp/foundation"
     assert stub.calls[1][1] == "/v1/root/mcp/descriptors"
     assert stub.calls[2][1] == "/v1/root/mcp/descriptors/capability_registry"
-    assert stub.calls[3][2]["params"]["environment"] == "test"
-    assert stub.calls[4][1] == "/v1/root/mcp/targets"
-    assert stub.calls[4][2]["json"]["target_id"] == "hub:test-zone"
-    assert stub.calls[5][1] == "/v1/root/mcp/targets/hub:test-zone"
-    assert stub.calls[6][1] == "/v1/root/mcp/access-tokens"
-    assert stub.calls[6][2]["json"]["audience"] == "codex-vscode"
-    assert stub.calls[7][1] == "/v1/root/mcp/access-tokens"
-    assert stub.calls[7][2]["params"]["active_only"] is True
-    assert stub.calls[8][1] == "/v1/root/mcp/access-tokens/tok-1/revoke"
-    assert stub.calls[8][2]["json"]["reason"] == "rotate"
-    assert stub.calls[9][1] == "/v1/root/mcp/sessions"
+    assert stub.calls[3][2]["json"]["tool_id"] == "adaos_dev.get_architecture_catalog"
+    assert stub.calls[4][2]["json"]["tool_id"] == "adaos_dev.get_sdk_metadata"
+    assert stub.calls[4][2]["json"]["arguments"]["level"] == "mini"
+    assert stub.calls[5][2]["json"]["tool_id"] == "adaos_dev.get_template_catalog"
+    assert stub.calls[6][2]["json"]["tool_id"] == "adaos_dev.get_public_skill_registry"
+    assert stub.calls[7][2]["json"]["tool_id"] == "adaos_dev.get_public_scenario_registry"
+    assert stub.calls[8][2]["params"]["environment"] == "test"
+    assert stub.calls[9][1] == "/v1/root/mcp/targets"
     assert stub.calls[9][2]["json"]["target_id"] == "hub:test-zone"
-    assert stub.calls[10][1] == "/v1/root/mcp/sessions"
-    assert stub.calls[10][2]["params"]["capability_profile"] == "ProfileOpsRead"
-    assert stub.calls[11][1] == "/v1/root/mcp/sessions/sess-1"
-    assert stub.calls[12][1] == "/v1/root/mcp/sessions/sess-1/revoke"
-    assert stub.calls[12][2]["json"]["reason"] == "rotate-session"
-    assert stub.calls[13][2]["json"]["tool_id"] == "hub.get_operational_surface"
-    assert stub.calls[13][2]["json"]["arguments"]["target_id"] == "hub:test-zone"
-    assert stub.calls[14][2]["json"]["tool_id"] == "hub.get_activity_log"
-    assert stub.calls[14][2]["json"]["arguments"]["errors_only"] is True
-    assert stub.calls[15][2]["json"]["tool_id"] == "hub.get_capability_usage_summary"
-    assert stub.calls[15][2]["json"]["arguments"]["limit"] == 150
-    assert stub.calls[16][2]["json"]["tool_id"] == "hub.issue_access_token"
-    assert stub.calls[16][2]["json"]["arguments"]["note"] == "web-client"
-    assert stub.calls[17][2]["json"]["tool_id"] == "hub.list_access_tokens"
-    assert stub.calls[17][2]["json"]["arguments"]["active_only"] is True
-    assert stub.calls[18][2]["json"]["tool_id"] == "hub.revoke_access_token"
-    assert stub.calls[18][2]["json"]["arguments"]["token_id"] == "tok-2"
-    assert stub.calls[19][2]["json"]["tool_id"] == "hub.issue_mcp_session"
-    assert stub.calls[19][2]["json"]["arguments"]["capability_profile"] == "ProfileOpsRead"
-    assert stub.calls[20][2]["json"]["tool_id"] == "hub.list_mcp_sessions"
-    assert stub.calls[20][2]["json"]["arguments"]["active_only"] is True
-    assert stub.calls[21][2]["json"]["tool_id"] == "hub.revoke_mcp_session"
-    assert stub.calls[21][2]["json"]["arguments"]["session_id"] == "sess-2"
-    assert stub.calls[22][2]["json"]["tool_id"] == "hub.deploy_ref"
-    assert stub.calls[22][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
-    assert stub.calls[23][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
-    assert stub.calls[24][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[10][1] == "/v1/root/mcp/targets/hub:test-zone"
+    assert stub.calls[11][1] == "/v1/root/mcp/access-tokens"
+    assert stub.calls[11][2]["json"]["audience"] == "codex-vscode"
+    assert stub.calls[12][1] == "/v1/root/mcp/access-tokens"
+    assert stub.calls[12][2]["params"]["active_only"] is True
+    assert stub.calls[13][1] == "/v1/root/mcp/access-tokens/tok-1/revoke"
+    assert stub.calls[13][2]["json"]["reason"] == "rotate"
+    assert stub.calls[14][1] == "/v1/root/mcp/sessions"
+    assert stub.calls[14][2]["json"]["target_id"] == "hub:test-zone"
+    assert stub.calls[15][1] == "/v1/root/mcp/sessions"
+    assert stub.calls[15][2]["params"]["capability_profile"] == "ProfileOpsRead"
+    assert stub.calls[16][1] == "/v1/root/mcp/sessions/sess-1"
+    assert stub.calls[17][1] == "/v1/root/mcp/sessions/sess-1/revoke"
+    assert stub.calls[17][2]["json"]["reason"] == "rotate-session"
+    assert stub.calls[18][2]["json"]["tool_id"] == "hub.get_operational_surface"
+    assert stub.calls[18][2]["json"]["arguments"]["target_id"] == "hub:test-zone"
+    assert stub.calls[19][2]["json"]["tool_id"] == "hub.get_activity_log"
+    assert stub.calls[19][2]["json"]["arguments"]["errors_only"] is True
+    assert stub.calls[20][2]["json"]["tool_id"] == "hub.get_capability_usage_summary"
+    assert stub.calls[20][2]["json"]["arguments"]["limit"] == 150
+    assert stub.calls[21][2]["json"]["tool_id"] == "hub.issue_access_token"
+    assert stub.calls[21][2]["json"]["arguments"]["note"] == "web-client"
+    assert stub.calls[22][2]["json"]["tool_id"] == "hub.list_access_tokens"
+    assert stub.calls[22][2]["json"]["arguments"]["active_only"] is True
+    assert stub.calls[23][2]["json"]["tool_id"] == "hub.revoke_access_token"
+    assert stub.calls[23][2]["json"]["arguments"]["token_id"] == "tok-2"
+    assert stub.calls[24][2]["json"]["tool_id"] == "hub.issue_mcp_session"
+    assert stub.calls[24][2]["json"]["arguments"]["capability_profile"] == "ProfileOpsRead"
+    assert stub.calls[25][2]["json"]["tool_id"] == "hub.list_mcp_sessions"
+    assert stub.calls[25][2]["json"]["arguments"]["active_only"] is True
+    assert stub.calls[26][2]["json"]["tool_id"] == "hub.revoke_mcp_session"
+    assert stub.calls[26][2]["json"]["arguments"]["session_id"] == "sess-2"
+    assert stub.calls[27][2]["json"]["tool_id"] == "hub.deploy_ref"
+    assert stub.calls[27][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
+    assert stub.calls[28][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
+    assert stub.calls[29][2]["json"]["tool_id"] == "development.list_descriptor_sets"

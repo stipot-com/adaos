@@ -65,6 +65,62 @@ def _json_hash(payload: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _descriptor_cache_state_path() -> Path:
+    ctx = get_ctx()
+    path = Path(ctx.paths.state_dir()) / "root_mcp" / "descriptor_cache.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _read_descriptor_cache_state() -> dict[str, Any]:
+    return _load_json(_descriptor_cache_state_path())
+
+
+def _write_descriptor_cache_state(payload: dict[str, Any]) -> None:
+    _descriptor_cache_state_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def record_descriptor_refresh(
+    *,
+    reason: str,
+    descriptor_ids: list[str],
+    source_kind: str,
+    artifact_kind: str | None = None,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    now = _iso_now()
+    current = _read_descriptor_cache_state()
+    refresh_count = max(0, int(current.get("refresh_count") or 0)) + 1
+    payload = {
+        "enabled": True,
+        "cache_mode": "root_descriptor_cache",
+        "updated_at": now,
+        "refresh_count": refresh_count,
+        "last_refresh": {
+            "at": now,
+            "reason": str(reason or "").strip() or "manual",
+            "source_kind": str(source_kind or "").strip() or "unknown",
+            "artifact_kind": str(artifact_kind or "").strip() or None,
+            "artifact_name": str(artifact_name or "").strip() or None,
+            "descriptor_ids": [str(item).strip() for item in descriptor_ids if str(item).strip()],
+        },
+    }
+    _write_descriptor_cache_state(payload)
+    return payload
+
+
+def descriptor_cache_summary() -> dict[str, Any]:
+    current = _read_descriptor_cache_state()
+    return {
+        "enabled": True,
+        "cache_mode": "root_descriptor_cache",
+        "state_path": str(_descriptor_cache_state_path()),
+        "refresh_count": int(current.get("refresh_count") or 0),
+        "updated_at": current.get("updated_at"),
+        "last_refresh": dict(current.get("last_refresh") or {}) if isinstance(current.get("last_refresh"), dict) else None,
+    }
+
+
 def _package_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -177,6 +233,10 @@ def _descriptor_build_profile() -> dict[str, Any]:
         "available": True,
         "build_pipeline": "prototype",
         "generator": "adaos.sdk.core.exporter.export",
+        "lifecycle_hooks": {
+            "publish_refresh_enabled": True,
+            "cache_state": descriptor_cache_summary(),
+        },
         "input_sources": [
             "adaos.sdk.manage",
             "adaos.sdk.data",
@@ -503,6 +563,7 @@ def descriptor_registry_summary() -> dict[str, Any]:
             key: {"ttl_seconds": int(value.get("ttl_seconds") or 0), "stability": str(value.get("stability") or "experimental")}
             for key, value in sorted(DESCRIPTOR_CACHE_CLASS_DEFAULTS.items())
         },
+        "descriptor_cache": descriptor_cache_summary(),
         "capability_registry": capability_registry_summary(),
         "managed_target_registry": managed_target_registry_summary(),
         "control_report_registry": control_report_registry_summary(),
@@ -529,7 +590,9 @@ def get_descriptor_set(descriptor_id: str, *, level: str = "std") -> dict[str, A
 
 
 __all__ = [
+    "descriptor_cache_summary",
     "descriptor_registry_summary",
     "get_descriptor_set",
     "list_descriptor_sets",
+    "record_descriptor_refresh",
 ]

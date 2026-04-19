@@ -87,6 +87,13 @@ def _foundation_summary() -> dict[str, Any]:
                 "scope": "root-hosted contracts and managed-target descriptors before target-side infra_access_skill execution",
             },
         },
+        "planes": {
+            "adaos_dev": {
+                "enabled": True,
+                "mode": "typed_descriptive_plane",
+                "backing_store": "root_descriptor_cache",
+            },
+        },
         "entrypoints": {
             "foundation": "/v1/root/mcp/foundation",
             "contracts": "/v1/root/mcp/contracts",
@@ -217,6 +224,56 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="development.read.scenario_contracts",
             metadata={"published_by": "root", "handler": "get_scenario_manifest_schema"},
+        ),
+        RootMcpToolContract(
+            id="adaos_dev.get_architecture_catalog",
+            title="Get AdaOS architecture catalog",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the root-curated AdaOS architecture catalog for LLM-programmer and authoring workflows.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "plane:adaos_dev", "handler": "adaos_dev_get_architecture_catalog"},
+        ),
+        RootMcpToolContract(
+            id="adaos_dev.get_sdk_metadata",
+            title="Get AdaOS SDK metadata",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return SDK export metadata through the AdaOSDevPlane typed descriptive surface.",
+            input_schema=schema_object(properties={"level": {"type": "string", "enum": ["mini", "std", "rich"]}}),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "plane:adaos_dev", "handler": "adaos_dev_get_sdk_metadata"},
+        ),
+        RootMcpToolContract(
+            id="adaos_dev.get_template_catalog",
+            title="Get template catalog",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return root-curated skill and scenario templates through AdaOSDevPlane.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "plane:adaos_dev", "handler": "adaos_dev_get_template_catalog"},
+        ),
+        RootMcpToolContract(
+            id="adaos_dev.get_public_skill_registry",
+            title="Get public skill registry summary",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the published workspace skill registry summary through AdaOSDevPlane.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "plane:adaos_dev", "handler": "adaos_dev_get_public_skill_registry"},
+        ),
+        RootMcpToolContract(
+            id="adaos_dev.get_public_scenario_registry",
+            title="Get public scenario registry summary",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the published workspace scenario registry summary through AdaOSDevPlane.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "plane:adaos_dev", "handler": "adaos_dev_get_public_scenario_registry"},
         ),
         RootMcpToolContract(
             id="hub.get_status",
@@ -696,6 +753,11 @@ def _handle_scenario_manifest_schema(arguments: dict[str, Any], *, dry_run: bool
     return {"schema": get_descriptor_set("scenario_manifest_schema")["payload"]}
 
 
+def _handle_adaos_dev_descriptor(arguments: dict[str, Any], *, descriptor_id: str) -> dict[str, Any]:
+    level = str(arguments.get("level") or "std").strip().lower() or "std"
+    return {"descriptor": get_descriptor(descriptor_id, level=level)}
+
+
 def _handle_operational_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     items = [item.to_dict() for item in list_tool_contracts(surface=RootMcpSurface.OPERATIONS.value)]
     return {
@@ -1153,6 +1215,11 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.get_system_model_vocabulary": lambda arguments, dry_run=False: _handle_system_model_vocabulary(arguments, dry_run=dry_run),
     "development.get_skill_manifest_schema": lambda arguments, dry_run=False: _handle_skill_manifest_schema(arguments, dry_run=dry_run),
     "development.get_scenario_manifest_schema": lambda arguments, dry_run=False: _handle_scenario_manifest_schema(arguments, dry_run=dry_run),
+    "adaos_dev.get_architecture_catalog": lambda arguments, dry_run=False: _handle_adaos_dev_descriptor(arguments, descriptor_id="architecture_catalog"),
+    "adaos_dev.get_sdk_metadata": lambda arguments, dry_run=False: _handle_adaos_dev_descriptor(arguments, descriptor_id="sdk_metadata"),
+    "adaos_dev.get_template_catalog": lambda arguments, dry_run=False: _handle_adaos_dev_descriptor(arguments, descriptor_id="template_catalog"),
+    "adaos_dev.get_public_skill_registry": lambda arguments, dry_run=False: _handle_adaos_dev_descriptor(arguments, descriptor_id="public_skill_registry_summary"),
+    "adaos_dev.get_public_scenario_registry": lambda arguments, dry_run=False: _handle_adaos_dev_descriptor(arguments, descriptor_id="public_scenario_registry_summary"),
     "hub.get_status": lambda arguments, dry_run=False: _handle_hub_get_status(arguments, dry_run=dry_run),
     "hub.get_runtime_summary": lambda arguments, dry_run=False: _handle_hub_get_runtime_summary(arguments, dry_run=dry_run),
     "hub.get_operational_surface": lambda arguments, dry_run=False: _handle_hub_get_operational_surface(arguments, dry_run=dry_run),

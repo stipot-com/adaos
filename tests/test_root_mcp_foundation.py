@@ -40,6 +40,7 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "ProfileOpsRead" in foundation_payload["foundation"]["capability_profiles"]["profiles"]
     assert foundation_payload["foundation"]["descriptor_cache"]["enabled"] is True
     assert foundation_payload["foundation"]["surfaces"]["development"]["mode"] == "root_descriptor_cache"
+    assert foundation_payload["foundation"]["planes"]["adaos_dev"]["enabled"] is True
     assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)
@@ -58,6 +59,9 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "hub.issue_mcp_session" in contract_ids
     assert "hub.list_mcp_sessions" in contract_ids
     assert "hub.revoke_mcp_session" in contract_ids
+    assert "adaos_dev.get_architecture_catalog" in contract_ids
+    assert "adaos_dev.get_sdk_metadata" in contract_ids
+    assert "adaos_dev.get_public_skill_registry" in contract_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -137,6 +141,17 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert build_profile_payload["build_pipeline"] == "prototype"
     assert "sdk_metadata" in build_profile_payload["published_descriptor_ids"]
     assert "architecture_catalog" in build_profile_payload["published_descriptor_ids"]
+    assert build_profile_payload["lifecycle_hooks"]["publish_refresh_enabled"] is True
+
+    plane_call = client.post(
+        "/v1/root/mcp/call",
+        headers=scoped_headers,
+        json={"tool_id": "adaos_dev.get_architecture_catalog", "arguments": {}},
+    )
+    assert plane_call.status_code == 200
+    plane_result = plane_call.json()["response"]["result"]["descriptor"]["payload"]
+    assert plane_result["available"] is True
+    assert plane_result["page_count"] >= 1
 
     bundle = client.get("/v1/root/mcp/descriptors/descriptor_bundle", headers=scoped_headers)
     assert bundle.status_code == 200
@@ -191,6 +206,31 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     event = next(item for item in events if item["event_id"] == envelope["audit_event_id"])
     assert event["execution_adapter"] == "root.descriptor_registry"
     assert event["meta"]["trace"]["request"]["argument_keys"] == ["descriptor_id"]
+
+
+def test_descriptor_cache_refresh_records_publish_lifecycle(monkeypatch, tmp_path) -> None:
+    from adaos.services.root_mcp import registry as descriptor_registry
+
+    state_path = tmp_path / "descriptor_cache.json"
+    monkeypatch.setattr(descriptor_registry, "_descriptor_cache_state_path", lambda: state_path)
+
+    refreshed = descriptor_registry.record_descriptor_refresh(
+        reason="publish_skill",
+        descriptor_ids=["descriptor_bundle", "public_skill_registry_summary"],
+        source_kind="workspace_registry_publish",
+        artifact_kind="skill",
+        artifact_name="infra_access_skill",
+    )
+    summary = descriptor_registry.descriptor_cache_summary()
+    build_profile = descriptor_registry.get_descriptor_set("descriptor_build_profile")["payload"]
+
+    assert refreshed["refresh_count"] == 1
+    assert summary["refresh_count"] == 1
+    assert summary["last_refresh"]["artifact_kind"] == "skill"
+    assert summary["last_refresh"]["artifact_name"] == "infra_access_skill"
+    assert "public_skill_registry_summary" in summary["last_refresh"]["descriptor_ids"]
+    assert build_profile["lifecycle_hooks"]["publish_refresh_enabled"] is True
+    assert build_profile["lifecycle_hooks"]["cache_state"]["refresh_count"] == 1
 
 
 def test_infra_access_skill_surface_reads_config_and_webui(monkeypatch, tmp_path) -> None:

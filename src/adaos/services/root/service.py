@@ -2411,6 +2411,25 @@ class RootDeveloperService:
         except Exception as exc:
             raise RootServiceError(f"Failed to update workspace registry metadata for {kind[:-1]} '{name}'") from exc
 
+        try:
+            from adaos.services.root_mcp.registry import record_descriptor_refresh
+
+            descriptor_ids = [
+                "descriptor_build_profile",
+                "descriptor_bundle",
+                "architecture_catalog",
+                "public_skill_registry_summary" if kind == "skills" else "public_scenario_registry_summary",
+            ]
+            record_descriptor_refresh(
+                reason=f"publish_{kind[:-1]}",
+                descriptor_ids=descriptor_ids,
+                source_kind="workspace_registry_publish",
+                artifact_kind=kind.rstrip("s"),
+                artifact_name=name,
+            )
+        except Exception:
+            pass
+
         return ArtifactPublishResult(
             kind=kind.rstrip("s"),
             name=name,

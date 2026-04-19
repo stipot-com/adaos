@@ -84,7 +84,7 @@ It proves the first `hub -> root -> Root MCP` operational loop and the first end
 - [x] define descriptor bundle formats and provenance fields
 - [x] promote current `build SDK` work into a descriptor-build pipeline prototype
 - [x] publish architecture, SDK, schema, manifest, and template descriptors through root cache
-- [ ] add CI/CD and publish hooks so public skills and scenarios refresh root descriptors as part of lifecycle
+- [x] add CI/CD and publish hooks so public skills and scenarios refresh root descriptors as part of lifecycle
 - [x] expose freshness metadata and TTL semantics in descriptor responses
 
 Phase is complete when:
@@ -95,8 +95,8 @@ Phase is complete when:
 
 ## Phase 3. AdaOSDevPlane
 
-- [ ] define the first explicit descriptive plane over the foundation
-- [ ] expose architecture, SDK, manifest, schema, template, and public registry descriptors through typed plane contracts
+- [x] define the first explicit descriptive plane over the foundation
+- [x] expose architecture, SDK, manifest, schema, template, and public registry descriptors through typed plane contracts
 - [ ] make `AdaOSDevPlane` the preferred LLM-programmer descriptive surface
 - [ ] keep descriptive responses root-curated and cache-backed by default
 
