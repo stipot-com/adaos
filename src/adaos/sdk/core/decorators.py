@@ -8,6 +8,7 @@ from adaos.sdk.data.context import set_current_skill, clear_current_skill
 from adaos.sdk.core._ctx import require_ctx
 from adaos.sdk.core.errors import SdkRuntimeNotInitialized
 from adaos.sdk.io.context import io_meta
+from adaos.services.skill.activation import load_skill_activation_policy, subscription_strategy_for_policy
 
 # публичные реестры (стабильные имена)
 subscriptions: List[Tuple[str, Callable]] = []
@@ -109,7 +110,7 @@ async def register_subscriptions():
             )
     for skill, entries in sorted(skill_summaries.items()):
         summary = ", ".join(f"{topic}: {handler}" for topic, handler in entries)
-        _LOG.info("skill=%s subscriptions=[%s]", skill, summary)
+        _LOG.info("skill=%s subscriptions=[%s]%s", skill, summary, _subscription_log_suffix(skill))
 
     _registered = True
 
@@ -229,3 +230,18 @@ def _maybe_push_skill(fn: Callable, skill_name: Optional[str]) -> bool:
     except Exception:
         _LOG.debug("fallback skill_ctx.set failed for %s", skill_name, exc_info=True)
         return False
+
+
+def _subscription_log_suffix(skill_name: str) -> str:
+    token = str(skill_name or "").strip()
+    if not token or token == "<unknown>":
+        return ""
+    try:
+        ctx = require_ctx("sdk.core.decorators.subscription_summary")
+        policy = load_skill_activation_policy(ctx.paths.workspace_dir(), token, fallback_to_scan=True)
+    except Exception:
+        return ""
+    if policy is None:
+        return ""
+    strategy = subscription_strategy_for_policy(policy)
+    return f" activation={policy.mode} subscription_strategy={strategy}"

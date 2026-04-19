@@ -18,6 +18,31 @@ class _FakeCtx:
         self.paths = _FakePaths(base_dir)
 
 
+def test_run_uses_safe_text_decoding(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return _Proc()
+
+    monkeypatch.setattr(autostart.subprocess, "run", _fake_run)
+
+    result = autostart._run(["schtasks", "/Query"])
+
+    assert result.returncode == 0
+    assert captured["cmd"] == ["schtasks", "/Query"]
+    assert captured["capture_output"] is True
+    assert captured["text"] is True
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
 def test_windows_status_detects_disabled_stale_task(monkeypatch, tmp_path: Path) -> None:
     current_wrapper = tmp_path / "bin" / "adaos-autostart.ps1"
     current_wrapper.parent.mkdir(parents=True, exist_ok=True)

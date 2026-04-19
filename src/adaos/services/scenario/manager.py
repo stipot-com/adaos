@@ -21,6 +21,7 @@ from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.services.capacity import install_scenario_in_capacity, uninstall_scenario_from_capacity
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.capacity import get_local_capacity
+from adaos.domain.workspace_manifest import parse_scenario_skill_bindings
 from adaos.services.node_config import load_config
 from adaos.services.scenarios.loader import read_manifest, read_content
 import y_py as Y
@@ -362,8 +363,9 @@ class ScenarioManager:
         skills via the existing SkillManager.
         """
         manifest = read_manifest(scenario_id)
-        depends = manifest.get("depends") or []
-        if not isinstance(depends, (list, tuple)):
+        bindings = parse_scenario_skill_bindings(manifest if isinstance(manifest, dict) else {})
+        depends = list(bindings.required)
+        if not depends:
             return
 
         # Use the same construction pattern as CLI SkillManager.

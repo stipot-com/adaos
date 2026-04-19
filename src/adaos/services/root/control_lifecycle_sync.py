@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from adaos.services.agent_context import get_ctx
@@ -18,6 +19,25 @@ from adaos.services.root_mcp.infra_access_skill import build_operational_surface
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 
 _CONTROL_LIFECYCLE_FLOW_ID = "hub_root.control.lifecycle"
+_LOG = logging.getLogger("adaos.startup")
+
+
+def _stage_mark(stage: str, *, started: float | None = None, failed: Exception | None = None) -> float:
+    now = time.perf_counter()
+    if started is None:
+        _LOG.info("startup stage start stage=%s", stage)
+        return now
+    duration = now - started
+    if failed is None:
+        _LOG.info("startup stage done stage=%s duration_s=%.3f", stage, duration)
+    else:
+        _LOG.warning(
+            "startup stage failed stage=%s duration_s=%.3f error=%s",
+            stage,
+            duration,
+            type(failed).__name__,
+        )
+    return now
 
 
 def _control_lifecycle_stream_id(conf) -> str:
@@ -155,7 +175,10 @@ def report_hub_control_lifecycle_state(conf) -> dict[str, Any] | None:
     client = _root_client(conf)
     if client is None:
         return None
+    payload_started = _stage_mark("control_report_build_payload")
     payload = build_control_lifecycle_report(conf)
+    _stage_mark("control_report_build_payload", started=payload_started)
+    prepare_started = _stage_mark("control_report_prepare_stream")
     protocol_meta = prepare_stream_message(
         stream_id=_control_lifecycle_stream_id(conf),
         flow_id=_CONTROL_LIFECYCLE_FLOW_ID,
@@ -167,9 +190,13 @@ def report_hub_control_lifecycle_state(conf) -> dict[str, Any] | None:
         authority_epoch=_control_lifecycle_authority_epoch(conf),
         ack_required=True,
     )
+    _stage_mark("control_report_prepare_stream", started=prepare_started)
     payload["reported_at"] = protocol_meta.get("issued_at")
     payload["_protocol"] = dict(protocol_meta)
+    send_started = _stage_mark("control_report_send_http")
     result = client.hub_control_report(payload=payload, headers=_control_report_headers() or None)
+    _stage_mark("control_report_send_http", started=send_started)
+    ack_started = _stage_mark("control_report_ack_stream")
     try:
         ack_stream_message(
             _control_lifecycle_stream_id(conf),
@@ -178,7 +205,9 @@ def report_hub_control_lifecycle_state(conf) -> dict[str, Any] | None:
             duplicate=bool((result or {}).get("duplicate")),
             result="duplicate" if bool((result or {}).get("duplicate")) else "accepted",
         )
-    except Exception:
+        _stage_mark("control_report_ack_stream", started=ack_started)
+    except Exception as exc:
+        _stage_mark("control_report_ack_stream", started=ack_started, failed=exc)
         logging.getLogger("adaos.hub-io").debug("control lifecycle stream ack failed", exc_info=True)
     return result
 

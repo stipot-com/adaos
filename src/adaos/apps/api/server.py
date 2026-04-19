@@ -3,6 +3,8 @@
 # Many subsystems (notably NATS-over-WS tuning) rely on env vars, so best-effort load `.env` here too.
 import os
 from pathlib import Path
+import logging
+import time
 
 
 def _parse_dotenv(path: Path) -> dict[str, str]:
@@ -94,6 +96,33 @@ try:  # pragma: no cover
 except Exception:
     pass
 
+
+_startup_log = logging.getLogger("adaos.startup")
+
+
+class _StartupTimer:
+    def __init__(self, stage: str):
+        self.stage = stage
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        _startup_log.info("startup stage start stage=%s", self.stage)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        duration = time.perf_counter() - self.started
+        if exc is None:
+            _startup_log.info("startup stage done stage=%s duration_s=%.3f", self.stage, duration)
+        else:
+            _startup_log.warning(
+                "startup stage failed stage=%s duration_s=%.3f error=%s",
+                self.stage,
+                duration,
+                type(exc).__name__,
+            )
+        return False
+
 try:  # pragma: no cover
     from adaos.services.runtime_dotenv import apply_runtime_dotenv_overrides
 
@@ -101,7 +130,8 @@ try:  # pragma: no cover
 except Exception:
     pass
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -494,17 +524,20 @@ async def lifespan(app: FastAPI):
             app.state.realtime_sidecar_proc = await start_realtime_sidecar_subprocess(role=role)
     except Exception:
         logging.getLogger("adaos.realtime").warning("failed to start adaos-realtime sidecar", exc_info=True)
-    await run_boot_sequence(app)
+    with _StartupTimer("run_boot_sequence"):
+        await run_boot_sequence(app)
     # Keep the local capacity projection in sync with optional native deps
     # (vosk/pyttsx3), so other components can see IO availability without importing native libs.
     try:
         from adaos.services.capacity import refresh_native_io_capacity
 
-        refresh_native_io_capacity()
+        with _StartupTimer("refresh_native_io_capacity"):
+            refresh_native_io_capacity()
     except Exception:
         pass
     try:
-        await start_subnet_p2p(app)
+        with _StartupTimer("start_subnet_p2p"):
+            await start_subnet_p2p(app)
     except Exception:
         pass
     # hub: seed self node into directory (base_url + capacity)
@@ -512,17 +545,18 @@ async def lifespan(app: FastAPI):
         conf = get_ctx().config
         from adaos.services.registry.subnet_directory import get_directory
 
-        directory = get_directory()
-        base_url = os.environ.get("ADAOS_SELF_BASE_URL")
-        node_item = {
-            "node_id": conf.node_id,
-            "subnet_id": conf.subnet_id,
-            "hostname": platform.node(),
-            "roles": [conf.role],
-            "base_url": base_url,
-            "capacity": get_local_capacity(),
-        }
-        directory.on_register(node_item)
+        with _StartupTimer("seed_subnet_directory"):
+            directory = get_directory()
+            base_url = os.environ.get("ADAOS_SELF_BASE_URL")
+            node_item = {
+                "node_id": conf.node_id,
+                "subnet_id": conf.subnet_id,
+                "hostname": platform.node(),
+                "roles": [conf.role],
+                "base_url": base_url,
+                "capacity": get_local_capacity(),
+            }
+            directory.on_register(node_item)
     except Exception:
         pass
 
@@ -562,7 +596,17 @@ async def lifespan(app: FastAPI):
                     except Exception:
                         pass
 
-            status, js, body_txt = await asyncio.to_thread(_safe_get)
+            try:
+                with _StartupTimer("telegram_binding_probe"):
+                    status, js, body_txt = await asyncio.to_thread(_safe_get)
+            except Exception as e:
+                status = 0
+                js = None
+                body_txt = f"{type(e).__name__}: {e}"
+                logging.getLogger("adaos.io.telegram").warning(
+                    "telegram binding probe request failed",
+                    extra={"hub_id": conf.subnet_id, "url": link_url, "error_type": type(e).__name__, "error": str(e)},
+                )
             link_ok = False
             try:
                 link_ok = status == 200 and (js or {}).get("ok")
@@ -630,7 +674,8 @@ async def lifespan(app: FastAPI):
                             except Exception:
                                 pass
 
-                    st2, body2 = await asyncio.to_thread(_safe_post)
+                    with _StartupTimer("telegram_startup_send"):
+                        st2, body2 = await asyncio.to_thread(_safe_post)
                     if st2 not in (200, 201, 202):
                         try:
                             set_integration_readiness(
@@ -843,6 +888,35 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-AdaOS-Token", "Authorization"],
     allow_credentials=False,  # токен идёт в заголовке, куки не нужны
 )
+
+
+@app.middleware("http")
+async def private_network_access_middleware(request: Request, call_next):
+    origin = str(request.headers.get("origin") or "").strip()
+    requested_method = str(request.headers.get("access-control-request-method") or "").strip().upper()
+    requested_headers = str(request.headers.get("access-control-request-headers") or "").strip()
+    requested_private_network = str(request.headers.get("access-control-request-private-network") or "").strip().lower()
+    if (
+        origin
+        and request.method.upper() == "OPTIONS"
+        and requested_method
+        and requested_private_network == "true"
+    ):
+        response = Response(status_code=204)
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = requested_method
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        if requested_headers:
+            response.headers["Access-Control-Allow-Headers"] = requested_headers
+        response.headers["Vary"] = "Origin"
+        return response
+
+    response = await call_next(request)
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
 
 
 @app.get("/api/ping")
