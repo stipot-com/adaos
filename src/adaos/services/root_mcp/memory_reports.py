@@ -110,21 +110,38 @@ def list_memory_profile_reports(
     *,
     hub_id: str | None = None,
     session_id: str | None = None,
+    session_state: str | None = None,
+    suspected_only: bool = False,
+    subnet_id: str | None = None,
+    zone: str | None = None,
 ) -> list[dict[str, Any]]:
     items = _read_reports()
     hub_filter = str(hub_id or "").strip() or None
     session_filter = str(session_id or "").strip() or None
+    state_filter = str(session_state or "").strip().lower() or None
+    subnet_filter = str(subnet_id or "").strip() or None
+    zone_filter = str(zone or "").strip() or None
     out: list[dict[str, Any]] = []
     for current_session_id, item in sorted(items.items()):
         if session_filter and current_session_id != session_filter:
             continue
         if hub_filter and str(item.get("hub_id") or "").strip() != hub_filter:
             continue
+        report = dict(item.get("report") or {})
+        session = _normalize_mapping(report.get("session"))
+        if state_filter and str(session.get("session_state") or "").strip().lower() != state_filter:
+            continue
+        if suspected_only and not bool(session.get("suspected_leak")):
+            continue
+        if subnet_filter and str(report.get("subnet_id") or "").strip() != subnet_filter:
+            continue
+        if zone_filter and str(report.get("zone") or "").strip() != zone_filter:
+            continue
         out.append(
             {
                 "session_id": current_session_id,
                 "hub_id": item.get("hub_id"),
-                "report": dict(item.get("report") or {}),
+                "report": report,
                 "ingest_auth": dict(item.get("ingest_auth") or {}),
                 "event_id": item.get("event_id"),
                 "server_time_utc": item.get("server_time_utc"),
@@ -133,7 +150,25 @@ def list_memory_profile_reports(
     return out
 
 
+def get_memory_profile_report(session_id: str) -> dict[str, Any] | None:
+    token = str(session_id or "").strip()
+    if not token:
+        return None
+    item = _read_reports().get(token)
+    if not isinstance(item, dict):
+        return None
+    return {
+        "session_id": token,
+        "hub_id": item.get("hub_id"),
+        "report": dict(item.get("report") or {}),
+        "ingest_auth": dict(item.get("ingest_auth") or {}),
+        "event_id": item.get("event_id"),
+        "server_time_utc": item.get("server_time_utc"),
+    }
+
+
 __all__ = [
+    "get_memory_profile_report",
     "ingest_memory_profile_report",
     "list_memory_profile_reports",
 ]

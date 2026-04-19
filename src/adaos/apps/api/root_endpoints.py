@@ -33,7 +33,11 @@ from adaos.services.root_mcp.audit import append_audit_event
 from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
-from adaos.services.root_mcp.memory_reports import ingest_memory_profile_report, list_memory_profile_reports
+from adaos.services.root_mcp.memory_reports import (
+    get_memory_profile_report,
+    ingest_memory_profile_report,
+    list_memory_profile_reports,
+)
 from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.root_mcp.tokens import issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
 
@@ -668,6 +672,8 @@ async def hub_memory_profile_report_ingest(
 async def hub_memory_profile_reports(
     hub_id: str | None = None,
     session_id: str | None = None,
+    state: str | None = None,
+    suspected_only: bool = False,
     authorization: str | None = Header(default=None),
     owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
     root_token: str | None = Header(default=None, alias="X-Root-Token"),
@@ -687,7 +693,14 @@ async def hub_memory_profile_reports(
         raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
 
     items: list[dict[str, Any]] = []
-    for item in list_memory_profile_reports(hub_id=target_filter, session_id=session_id):
+    for item in list_memory_profile_reports(
+        hub_id=target_filter,
+        session_id=session_id,
+        session_state=state,
+        suspected_only=suspected_only,
+        subnet_id=scope.get("subnet_id"),
+        zone=scope.get("zone"),
+    ):
         report = item.get("report") if isinstance(item.get("report"), dict) else {}
         target_subnet = str(report.get("subnet_id") or "").strip()
         target_zone = str(report.get("zone") or "").strip()
@@ -708,6 +721,44 @@ async def hub_memory_profile_reports(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "reports": items,
+    }
+
+
+@router.get("/v1/hubs/memory_profile/reports/{session_id}")
+async def hub_memory_profile_report(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    root_token: str | None = Header(default=None, alias="X-Root-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_read_auth_or_legacy_root_token(
+        authorization=authorization,
+        owner_token=owner_token,
+        root_token=root_token,
+    )
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    item = get_memory_profile_report(session_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory profile report was not found")
+    report = item.get("report") if isinstance(item.get("report"), dict) else {}
+    target_id = str(item.get("hub_id") or "").strip()
+    allowed_target_ids = _allowed_target_ids(auth)
+    if allowed_target_ids and target_id not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
+    target_subnet = str(report.get("subnet_id") or "").strip()
+    target_zone = str(report.get("zone") or "").strip()
+    if scope.get("subnet_id") and target_subnet and scope["subnet_id"] != target_subnet:
+        raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
+    if scope.get("zone") and target_zone and scope["zone"] != target_zone:
+        raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Managed target is outside the requested zone scope."})
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "report": item,
     }
 
 

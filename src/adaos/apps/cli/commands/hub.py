@@ -496,6 +496,8 @@ def hub_root_reports(
     kind: str = typer.Option("all", "--kind", help="all|control|core-update|memory-profile"),
     hub_id: str | None = typer.Option(None, "--hub-id", help="Hub/subnet id to inspect (default: current hub)"),
     session_id: str | None = typer.Option(None, "--session-id", help="Memory-profile session id filter"),
+    state: str | None = typer.Option(None, "--state", help="Memory-profile session state filter"),
+    suspected_only: bool = typer.Option(False, "--suspected-only", help="Only suspected memory-profile sessions"),
     root: str | None = typer.Option(None, "--root", help="Root server base URL"),
     token: str | None = typer.Option(
         None,
@@ -541,6 +543,8 @@ def hub_root_reports(
             root_token=root_token,
             hub_id=target_hub_id,
             session_id=session_id,
+            session_state=state,
+            suspected_only=(True if suspected_only else None),
         )
     if json_output:
         _print(payload, json_output=True)
@@ -622,6 +626,75 @@ def hub_root_reports(
                 f"suspected={bool(session.get('suspected_leak'))} "
                 f"artifacts={len(session.get('artifact_refs') or [])}"
             )
+
+
+@root_link_app.command("memory-session")
+def hub_root_memory_session(
+    session_id: str,
+    root: str | None = typer.Option(None, "--root", help="Root server base URL"),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for root reports. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Fetch one remotely published memory-profile session summary from root."""
+    ctx = get_ctx()
+    conf = ctx.config
+    root_base = _resolve_root_base_url(conf, root)
+    root_token = str(
+        token
+        or os.getenv("HUB_ROOT_TOKEN")
+        or os.getenv("ADAOS_ROOT_TOKEN")
+        or os.getenv("ROOT_TOKEN")
+        or ""
+    ).strip()
+    if not root_token:
+        raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
+    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
+    payload = client.root_memory_profile_report(root_token=root_token, session_id=session_id)
+    if json_output:
+        _print(payload, json_output=True)
+        return
+    report_item = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    report = report_item.get("report") if isinstance(report_item.get("report"), dict) else {}
+    session = report.get("session") if isinstance(report.get("session"), dict) else {}
+    operations_tail = report.get("operations_tail") if isinstance(report.get("operations_tail"), list) else []
+    telemetry_tail = report.get("telemetry_tail") if isinstance(report.get("telemetry_tail"), list) else []
+    artifact_refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
+    typer.echo(
+        "memory profile: "
+        f"hub={report_item.get('hub_id') or report.get('subnet_id') or '-'} "
+        f"session={report_item.get('session_id') or session.get('session_id') or '-'} "
+        f"mode={session.get('profile_mode') or '-'} "
+        f"state={session.get('session_state') or '-'} "
+        f"suspected={bool(session.get('suspected_leak'))}"
+    )
+    typer.echo(
+        "memory rss: "
+        f"baseline={session.get('baseline_rss_bytes') or 0} "
+        f"peak={session.get('peak_rss_bytes') or 0} "
+        f"growth={session.get('rss_growth_bytes') or 0}"
+    )
+    typer.echo(
+        "memory remote: "
+        f"reported={report.get('reported_at') or '-'} "
+        f"received={report.get('root_received_at') or '-'} "
+        f"artifacts={len(artifact_refs)} "
+        f"operations={len(operations_tail)} "
+        f"telemetry={len(telemetry_tail)}"
+    )
+    if artifact_refs:
+        first = artifact_refs[0] if isinstance(artifact_refs[0], dict) else {}
+        typer.echo(f"first artifact: {first.get('artifact_id') or '-'}")
+    if session.get("retry_of_session_id"):
+        typer.echo(
+            "retry chain: "
+            f"from={session.get('retry_of_session_id')} "
+            f"root={session.get('retry_root_session_id') or session.get('retry_of_session_id')} "
+            f"depth={session.get('retry_depth') or 0}"
+        )
 
 
 @sidecar_app.command("status")

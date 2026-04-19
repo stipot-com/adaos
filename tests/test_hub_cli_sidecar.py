@@ -140,10 +140,19 @@ def test_hub_root_reports_prints_memory_profile_rows(monkeypatch) -> None:
             pass
 
         @staticmethod
-        def root_memory_profile_reports(*, root_token: str, hub_id: str | None = None, session_id: str | None = None) -> dict:
+        def root_memory_profile_reports(
+            *,
+            root_token: str,
+            hub_id: str | None = None,
+            session_id: str | None = None,
+            session_state: str | None = None,
+            suspected_only: bool | None = None,
+        ) -> dict:
             assert root_token == "root-token"
             assert hub_id == "subnet-test-1"
             assert session_id is None
+            assert session_state is None
+            assert suspected_only is None
             return {
                 "ok": True,
                 "reports": [
@@ -175,3 +184,56 @@ def test_hub_root_reports_prints_memory_profile_rows(monkeypatch) -> None:
     assert "mode=trace_profile" in result.output
     assert "state=finished" in result.output
     assert "suspected=True" in result.output
+
+
+def test_hub_root_memory_session_prints_remote_summary(monkeypatch) -> None:
+    hub_cli = _import_hub_cli()
+    monkeypatch.setattr(hub_cli, "get_ctx", lambda: type("Ctx", (), {"config": type("Cfg", (), {"subnet_id": "subnet-test-1", "root_settings": type("Root", (), {"base_url": "https://root.test"})()})()})())
+    monkeypatch.setattr(hub_cli, "_root_verify_from_conf", lambda conf: True)
+    monkeypatch.setenv("ROOT_TOKEN", "root-token")
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @staticmethod
+        def root_memory_profile_report(*, root_token: str, session_id: str) -> dict:
+            assert root_token == "root-token"
+            assert session_id == "mem-001"
+            return {
+                "ok": True,
+                "report": {
+                    "hub_id": "hub:subnet-test-1",
+                    "session_id": "mem-001",
+                    "report": {
+                        "reported_at": "2026-04-18T12:00:00Z",
+                        "root_received_at": "2026-04-18T12:00:01Z",
+                        "session": {
+                            "session_id": "mem-001",
+                            "profile_mode": "trace_profile",
+                            "session_state": "finished",
+                            "suspected_leak": True,
+                            "baseline_rss_bytes": 128,
+                            "peak_rss_bytes": 256,
+                            "rss_growth_bytes": 64,
+                            "retry_of_session_id": "mem-000",
+                            "retry_root_session_id": "mem-root",
+                            "retry_depth": 2,
+                            "artifact_refs": [{"artifact_id": "mem-001-final"}],
+                        },
+                        "operations_tail": [{"event": "tool_invoked"}],
+                        "telemetry_tail": [{"sampled_at": 1.0}],
+                    },
+                },
+            }
+
+    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+
+    result = CliRunner().invoke(hub_cli.app, ["root", "memory-session", "mem-001"])
+
+    assert result.exit_code == 0
+    assert "memory profile: hub=hub:subnet-test-1 session=mem-001 mode=trace_profile state=finished suspected=True" in result.output
+    assert "memory rss: baseline=128 peak=256 growth=64" in result.output
+    assert "memory remote: reported=2026-04-18T12:00:00Z received=2026-04-18T12:00:01Z artifacts=1 operations=1 telemetry=1" in result.output
+    assert "first artifact: mem-001-final" in result.output
+    assert "retry chain: from=mem-000 root=mem-root depth=2" in result.output

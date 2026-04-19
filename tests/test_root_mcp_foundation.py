@@ -672,6 +672,23 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert stored["report"]["session"]["profile_mode"] == "trace_profile"
     assert stored["report"]["telemetry_tail"][0]["rss_growth_bytes"] == 64
 
+    filtered = client.get(
+        "/v1/hubs/memory_profile/reports",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+        params={"hub_id": "hub:subnet-test-1", "state": "finished", "suspected_only": "true"},
+    )
+    assert filtered.status_code == 200
+    assert len(filtered.json()["reports"]) == 1
+
+    report_item = client.get(
+        "/v1/hubs/memory_profile/reports/mem-001",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+    )
+    assert report_item.status_code == 200
+    report_payload = report_item.json()["report"]
+    assert report_payload["session_id"] == "mem-001"
+    assert report_payload["report"]["session"]["session_state"] == "finished"
+
 
 def test_root_mcp_local_execution_write_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")

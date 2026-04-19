@@ -712,7 +712,8 @@ Current implementation deliberately does not yet:
 The first active Phase 3 slice now exists:
 
 - supervisor publishes memory-profile summaries to root through a dedicated `memory_profile` report family
-- root-side retrieval can list those summaries by hub and optional session id before heavy artifact transport is added
+- root-side retrieval can list those summaries by hub, optional session id, compact state filters, and suspected-only filters before heavy artifact transport is added
+- operator surfaces can open one remotely published memory-profile session directly to inspect RSS deltas, retry lineage, telemetry tail size, and artifact summary metadata
 - operator surfaces can inspect that remote summary path through `adaos hub root reports --kind memory-profile`
 
 ### Local control surfaces
