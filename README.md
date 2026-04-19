@@ -231,6 +231,7 @@ curl -i http://127.0.0.1:8777/health/ready
 - Quick start: `docs/quickstart.md`
 - Architecture overview: `docs/architecture/overview.md`
 - Skill activation and scenario binding: `docs/architecture/skill-activation-and-scenario-binding.md`
+- ABI schemas: `src/adaos/abi/`
 - CLI reference: `docs/reference/cli.md`
 - SDK docs: `docs/sdk/`
 - English docs: `docs/en/`

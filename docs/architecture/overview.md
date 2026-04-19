@@ -21,6 +21,7 @@ The usual control path is:
 ## Architectural directions
 
 - [Skill Activation And Scenario Binding](skill-activation-and-scenario-binding.md)
+- ABI schemas live under `src/adaos/abi/` and now include typed manifest support for skill activation policy and scenario-to-skill bindings
 
 ## Storage and state
 
