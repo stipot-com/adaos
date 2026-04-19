@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import sys
 import types
+from pathlib import Path
 
 if "y_py" not in sys.modules:
     sys.modules["y_py"] = types.SimpleNamespace(
@@ -61,3 +63,34 @@ data_projections:
 
     assert loaded_entries
     assert loaded_entries[0][0]["slot"] == "infrastate.snapshot"
+
+
+def test_importlib_loader_does_not_reexecute_same_handler_module(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "repeat_skill"
+    handlers_dir = skill_dir / "handlers"
+    handlers_dir.mkdir(parents=True)
+    handler = handlers_dir / "main.py"
+    handler.write_text(
+        "\n".join(
+            [
+                "import builtins",
+                "builtins._adaos_repeat_import_counter = getattr(builtins, '_adaos_repeat_import_counter', 0) + 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    loader = ImportlibSkillsLoader()
+    mod_name = "adaos_skill_" + handler.parent.as_posix().replace("/", "_")
+    sys.modules.pop(mod_name, None)
+    if hasattr(builtins, "_adaos_repeat_import_counter"):
+        delattr(builtins, "_adaos_repeat_import_counter")
+    try:
+        loader._load_handler(handler)
+        loader._load_handler(handler)
+        assert getattr(builtins, "_adaos_repeat_import_counter", 0) == 1
+    finally:
+        sys.modules.pop(mod_name, None)
+        if hasattr(builtins, "_adaos_repeat_import_counter"):
+            delattr(builtins, "_adaos_repeat_import_counter")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
@@ -54,10 +55,19 @@ class ImportlibSkillsLoader(SkillsLoaderPort):
 
     def _load_handler(self, handler: Path) -> None:
         mod_name = "adaos_skill_" + handler.parent.as_posix().replace("/", "_")
+        existing = sys.modules.get(mod_name)
+        if existing is not None:
+            _LOG.debug("reusing already imported skill handler module=%s path=%s", mod_name, handler)
+            return
         spec = importlib.util.spec_from_file_location(mod_name, handler)
-        module = importlib.util.module_from_spec(spec)  # noqa: F841
+        module = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
-        spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        sys.modules[mod_name] = module
+        try:
+            spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        except Exception:
+            sys.modules.pop(mod_name, None)
+            raise
         _LOG.info("imported skill handler module=%s path=%s", mod_name, handler)
 
     def _load_skill_data_projections(self, handler: Path, loaded: set[Path]) -> None:
