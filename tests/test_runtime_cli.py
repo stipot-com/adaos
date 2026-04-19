@@ -206,6 +206,12 @@ def test_runtime_memory_artifact_cli_prints_summary(monkeypatch) -> None:
                     "artifact_id": "mem-001-growth",
                     "kind": "tracemalloc_top_growth",
                 },
+                "transfer": {
+                    "encoding": "json",
+                    "chunk_bytes": 64,
+                    "remaining_bytes": 0,
+                    "truncated": False,
+                },
                 "content": {"session_id": "mem-001", "top_growth_sites": []},
             }
 
@@ -215,7 +221,45 @@ def test_runtime_memory_artifact_cli_prints_summary(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "artifact: id=mem-001-growth kind=tracemalloc_top_growth exists=True" in result.output
+    assert "transfer: encoding=json chunk=64 remaining=0 truncated=False" in result.output
     assert "content keys: session_id, top_growth_sites" in result.output
+
+
+def test_runtime_memory_artifact_cli_prints_binary_transfer_summary(monkeypatch) -> None:
+    runtime_cli = importlib.import_module("adaos.apps.cli.commands.runtime")
+
+    monkeypatch.setattr(runtime_cli, "resolve_control_base_url", lambda explicit=None, prefer_local=True: "http://127.0.0.1:8777")
+    monkeypatch.setattr(runtime_cli, "resolve_control_token", lambda explicit=None, base_url=None: "dev-token")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "ok": True,
+                "exists": True,
+                "artifact": {
+                    "artifact_id": "mem-001-raw",
+                    "kind": "heap_dump",
+                },
+                "transfer": {
+                    "encoding": "base64",
+                    "chunk_bytes": 128,
+                    "remaining_bytes": 512,
+                    "truncated": True,
+                },
+                "content_base64": "AAEC",
+            }
+
+    monkeypatch.setattr(runtime_cli.requests, "get", lambda *args, **kwargs: _Response())
+
+    result = CliRunner().invoke(runtime_cli.app, ["memory-artifact", "mem-001", "mem-001-raw"])
+
+    assert result.exit_code == 0
+    assert "artifact: id=mem-001-raw kind=heap_dump exists=True" in result.output
+    assert "transfer: encoding=base64 chunk=128 remaining=512 truncated=True" in result.output
+    assert "base64 chars: 4" in result.output
 
 
 def test_runtime_memory_profile_start_cli_posts_intent(monkeypatch) -> None:

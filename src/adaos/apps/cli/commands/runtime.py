@@ -269,11 +269,12 @@ def memory_session(
 def memory_artifact(
     session_id: str,
     artifact_id: str,
+    max_bytes: int = typer.Option(256 * 1024, "--max-bytes", min=1, max=1024 * 1024, help="Maximum bytes to pull"),
     control: str | None = typer.Option(None, "--control", help="Control API base URL"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     payload = _runtime_control_get(
-        f"/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}",
+        f"/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}?offset=0&max_bytes={int(max_bytes)}",
         control=control,
     )
     if json_output:
@@ -286,9 +287,24 @@ def memory_artifact(
         f"kind={artifact.get('kind') or '-'} "
         f"exists={bool(payload.get('exists'))}"
     )
+    transfer = payload.get("transfer") if isinstance(payload.get("transfer"), dict) else {}
+    if transfer:
+        typer.echo(
+            "transfer: "
+            f"encoding={transfer.get('encoding') or '-'} "
+            f"chunk={transfer.get('chunk_bytes') or 0} "
+            f"remaining={transfer.get('remaining_bytes') or 0} "
+            f"truncated={bool(transfer.get('truncated'))}"
+        )
     content = payload.get("content")
     if isinstance(content, dict):
         typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
+        return
+    if isinstance(payload.get("text"), str):
+        typer.echo(f"text chars: {len(payload.get('text') or '')}")
+        return
+    if isinstance(payload.get("content_base64"), str):
+        typer.echo(f"base64 chars: {len(payload.get('content_base64') or '')}")
 
 
 @app.command("memory-profile-start")

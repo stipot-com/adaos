@@ -716,7 +716,7 @@ The first active Phase 3 slice now exists:
 - operator surfaces can inspect that remote summary path through `adaos hub root reports --kind memory-profile`
 - root can expose an artifact catalog with explicit publish-policy status (`inline_available`, `size_limit_exceeded`, `kind_not_allowed`, and similar states) for one published session
 - root can serve the currently allowed inline JSON artifact payloads for one published session, while heavy or disallowed artifacts remain local-only until a later transport policy is added
-- operator tooling can already bridge some local-only cases by combining root-published fetch metadata with a direct pull from the current hub supervisor control surface, without pretending that heavy artifacts are replicated at root
+- operator tooling can already bridge some local-only cases by combining root-published fetch metadata with a direct pull from the current hub supervisor control surface, including chunked `utf-8` / `base64` transfers for heavier local artifacts, without pretending that those artifacts are replicated at root
 
 ### Local control surfaces
 

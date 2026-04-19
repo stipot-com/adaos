@@ -87,14 +87,21 @@ def _resolve_root_base_url(conf: Any, explicit_root: str | None = None) -> str:
     return base_url
 
 
-def _local_memory_artifact_pull(*, session_id: str, artifact_id: str, source_api_path: str | None = None) -> dict[str, Any]:
+def _local_memory_artifact_pull(
+    *,
+    session_id: str,
+    artifact_id: str,
+    source_api_path: str | None = None,
+    max_bytes: int = 256 * 1024,
+) -> dict[str, Any]:
     base = resolve_control_base_url()
     token = _local_control_token(base)
     path = str(source_api_path or f"/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}").strip()
     if not path.startswith("/"):
         path = "/" + path
+    separator = "&" if "?" in path else "?"
     response = requests.get(
-        base.rstrip("/") + path,
+        base.rstrip("/") + path + f"{separator}offset=0&max_bytes={int(max_bytes)}",
         headers={"X-AdaOS-Token": token},
         timeout=10.0,
     )
@@ -824,6 +831,7 @@ def hub_root_memory_artifacts(
 def hub_root_memory_artifact_pull(
     session_id: str,
     artifact_id: str,
+    max_bytes: int = typer.Option(256 * 1024, "--max-bytes", min=1, max=1024 * 1024, help="Maximum bytes to pull from current hub"),
     root: str | None = typer.Option(None, "--root", help="Root server base URL"),
     token: str | None = typer.Option(
         None,
@@ -858,6 +866,7 @@ def hub_root_memory_artifact_pull(
             session_id=session_id,
             artifact_id=artifact_id,
             source_api_path=str(artifact.get("source_api_path") or "").strip() or None,
+            max_bytes=max_bytes,
         )
         merged["local_pull"] = {
             "attempted": True,
@@ -865,8 +874,14 @@ def hub_root_memory_artifact_pull(
             "source": "current_hub_control",
         }
         merged["exists"] = bool(local_payload.get("exists"))
+        if isinstance(local_payload.get("transfer"), dict):
+            merged["transfer"] = local_payload.get("transfer")
         if isinstance(local_payload.get("content"), dict):
             merged["content"] = local_payload.get("content")
+        if isinstance(local_payload.get("text"), str):
+            merged["text"] = local_payload.get("text")
+        if isinstance(local_payload.get("content_base64"), str):
+            merged["content_base64"] = local_payload.get("content_base64")
     if json_output:
         _print(merged, json_output=True)
         return
@@ -878,11 +893,26 @@ def hub_root_memory_artifact_pull(
         f"strategy={artifact.get('fetch_strategy') or '-'} "
         f"exists={bool(merged.get('exists'))}"
     )
+    transfer = merged.get("transfer") if isinstance(merged.get("transfer"), dict) else {}
+    if transfer:
+        typer.echo(
+            "transfer: "
+            f"encoding={transfer.get('encoding') or '-'} "
+            f"chunk={transfer.get('chunk_bytes') or 0} "
+            f"remaining={transfer.get('remaining_bytes') or 0} "
+            f"truncated={bool(transfer.get('truncated'))}"
+        )
     if merged.get("local_pull"):
         typer.echo("delivery: current_hub_control")
     content = merged.get("content")
     if isinstance(content, dict):
         typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
+        return
+    if isinstance(merged.get("text"), str):
+        typer.echo(f"text chars: {len(merged.get('text') or '')}")
+        return
+    if isinstance(merged.get("content_base64"), str):
+        typer.echo(f"base64 chars: {len(merged.get('content_base64') or '')}")
 
 
 @sidecar_app.command("status")

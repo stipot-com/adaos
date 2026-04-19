@@ -371,11 +371,17 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
                 "ok": True,
                 "exists": True,
                 "artifact": {"artifact_id": "mem-001-raw", "kind": "heap_dump"},
-                "content": {"format": "local-only", "chunks": []},
+                "transfer": {
+                    "encoding": "base64",
+                    "chunk_bytes": 256,
+                    "remaining_bytes": 1024,
+                    "truncated": True,
+                },
+                "content_base64": "AAEC",
             }
 
     def _fake_get(url, headers=None, timeout=None):
-        assert url == "http://127.0.0.1:8777/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw"
+        assert url == "http://127.0.0.1:8777/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw?offset=0&max_bytes=262144"
         assert headers == {"X-AdaOS-Token": "dev-token"}
         return _Response()
 
@@ -386,5 +392,6 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
 
     assert result.exit_code == 0
     assert "memory artifact pull: session=mem-001 id=mem-001-raw kind=heap_dump strategy=local_control_pull exists=True" in result.output
+    assert "transfer: encoding=base64 chunk=256 remaining=1024 truncated=True" in result.output
     assert "delivery: current_hub_control" in result.output
-    assert "content keys: chunks, format" in result.output
+    assert "base64 chars: 4" in result.output

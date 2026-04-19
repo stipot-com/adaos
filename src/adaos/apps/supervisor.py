@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -2049,6 +2050,16 @@ class SupervisorManager:
         }
 
     def memory_session_artifact(self, session_id: str, artifact_id: str) -> dict[str, Any] | None:
+        return self.memory_session_artifact_chunk(session_id, artifact_id, offset=0, max_bytes=256 * 1024)
+
+    def memory_session_artifact_chunk(
+        self,
+        session_id: str,
+        artifact_id: str,
+        *,
+        offset: int = 0,
+        max_bytes: int = 256 * 1024,
+    ) -> dict[str, Any] | None:
         token = str(session_id or "").strip()
         ref_id = str(artifact_id or "").strip()
         if not token or not ref_id:
@@ -2075,16 +2086,56 @@ class SupervisorManager:
         }
         if path and path.exists():
             payload["exists"] = True
-            if str(artifact.get("content_type") or "").strip().lower() == "application/json":
+            size_bytes = int(path.stat().st_size)
+            start = max(0, int(offset or 0))
+            chunk_size = max(1, min(int(max_bytes or 256 * 1024), 1024 * 1024))
+            if start > size_bytes:
+                start = size_bytes
+            remaining_bytes = max(0, size_bytes - start)
+            read_bytes = min(chunk_size, remaining_bytes)
+            content_type = str(artifact.get("content_type") or "").strip().lower()
+            payload["transfer"] = {
+                "offset": start,
+                "requested_max_bytes": chunk_size,
+                "size_bytes": size_bytes,
+                "chunk_bytes": read_bytes,
+                "remaining_bytes": max(0, remaining_bytes - read_bytes),
+                "truncated": remaining_bytes > read_bytes,
+                "pull_supported": True,
+            }
+            if content_type == "application/json" and start == 0 and size_bytes <= chunk_size:
                 try:
                     payload["content"] = json.loads(path.read_text(encoding="utf-8"))
+                    payload["transfer"]["encoding"] = "json"
                 except Exception:
                     payload["content"] = None
+                    payload["transfer"]["encoding"] = "unavailable"
             else:
-                payload["content"] = None
+                data = b""
+                if read_bytes > 0:
+                    with path.open("rb") as handle:
+                        handle.seek(start)
+                        data = handle.read(read_bytes)
+                if content_type.startswith("text/"):
+                    payload["text"] = data.decode("utf-8", errors="replace")
+                    payload["transfer"]["encoding"] = "utf-8"
+                else:
+                    payload["content_base64"] = base64.b64encode(data).decode("ascii")
+                    payload["transfer"]["encoding"] = "base64"
+            payload["content"] = payload.get("content")
         else:
             payload["exists"] = False
             payload["content"] = None
+            payload["transfer"] = {
+                "offset": max(0, int(offset or 0)),
+                "requested_max_bytes": max(1, min(int(max_bytes or 256 * 1024), 1024 * 1024)),
+                "size_bytes": 0,
+                "chunk_bytes": 0,
+                "remaining_bytes": 0,
+                "truncated": False,
+                "pull_supported": False,
+                "encoding": "unavailable",
+            }
         return payload
 
     def start_memory_profile(
@@ -4081,8 +4132,22 @@ async def supervisor_memory_session(session_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}", dependencies=[Depends(require_token)])
-async def supervisor_memory_session_artifact(session_id: str, artifact_id: str) -> dict[str, Any]:
-    payload = _manager().memory_session_artifact(session_id, artifact_id)
+async def supervisor_memory_session_artifact(
+    session_id: str,
+    artifact_id: str,
+    offset: int = 0,
+    max_bytes: int = 256 * 1024,
+) -> dict[str, Any]:
+    manager = _manager()
+    if hasattr(manager, "memory_session_artifact_chunk"):
+        payload = manager.memory_session_artifact_chunk(
+            session_id,
+            artifact_id,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+    else:
+        payload = manager.memory_session_artifact(session_id, artifact_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="memory profiling artifact was not found")
     return payload

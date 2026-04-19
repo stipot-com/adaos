@@ -270,6 +270,38 @@ def test_build_memory_profile_report_marks_remote_artifact_policy(tmp_path) -> N
     assert report["artifact_policy"]["fallback_delivery_mode"] == "local_control_pull"
 
 
+def test_memory_session_artifact_chunk_supports_binary_transfer(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    artifact_path = tmp_path / "artifact.bin"
+    artifact_path.write_bytes(b"\x00\x01\x02\x03" * 32)
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "trace_profile",
+            "session_state": "finished",
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-bin",
+                    "kind": "heap_dump",
+                    "path": str(artifact_path),
+                    "content_type": "application/octet-stream",
+                    "size_bytes": artifact_path.stat().st_size,
+                }
+            ],
+        }
+    )
+
+    payload = manager.memory_session_artifact_chunk("mem-001", "mem-001-bin", offset=0, max_bytes=32)
+
+    assert payload is not None
+    assert payload["exists"] is True
+    assert payload["transfer"]["encoding"] == "base64"
+    assert payload["transfer"]["chunk_bytes"] == 32
+    assert payload["transfer"]["truncated"] is True
+    assert isinstance(payload["content_base64"], str)
+
+
 def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_TELEMETRY_SEC", "5")
