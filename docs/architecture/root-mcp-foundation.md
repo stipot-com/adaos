@@ -7,7 +7,9 @@ It is not a private shell bridge for Codex and not a one-off endpoint for a sing
 - `LLM-assisted development` of skills and scenarios through SDK-oriented surfaces
 - `LLM-assisted operations` through managed targets and governed operational capabilities
 
-This document defines the target-state extension and the early implementation path. The human-facing control-plane counterpart is described in [Infrascope](infrascope.md).
+This document defines the target-state architecture and key boundaries.
+Detailed sequencing is tracked in [Root MCP Roadmap](root-mcp-roadmap.md).
+The human-facing control-plane counterpart is described in [Infrascope](infrascope.md).
 
 ## Executive Summary
 
@@ -56,6 +58,11 @@ Both sub-surfaces should reuse the same root-hosted building blocks:
 - `audit trail` and `operational event model`
 - `normalized response model` for tool responses, errors, redactions, and linked event IDs
 
+These building blocks should stay small and stable.
+They are the `foundation`, not the whole product surface.
+
+Domain-specific MCP surfaces should evolve as `planes` over that foundation.
+
 ## Placement in AdaOS Target Architecture
 
 `Root MCP Foundation` should sit alongside the future web control plane, not below it and not as an implementation detail of it.
@@ -91,6 +98,37 @@ managed targets
 - `SDK`: becomes the first-class development contract surface that MCP exposes in machine-readable form
 - `web control plane`: remains the primary human-facing operational surface
 - `MCP`: becomes the primary agent-facing typed surface
+
+## Foundation vs Planes
+
+`Root MCP Foundation` should not hard-code every product-facing projection directly into the kernel layer.
+
+The preferred target-state split is:
+
+- `Root MCP Foundation`
+  - auth and session resolution
+  - policy evaluation
+  - audit and event model
+  - routing and target resolution
+  - descriptor cache and plane registry contracts
+- `MCP Planes`
+  - typed tool catalogs
+  - descriptive and operational projections
+  - domain-specific capability profiles
+  - client-facing surface evolution
+
+This keeps the root-hosted governance boundary stable while allowing multiple MCP surfaces to evolve independently.
+
+Candidate planes include:
+
+- `AdaOSDevPlane`
+- `InfraOpsPlane`
+- `ProfileOpsPlane`
+
+The key rule is:
+
+- planes may evolve quickly
+- foundation contracts should evolve slowly
 
 ## Root MCP Foundation Model
 
@@ -181,6 +219,54 @@ That event model should be shared across:
 - diagnostics and incident timelines
 - later analytics and workflow effectiveness reporting
 
+## Root Descriptor Cache
+
+The foundation should also include a root-hosted `descriptor cache` for stable and pseudo-static descriptive information.
+
+This cache exists because many MCP queries are not live operational reads.
+They are descriptive questions such as:
+
+- how AdaOS is structured
+- which SDK contracts are supported
+- which manifests, templates, and schemas exist
+- which public skills and scenarios are available
+- which MCP planes and capability profiles are published
+
+For these queries, `root` should not need to contact a `hub` on every request.
+
+### Cached Descriptor Classes
+
+The first descriptor-cache classes should include:
+
+- architecture descriptors
+- SDK export metadata
+- schemas and manifest contracts
+- template catalog metadata
+- capability profile registry
+- MCP plane registry
+- public skill registry summaries
+- public scenario registry summaries
+
+### Descriptor Freshness Model
+
+Each cached descriptor should publish freshness and provenance fields such as:
+
+- `descriptor_id`
+- `source_kind`
+- `source_ref`
+- `generated_at`
+- `fresh_until`
+- `cache_ttl_sec`
+- `stability`
+- `content_hash`
+
+The key rule is:
+
+- descriptive surfaces prefer root-curated cached descriptors
+- operational surfaces prefer the live authority source
+
+This is an architectural distinction, not only a performance optimization.
+
 ## MCP-to-SDK Foundation
 
 The first development-facing responsibility of `Root MCP Foundation` is to expose a curated, typed, machine-readable view of AdaOS development surfaces.
@@ -221,6 +307,23 @@ The development surface should not default to:
 
 Instead, the surface should expose curated descriptors, schemas, manifests, registries, template metadata, and selected examples. Raw source access may still exist elsewhere for developers, but it should not be the primary MCP abstraction.
 
+### Descriptor Build Pipeline
+
+The descriptive interface should be integrated into CI/CD and publish lifecycle rather than being assembled only from ad hoc runtime scraping.
+
+The current `build SDK` work is the right starting prototype for this direction.
+
+Target-state flow:
+
+1. CI/CD builds descriptive artifacts
+2. publish flows for skills and scenarios emit normalized registry descriptors
+3. root ingests and stores those artifacts in the descriptor cache
+4. descriptive MCP planes serve those cached descriptors to clients
+
+This allows descriptive freshness to become part of software lifecycle instead of depending on runtime reachability.
+
+The same pipeline should later cover public skills and scenarios as first-class descriptive assets.
+
 ### Evolution Path
 
 The development-facing path should be:
@@ -246,11 +349,50 @@ A `managed target` is an environment that `root` can identify, evaluate, and gov
 
 The first managed target should be a `test hub`.
 
+### Goal Slice: `ProfileOps`
+
+For supervisor-owned profiling and leak diagnostics, AdaOS should define an explicit convergence slice:
+
+- `ProfileOps`
+
+`ProfileOps` is the goal-state where profiling becomes a first-class part of the `MCP Operational Surface`.
+It should not remain only:
+
+- a local supervisor HTTP API
+- a root `memory_profile` report family
+- a CLI-only or endpoint-specific retrieval path
+
+The intended layering is:
+
+```text
+supervisor
+  -> owns profiling policy, restart-into-profile, local session state, artifact materialization
+
+root memory_profile report family
+  -> remains the replication and retrieval substrate for published summaries and selected artifacts
+
+Root MCP Foundation
+  -> publishes typed profiler contracts
+  -> applies policy and scope checks
+  -> audits profiler reads and writes
+  -> routes tool calls either to root-published profiling evidence or to target-side bounded profiling controls
+
+Codex / automation / Infrascope
+  -> consume the same typed profiler operational surface
+```
+
+The key rule is:
+
+- supervisor remains the profiling authority
+- Root MCP becomes the typed, governed, auditable projection of that authority
+
+This closes the current gap where profiling can reach `root`, but is not yet exposed as a first-class MCP capability surface.
+
 ### Client Model
 
 The first external client model should also be fixed early so Root MCP can later be attached to Codex in VS Code and similar tools without rethinking the contract.
 
-The baseline client configuration should be:
+For native AdaOS clients, the baseline client configuration should be:
 
 - `root_url`
 - `subnet_id`
@@ -264,7 +406,47 @@ The intended flow is:
 3. client authenticates with an `access_token`
 4. `root` resolves managed-target and policy context before exposing operational capabilities
 
-On later phases, `infra_access_skill` may become the issuer or bootstrap mediator for target-scoped access tokens. What matters at this stage is fixing the client-facing shape early, even before the token-issuance lifecycle is fully implemented.
+For external MCP clients such as Codex, this explicit shape is still important internally, but the client may not be able to provide session parameters such as `subnet_id` during MCP setup.
+
+That constraint should be handled through a root-issued session object rather than by weakening root routing semantics.
+
+### MCP Session Lease
+
+External MCP access should converge on a first-class root-side object:
+
+- `MCP Session Lease`
+
+An `MCP Session Lease` should bind:
+
+- `session_id`
+- `audience`
+- `target_id`
+- `subnet_id`
+- `zone`
+- `capability_profile`
+- effective capabilities or allowed tools
+- `created_at`
+- `deadline_at`
+- `last_used_at`
+- `use_count`
+- `status`
+
+The intended flow is:
+
+1. an operator uses a governed operational surface such as `infra_access_skill`
+2. root creates an `MCP Session Lease` for a chosen target and capability profile
+3. root returns a bearer bound to that stored lease
+4. later requests use only `url + bearer`
+5. root resolves target, subnet, zone, and capability context from the lease itself
+
+This makes Codex-compatible access possible without treating `subnet_id` as an MCP session parameter.
+
+The first intended UX should be:
+
+- user chooses `target`
+- user chooses `ttl`
+- user chooses a capability profile such as `ProfileOpsRead` or `ProfileOpsControl`
+- `infra_access_skill` lists open sessions with target, deadline, last-used time, and usage count using root as the source of truth
 
 ### Why the First Target Should Be a Test Hub
 
@@ -335,6 +517,12 @@ In Phase 1, this web surface should be able to bind directly to typed Root MCP t
 - `hub.get_capability_usage_summary`
 - `hub.list_access_tokens`
 
+As MCP session leases are introduced, web-facing operational views should also be able to bind to session-management data such as:
+
+- list open MCP sessions
+- show target, deadline, last use, and usage count
+- revoke or rotate sessions
+
 ### What Should Be Logged
 
 At minimum, every handled request should record:
@@ -398,6 +586,34 @@ Operational capabilities should initially be published through `infra_access_ski
 - `hub.get_test_results`
 - `hub.rollback_last_test_deploy`
 
+`ProfileOps` should extend that same capability model with a dedicated profiler family:
+
+- `hub.memory.get_status`
+- `hub.memory.list_sessions`
+- `hub.memory.get_session`
+- `hub.memory.list_incidents`
+- `hub.memory.list_artifacts`
+- `hub.memory.get_artifact`
+- `hub.memory.start_profile`
+- `hub.memory.stop_profile`
+- `hub.memory.retry_profile`
+- `hub.memory.publish_profile`
+
+These should split into:
+
+- `read-oriented profiler tools` that project supervisor/root-held profiling state
+- `bounded write-oriented profiler tools` that trigger supervisor-owned control actions through governed routes
+
+The first implementation goal should be read-first parity.
+Write tools should follow only after policy, audit, and execution-route boundaries are explicit.
+
+Capability publication should also support named capability profiles, for example:
+
+- `ProfileOpsRead`
+- `ProfileOpsControl`
+
+This is preferable to making external MCP sessions assemble arbitrary raw capability lists by default.
+
 Early phases should start with read-only and low-risk diagnostics, then grow into controlled writes on test targets only.
 
 ### Explicit Non-Goals and Disallowed Operations
@@ -423,6 +639,25 @@ The operational routing flow should be:
 7. `root` records the operational event and returns a normalized MCP response linked to the audit trace
 
 This path is intentionally evolutionary: the first implementation should reuse existing root-hub transports and node control paths where possible, while wrapping them in typed contracts and policy checks.
+
+For `ProfileOps`, routing should be explicitly split by evidence source:
+
+1. `summary and catalog reads`
+   route through root-published `memory_profile` reports when the requested data has already been published to root
+2. `artifact reads`
+   route through root-inline payloads when available, otherwise return an explicit bounded delivery contract for local-control pull
+3. `profiling control actions`
+   route as typed MCP operations to the managed target only when that target publishes the corresponding profiling capabilities and execution constraints
+
+Profiler reads and writes have different authority, latency, and artifact-delivery properties and should stay explicit in the contract model.
+
+More generally, Root MCP routing should distinguish three classes:
+
+- `descriptive cached reads`
+- `operational live reads`
+- `operational bounded writes`
+
+These classes should not be collapsed into one undifferentiated request path, because they have different freshness, authority, and caching semantics.
 
 ## Safety, Governance, and Audit
 
@@ -453,158 +688,6 @@ Safety is part of the architecture, not a later hardening task.
 
 The eventual goal is to align this model with AdaOS's broader permission and capability architecture so that SDK, web UI, MCP, and automation use the same vocabulary and policy evaluation model.
 
-## Roadmap Extension
-
-`Root MCP Foundation` should evolve as a companion roadmap track.
-
-### Phase 0. Architectural Fixation
-
-- fix terminology and boundaries
-- define root-first MCP model
-- define split between development and operational surfaces
-- define managed target model
-- define `infra_access_skill` concept
-- define operational event and observability model
-
-Phase 0 is complete when:
-
-- the terminology and placement are fixed in architecture docs
-- `Infrascope`, SDK-first control-plane docs, and roadmap notes reference the same MCP foundation model
-- `infra_access_skill` is established as the preferred target-side operational surface
-- `test hub` is established as the first managed target in the architecture notes
-
-### Phase 1. Root MCP Foundation Skeleton
-
-- add minimal root MCP entrypoint and request/response envelopes
-- add root-hosted tool contract registry
-- add initial audit primitives and event IDs
-- expose only minimal read-oriented descriptors and placeholder operational contracts
-
-### Current Phase 1 Implementation Slice
-
-The current code checkpoint establishes the first root-hosted skeleton under:
-
-- `src/adaos/services/root_mcp/model.py`
-- `src/adaos/services/root_mcp/audit.py`
-- `src/adaos/services/root_mcp/registry.py`
-- `src/adaos/services/root_mcp/service.py`
-- `src/adaos/services/root_mcp/targets.py`
-- `src/adaos/services/root_mcp/client.py`
-- `src/adaos/services/root_mcp/codex_bridge.py`
-- `src/adaos/apps/api/root_endpoints.py`
-- `src/adaos/apps/cli/commands/dev.py`
-
-What is implemented in this slice:
-
-- root MCP response envelope and error model
-- root-hosted tool-contract registry over root-curated descriptor sets plus placeholder operational contracts
-- root-side descriptor registry instead of a direct public `export_sdk` MCP path
-- state-backed managed-target registry skeleton with `test hub` as the first published target descriptor
-- report-backed managed-target refresh through hub control-lifecycle reports
-- `RootMcpClient` skeleton with `root_url + subnet_id + access_token + zone` configuration model
-- initial root-side capability registry and policy gate for direct endpoints and MCP tool execution
-- bounded root-issued MCP access-token primitives for external clients
-- minimal root MCP API entrypoints:
-  - `GET /v1/root/mcp/foundation`
-  - `GET /v1/root/mcp/contracts`
-  - `GET /v1/root/mcp/descriptors`
-  - `GET /v1/root/mcp/descriptors/{descriptor_id}`
-  - `GET /v1/root/mcp/targets`
-  - `GET /v1/root/mcp/targets/{target_id}`
-  - `POST /v1/root/mcp/targets`
-  - `POST /v1/root/mcp/access-tokens`
-  - `GET /v1/root/mcp/access-tokens`
-  - `POST /v1/root/mcp/access-tokens/{token_id}/revoke`
-  - `POST /v1/root/mcp/call`
-  - `GET /v1/root/mcp/audit`
-  - `POST /v1/hub/control/report`
-  - `GET /v1/hubs/control/reports`
-- read-only development tools for:
-  - foundation summary
-  - contract listing
-  - descriptor-set catalog
-  - descriptor-set retrieval
-  - canonical system-model vocabulary
-  - skill/scenario manifest schemas
-- executable telemetry-backed operational tools for:
-  - `hub.get_status`
-  - `hub.get_runtime_summary`
-  - `hub.get_operational_surface`
-  - `hub.get_activity_log`
-  - `hub.get_capability_usage_summary`
-  - `hub.issue_access_token`
-  - `hub.list_access_tokens`
-  - `hub.revoke_access_token`
-- first local-pilot `infra_access_skill` execution adapters for:
-  - `hub.get_logs`
-  - `hub.run_healthchecks`
-  - `hub.restart_service`
-  - `hub.run_allowed_tests`
-  - `hub.get_test_results`
-  - `hub.deploy_ref`
-  - `hub.rollback_last_test_deploy`
-- policy-side gating of target-bound `hub.*` tools by the target's published `infra_access_skill` capability surface
-- target-side `infra_access_skill` self-description in control reports, including skill metadata, web UI presence, observability hints, and token-management readiness
-- execution-mode gating, so local-pilot adapters only run when the target publishes `execution_mode=local_process`
-- optional verified-report policy mode, so operational tools can require a verified control report before execution
-- unified operational audit events for both MCP tool execution and `hub.control_report.ingest`
-- richer request-policy-routing-result trace metadata embedded in MCP responses and audit events, including argument keys, routing mode, and redaction hints
-- `infra_access_skill` web UI data-source publication over typed Root MCP tools for overview, activity, capability usage, and token-management panels
-- root-side access-token lifecycle management with issue, list, revoke, and audit coverage for web-client and external MCP flows
-- target-scoped token-management routing through `hub.issue_access_token`, `hub.list_access_tokens`, and `hub.revoke_access_token`, gated by the target's published `infra_access_skill` token-management surface
-- state-backed local-pilot deploy and rollback records for test targets, without direct git mutation or arbitrary shell access
-- initial audit persistence to local root MCP audit storage
-- audit filtering by tool, trace, target, and subnet scope
-- scope-aware target filtering by `subnet_id` and `zone`
-- access-token-backed MCP auth with bounded capabilities, target allowlists, and scope inheritance
-- local `stdio` Codex bridge for VS Code and Codex CLI, bound to a managed test hub through a workspace-local profile plus token file
-- `adaos dev root mcp prepare-codex` to issue a target-scoped bridge token and materialize the local Codex profile
-- `adaos dev root mcp serve` to expose a real MCP tool surface over `stdio` by translating Codex tool calls into `RootMcpClient` calls
-- initial Codex-facing tool set for:
-  - `foundation`
-  - `list_managed_targets`
-  - `get_managed_target`
-  - `get_operational_surface`
-  - `get_status`
-  - `get_runtime_summary`
-  - `get_activity_log`
-  - `get_capability_usage_summary`
-  - `get_logs`
-  - `run_healthchecks`
-  - `recent_audit`
-
-This is intentionally still an early skeleton. The current slice proves the first `hub -> root -> Root MCP` operational loop through control reports, skill-aware managed-target publication, root-hosted read tools, `infra_access_skill` surface inspection, typed observability feeds for activity and capability usage, bounded local-pilot `infra_access_skill` writes for restart/test/deploy flows, richer request-policy-routing-result traces, and a first target-scoped access-token management lifecycle suitable for web-client control surfaces.
-
-It also now proves the first end-to-end external-client workflow for Codex in VS Code without exposing a fake direct SDK path: Codex starts a local `stdio` bridge, the bridge uses a workspace-local Root MCP profile and token file, and Root MCP remains the only machine-operable backend surface. Broader remote execution and real target-side rollout execution remain deferred to the future `infra_access_skill` path.
-
-### Phase 2. MCP-to-SDK Base
-
-- expose machine-readable SDK descriptors
-- expose skill/scenario contracts and schemas
-- expose canonical vocabulary and projection-class registries
-- build the first limited LLM-facing development surface
-
-### Phase 3. Test-Hub Operational Pilot
-
-- register `test hub` as the first managed target
-- implement `infra_access_skill`
-- start with read-only diagnostics and low-risk checks
-- add controlled write operations only after bounded execution and audit are proven
-- add web UI and operational logging for the skill
-
-### Phase 4. Controlled Development + Operations Convergence
-
-- add task-shaped development packets for skill/scenario authoring
-- improve structured diagnostics and target summaries
-- converge web and MCP surfaces around shared objects, actions, and event history
-- use the foundation in iterative Codex and LLM-assisted workflows
-
-### Phase 5. Broader Operational Architecture
-
-- support multiple managed targets
-- enrich capability classes and policy overlays
-- expand operational-skill catalog beyond `infra_access_skill`
-- align root MCP, `Infrascope`, and future approval/change workflows
 
 ## Gap Analysis Against Current AdaOS State
 

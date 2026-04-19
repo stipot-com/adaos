@@ -33,5 +33,6 @@ Current target-state control-plane extensions are documented in:
 
 - [Infrascope](infrascope.md): human-facing control-plane architecture over the canonical system model
 - [Root MCP Foundation](root-mcp-foundation.md): root-hosted agent-facing foundation for future MCP development and operations surfaces
+- [Root MCP Roadmap](root-mcp-roadmap.md): sequencing for planes, descriptor cache, session leases, and companion slices such as `ProfileOps`
 - [AdaOS Supervisor](adaos-supervisor.md): local always-on process and update supervision authority above the restartable runtime
 - [Webspace Scenario Pointer/Projection Roadmap](webspace-scenario-pointer-projection-roadmap.md): target architecture and migration checklist for moving scenario switching from materialize-and-copy to pointer-first semantic rebuild

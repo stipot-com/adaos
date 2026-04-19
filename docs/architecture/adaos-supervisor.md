@@ -718,6 +718,41 @@ The first active Phase 3 slice now exists:
 - root can serve the currently allowed inline JSON artifact payloads for one published session, while heavy or disallowed artifacts remain local-only until a later transport policy is added
 - operator tooling now has a normalized root-side delivery contract for artifacts: root can answer `root_inline_content` directly for small published JSON payloads, and can return an explicit `local_control_pull` contract for heavier local artifacts, including chunked `utf-8` / `base64` transfer metadata for the direct pull path without pretending that those artifacts are replicated at root
 
+### Target-state integration: `ProfileOps`
+
+The next target-state step for this profiling work should be explicitly named:
+
+- `ProfileOps`
+
+`ProfileOps` means:
+
+- supervisor keeps ownership of profiling policy, profiling-mode restarts, local telemetry, sessions, and artifacts
+- root keeps the `memory_profile` report family as the publication and retrieval substrate
+- `Root MCP Foundation` publishes typed profiler tools as the governed operational surface over that supervisor-owned state
+
+This target state is intentionally not:
+
+- direct remote control of supervisor-only endpoints by external MCP clients
+- treating root report endpoints as if they were already the MCP product surface
+- bypassing root policy, scope, and audit for profiling writes
+
+The desired layering is:
+
+```text
+supervisor profiling authority
+  -> local API, session store, telemetry, artifacts
+
+root memory_profile reports
+  -> replicated summaries and selected artifacts
+
+Root MCP Foundation / ProfileOps
+  -> typed profiler reads
+  -> typed bounded profiler controls
+  -> scope checks, capability checks, audit, and client-facing contracts
+```
+
+Under `ProfileOps`, profiling should become a first-class `MCP Operational Surface`, not a side channel attached after the fact.
+
 ### Local control surfaces
 
 The target local supervisor memory API should include read-only status and explicit operator controls:
@@ -807,7 +842,55 @@ Supervisor policy should therefore preserve these rules:
 - expose lightweight operator retrieval flows before large artifact transport
 - keep local-first retention so profiling evidence survives root/network outages
 
-### Phase 4 - Documentation and baseline supervisor state model
+### Phase 3.5 - `ProfileOps` architecture fixation
+
+- declare `ProfileOps` as the goal-state convergence of supervisor profiling and Root MCP
+- freeze the first profiler tool ids and capability vocabulary for MCP-facing reads and writes
+- define the split between root-published profiling evidence and target-routed profiling control actions
+- document that supervisor remains profiling authority while Root MCP becomes the typed external surface
+
+Exit criteria:
+
+- architecture docs consistently describe profiling as a supervisor-owned surface projected through Root MCP
+- the system no longer relies on implicit knowledge of raw supervisor/root endpoints to explain the target state
+
+### Phase 4 - `ProfileOps` read-only MCP surface
+
+- add read-oriented profiler contracts to Root MCP for status, incidents, sessions, artifact catalogs, and artifact retrieval
+- expose the same read surface through `RootMcpClient`
+- expose the same read surface through the local Codex `stdio` bridge
+- keep the existing root report endpoints as substrate and compatibility paths
+
+Exit criteria:
+
+- an MCP client can inspect profiling state and published evidence without bespoke knowledge of `/v1/hubs/memory_profile/*`
+- profiler reads participate in standard Root MCP policy and audit flows
+
+### Phase 5 - `ProfileOps` bounded control surface
+
+- add typed MCP write tools for `start_profile`, `stop_profile`, `retry_profile`, and `publish_profile`
+- gate those tools on explicit target-published profiler capabilities
+- keep control execution bounded and environment-scoped in the same style as other `hub.*` write operations
+- preserve supervisor as the only authority that decides requested profile mode convergence and session lifecycle
+
+Exit criteria:
+
+- profiling writes can be triggered through Root MCP without bypassing root policy and audit
+- profiler control paths are no longer special-cased outside the operational tool model
+
+### Phase 6 - Unified audit and consumer convergence
+
+- align profiler actions with the shared Root MCP operational event model
+- let Infrascope and Codex consume the same typed profiler contracts
+- make capability-usage and activity views include profiler operations without a second audit vocabulary
+- reserve raw endpoints for transport substrate, debugging, and compatibility rather than primary integration
+
+Exit criteria:
+
+- profiling has one governed operational surface with both human and agent consumers
+- web and MCP clients do not need separate profiler-specific integration logic
+
+### Phase 7 - Documentation and baseline supervisor state model
 
 - freeze supervisor authority boundary
 - define persisted attempt schema
@@ -820,7 +903,7 @@ Current implementation baseline now covers this phase:
 - `adaos autostart update-status` prefers supervisor-backed state first, then falls back to the public supervisor transition surface before legacy runtime admin status
 - operator-facing field meanings for the normalized attempt payload are documented in `docs/guides/supervisor-update-attempts.md`
 
-### Phase 5 - Resilience before full split
+### Phase 8 - Resilience before full split
 
 - add stale-attempt timeout handling
 - stop clearing update plan before validation commit
@@ -832,26 +915,26 @@ Current implementation baseline now covers this phase:
 - autostart keeps the pending update plan through launch and clears it only after validation reaches a terminal commit or failure
 - boot-time recovery no longer degrades interrupted `restarting` / `applying` paths to generic `idle`; it writes an explicit failed transition state instead
 
-### Phase 6 - Introduce standalone supervisor process
+### Phase 9 - Introduce standalone supervisor process
 
 - add `adaos supervisor serve`
 - move update state and admin/update endpoints into supervisor
 - make systemd unit target supervisor instead of runtime
 
-### Phase 7 - Child runtime management
+### Phase 10 - Child runtime management
 
 - launch runtime as a child process of supervisor
 - move runtime restart and validation logic out of `autostart_runner`
 - persist child process metadata and restart reason in supervisor state
 
-### Phase 8 - Sidecar alignment
+### Phase 11 - Sidecar alignment
 
 - keep `adaos-realtime` lifecycle under supervisor in managed topology
 - keep runtime-owned startup/shutdown only as standalone fallback when supervisor is absent
 - keep sidecar contract transport-only
 - keep warm candidates memory-bounded: warm-switch admission should account for runtime process-family RSS, and candidate prewarm should defer external service-skill startup until cutover
 
-### Phase 9 - Operator UX
+### Phase 12 - Operator UX
 
 - `adaos autostart/update-status` resolves to supervisor API first
 - `adaos autostart update-defer` can reschedule a planned/countdown update window without losing the current supervisor attempt context

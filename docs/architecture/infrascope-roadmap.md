@@ -46,6 +46,18 @@ The expected Root MCP Foundation sequencing is:
 4. `Test-hub operational pilot`: first managed target, `infra_access_skill`, read-only diagnostics first, then controlled writes with observability
 5. `Convergence`: shared objects, actions, event history, and review flows across web and MCP surfaces
 
+One explicit convergence slice inside that companion track should now be named:
+
+- `ProfileOps`
+
+`ProfileOps` is the goal-state where supervisor-owned memory profiling is exposed through typed Root MCP contracts and then consumed by both:
+
+- agent clients such as Codex
+- human-facing control-plane surfaces such as `Infrascope`
+
+For `Infrascope`, this means profiling should not be integrated as a separate bespoke report browser.
+It should eventually bind to the same profiler tool contracts that Root MCP publishes for agent clients.
+
 `Infrascope` should not wait for that whole track to finish, but it should avoid diverging from it.
 
 ## Phase 0: Canonical Vocabulary
@@ -114,6 +126,8 @@ Build machine-readable projections that can feed both UI and LLM workflows.
 
 - a selected object can be fetched as `object`, `neighborhood`, and `task_packet`
 - UI and LLM no longer need bespoke serializers for each object kind
+
+This phase should also preserve compatibility with future `ProfileOps` task packets and object inspectors so profiling sessions and incidents can later be projected through the same object model instead of a profiling-only UI path.
 
 ## Phase 2: Operator Workspace MVP
 
@@ -206,6 +220,10 @@ Turn `Infrascope` into a real operational cockpit instead of a static inventory.
 
 - a runtime failure can be traced through execution and event flow
 - quota spikes can be attributed to a concrete scenario, skill, or subnet object
+
+`ProfileOps` alignment point for this phase:
+
+- profiling incidents, sessions, and artifact summaries should appear as first-class inspectable operational objects once the typed profiler MCP surface exists
 
 ## Phase 5: Profile-Aware Overlays
 
