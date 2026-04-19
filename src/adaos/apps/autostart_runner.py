@@ -410,6 +410,26 @@ def _reconcile_post_root_promotion_restart(current: dict[str, Any]) -> dict[str,
     return payload
 
 
+def _reconcile_interrupted_update_transition(current: dict[str, Any], *, plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    if isinstance(plan, dict) and plan:
+        return None
+    state = str(current.get("state") or "").strip().lower()
+    phase = str(current.get("phase") or "").strip().lower()
+    if state not in {"restarting", "applying"}:
+        return None
+    if state == "restarting" and phase in {"launch", "validate", "root_promoted", "root_promotion_pending"}:
+        return None
+    payload = dict(current)
+    payload["state"] = "failed"
+    payload["phase"] = phase or ("apply" if state == "applying" else "launch")
+    payload["message"] = "core update transition was interrupted before validation commit"
+    payload["interrupted_transition_state"] = state
+    payload["interrupted_transition_phase"] = phase or None
+    payload["updated_at"] = time.time()
+    payload["finished_at"] = time.time()
+    return payload
+
+
 def _update_validation_webspace_id() -> str:
     value = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_WEBSPACE_ID") or "default").strip()
     return value or "default"
@@ -914,7 +934,6 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                             f" failed={failed_total}"
                             f" deactivated={deactivated_total}"
                         )
-                clear_plan()
                 root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
                 status_state = "validated" if root_promotion_required else "succeeded"
                 status_phase = "root_promotion_pending" if root_promotion_required else "validate"
@@ -940,6 +959,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                         },
                     }
                 )
+                clear_plan()
                 raise SystemExit(int(proc.wait()))
             proc.terminate()
             try:
@@ -950,7 +970,6 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
         validation_stderr = _tail_text(stderr_path)
         restored = rollback_to_previous_slot()
         skill_runtime_rollback = rollback_installed_skill_runtimes() if restored else {}
-        clear_plan()
         payload: dict[str, Any] = {
             "state": "failed",
             "phase": "validate",
@@ -976,6 +995,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             if not bool(skill_runtime_rollback.get("ok")):
                 payload["message"] += " | some skill runtime rollbacks failed"
         write_status(payload)
+        clear_plan()
         raise SystemExit(1)
     completed = subprocess.run(argv or command or [], shell=bool(command), env=env, cwd=str(cwd) if cwd else None)
     raise SystemExit(int(completed.returncode))
@@ -1037,7 +1057,6 @@ def main() -> None:
                             payload["message"] += " | some skill runtime rollbacks failed"
                     write_status(payload)
                     raise SystemExit(1) from exc
-                clear_plan()
                 prepared_restart_boot = True
                 payload = {
                     "state": "restarting",
@@ -1064,7 +1083,6 @@ def main() -> None:
                     clear_plan()
                     raise SystemExit(int(result.get("returncode") or 1) or 1)
                 pending_update_succeeded = True
-                clear_plan()
                 target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
                 payload = {
                     "state": "restarting",
@@ -1091,9 +1109,13 @@ def main() -> None:
             if reconciled is not None:
                 write_status(reconciled)
             else:
-                finalized = finalize_runtime_boot_status()
-                if finalized is None:
-                    write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
+                interrupted = _reconcile_interrupted_update_transition(current_status, plan=plan)
+                if interrupted is not None:
+                    write_status(interrupted)
+                else:
+                    finalized = finalize_runtime_boot_status()
+                    if finalized is None:
+                        write_status({"state": "idle", "message": "autostart runner boot", "updated_at": time.time()})
 
         phase = "resolve_bind"
         host, port = _resolve_bind(conf, args.host, args.port)

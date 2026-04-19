@@ -826,6 +826,12 @@ Current implementation baseline now covers this phase:
 - stop clearing update plan before validation commit
 - emit explicit failure state for interrupted restart/apply paths
 
+Current implementation baseline now covers this phase:
+
+- stale supervisor attempts now expire deterministically for both in-flight restart/apply transitions and `awaiting_root_restart`
+- autostart keeps the pending update plan through launch and clears it only after validation reaches a terminal commit or failure
+- boot-time recovery no longer degrades interrupted `restarting` / `applying` paths to generic `idle`; it writes an explicit failed transition state instead
+
 ### Phase 6 - Introduce standalone supervisor process
 
 - add `adaos supervisor serve`

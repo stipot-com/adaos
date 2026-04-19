@@ -143,6 +143,44 @@ def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeyp
     assert attempt["last_status"]["root_restart_completed_at"] == 499.0
 
 
+def test_reconcile_update_status_marks_stale_awaiting_root_restart_failed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_UPDATE_TIMEOUT_SEC", "60")
+    monkeypatch.setattr(supervisor.time, "time", lambda: 120.0)
+    write_status(
+        {
+            "state": "succeeded",
+            "phase": "root_promoted",
+            "action": "update",
+            "target_rev": "rev2026",
+            "reason": "test.root_restart",
+            "updated_at": 10.0,
+        }
+    )
+    supervisor._write_update_attempt(
+        {
+            "state": "awaiting_root_restart",
+            "action": "update",
+            "target_rev": "rev2026",
+            "reason": "test.root_restart",
+            "requested_at": 0.0,
+            "transitioned_at": 10.0,
+            "updated_at": 10.0,
+        }
+    )
+
+    monkeypatch.setattr(supervisor.time, "time", lambda: 240.0)
+    payload = supervisor._reconcile_update_status({"ok": True, "status": read_status(), "_served_by": "supervisor_fallback"})
+
+    assert payload["status"]["state"] == "failed"
+    assert payload["status"]["phase"] == "root_restart_timeout"
+    assert payload["_served_by"] == "supervisor_timeout_recovery"
+    attempt = supervisor._read_update_attempt()
+    assert isinstance(attempt, dict)
+    assert attempt["state"] == "failed"
+    assert attempt["completion_reason"] == "root restart timeout"
+
+
 def test_reconcile_update_status_clears_stale_candidate_prewarm_fields_when_root_restart_completes(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)

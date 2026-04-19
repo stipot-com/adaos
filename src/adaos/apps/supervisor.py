@@ -608,6 +608,34 @@ def _complete_update_attempt(*, state: str, status: dict[str, Any] | None, reaso
     return _write_update_attempt(payload)
 
 
+def _fail_root_restart_attempt(
+    *,
+    status: dict[str, Any],
+    attempt: dict[str, Any],
+    timeout_sec: float,
+    now: float,
+) -> dict[str, Any]:
+    failed_status = write_core_update_status(
+        {
+            "state": "failed",
+            "phase": "root_restart_timeout",
+            "action": str(status.get("action") or attempt.get("action") or "update"),
+            "target_rev": str(status.get("target_rev") or attempt.get("target_rev") or ""),
+            "target_version": str(status.get("target_version") or attempt.get("target_version") or ""),
+            "reason": str(status.get("reason") or attempt.get("reason") or "supervisor.root_restart_timeout"),
+            "message": "supervisor timed out waiting for autostart service restart after root promotion",
+            "supervisor_timeout_sec": timeout_sec,
+            "supervisor_timeout_at": now,
+            "supervisor_previous_status": dict(status),
+        }
+    )
+    return _complete_update_attempt(
+        state="failed",
+        status=failed_status,
+        reason="root restart timeout",
+    )
+
+
 def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
     attempt = _read_update_attempt()
@@ -615,6 +643,10 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
 
     payload["attempt"] = dict(attempt)
+    now = time.time()
+    timeout_sec = _update_attempt_timeout_sec()
+    status_age = max(0.0, now - _status_updated_at(status)) if _status_updated_at(status) > 0.0 else 0.0
+    transition_age = max(0.0, now - _attempt_transition_at(attempt)) if _attempt_transition_at(attempt) > 0.0 else 0.0
     if _is_root_restart_pending_attempt(attempt):
         if _is_root_restart_completed_status(status):
             payload["attempt"] = _complete_update_attempt(
@@ -622,6 +654,16 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
                 status=status,
                 reason="root restart completed",
             )
+        elif max(status_age, transition_age) >= timeout_sec:
+            failed_attempt = _fail_root_restart_attempt(
+                status=status,
+                attempt=attempt,
+                timeout_sec=timeout_sec,
+                now=now,
+            )
+            payload["status"] = read_core_update_status()
+            payload["attempt"] = failed_attempt
+            payload["_served_by"] = "supervisor_timeout_recovery"
         return payload
 
     if str(attempt.get("state") or "").strip().lower() != "active":
@@ -631,10 +673,6 @@ def _reconcile_update_status(payload: dict[str, Any]) -> dict[str, Any]:
         payload["attempt"] = _complete_update_attempt(state="completed", status=status, reason="terminal core update status")
         return payload
 
-    now = time.time()
-    timeout_sec = _update_attempt_timeout_sec()
-    status_age = max(0.0, now - _status_updated_at(status)) if _status_updated_at(status) > 0.0 else 0.0
-    transition_age = max(0.0, now - _attempt_transition_at(attempt)) if _attempt_transition_at(attempt) > 0.0 else 0.0
     if max(status_age, transition_age) < timeout_sec:
         return payload
 

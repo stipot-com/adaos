@@ -293,7 +293,7 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     assert captured[-1]["skill_runtime_rollback"]["rollback_total"] == 1
 
 
-def test_autostart_runner_clears_plan_and_exits_after_successful_apply(monkeypatch, tmp_path: Path) -> None:
+def test_autostart_runner_preserves_plan_during_successful_apply_until_validation(monkeypatch, tmp_path: Path) -> None:
     calls: list[object] = []
 
     monkeypatch.setattr(
@@ -326,7 +326,7 @@ def test_autostart_runner_clears_plan_and_exits_after_successful_apply(monkeypat
     else:
         raise AssertionError("expected SystemExit")
 
-    assert "clear_plan" in calls
+    assert "clear_plan" not in calls
     status_calls = [item for item in calls if isinstance(item, tuple) and item[0] == "write_status"]
     assert status_calls
     payload = status_calls[-1][1]
@@ -335,7 +335,7 @@ def test_autostart_runner_clears_plan_and_exits_after_successful_apply(monkeypat
     assert payload["target_slot"] == "B"
 
 
-def test_autostart_runner_prepared_restart_commits_deferred_skill_migration(monkeypatch, tmp_path: Path) -> None:
+def test_autostart_runner_prepared_restart_preserves_plan_until_validation(monkeypatch, tmp_path: Path) -> None:
     calls: list[object] = []
 
     monkeypatch.setattr(
@@ -381,7 +381,7 @@ def test_autostart_runner_prepared_restart_commits_deferred_skill_migration(monk
     except SystemExit:
         pass
 
-    assert "clear_plan" in calls
+    assert "clear_plan" not in calls
     status_calls = [item for item in calls if isinstance(item, tuple) and item[0] == "write_status"]
     assert status_calls
     payload = status_calls[0][1]
@@ -480,6 +480,56 @@ def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_
     assert captured[-1]["root_promotion_required"] is True
 
 
+def test_launch_active_slot_clears_plan_only_after_validation_status_is_written(monkeypatch) -> None:
+    events: list[object] = []
+
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "env": {},
+            "cwd": "",
+            "bootstrap_update": {"required": False, "changed_paths": []},
+        },
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("terminate should not be called on validation success")
+
+        def kill(self):
+            raise AssertionError("kill should not be called on validation success")
+
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
+    monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: events.append("clear_plan"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "write_status",
+        lambda payload: events.append(("write_status", str(payload.get("state") or ""), str(payload.get("phase") or ""))),
+    )
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert events[-2] == ("write_status", "succeeded", "validate")
+    assert events[-1] == "clear_plan"
+
+
 def test_launch_active_slot_respects_process_slot_override(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_ACTIVE_CORE_SLOT", "B")
@@ -572,6 +622,47 @@ def test_autostart_runner_preserves_root_promotion_pending_status_on_boot(monkey
 
     assert finalized_calls == [True]
     assert not any(str(item.get("state") or "").strip().lower() == "idle" for item in writes)
+
+
+def test_autostart_runner_marks_interrupted_restarting_without_plan_failed(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict] = []
+
+    monkeypatch.setattr(
+        autostart_runner,
+        "_parse_args",
+        lambda: type("Args", (), {"host": "127.0.0.1", "port": 8777, "token": None})(),
+    )
+    monkeypatch.setattr(autostart_runner, "init_ctx", lambda: None)
+    monkeypatch.setattr(autostart_runner, "read_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "load_config", lambda: None)
+    monkeypatch.setattr(
+        autostart_runner,
+        "read_status",
+        lambda: {"state": "restarting", "phase": "shutdown", "target_slot": "B"},
+    )
+    monkeypatch.setattr(autostart_runner, "_reconcile_post_root_promotion_restart", lambda current: None)
+    monkeypatch.setattr(autostart_runner, "finalize_runtime_boot_status", lambda: None)
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+    monkeypatch.setattr(autostart_runner, "_resolve_bind", lambda conf, host, port: (host, port))
+    monkeypatch.setattr(autostart_runner, "_advertise_base", lambda host, port: f"http://{host}:{port}")
+    monkeypatch.setattr(autostart_runner, "_stop_previous_server", lambda host, port: None)
+    monkeypatch.setattr(autostart_runner, "_pidfile_path", lambda host, port: tmp_path / "serve.json")
+    monkeypatch.setattr(autostart_runner, "_write_pidfile", lambda path, **kwargs: path.write_text("{}", encoding="utf-8"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_launch_active_slot_if_needed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+    )
+
+    try:
+        autostart_runner.main()
+    except SystemExit:
+        pass
+
+    assert captured[-1]["state"] == "failed"
+    assert captured[-1]["phase"] == "shutdown"
+    assert captured[-1]["interrupted_transition_state"] == "restarting"
+    assert "interrupted before validation commit" in str(captured[-1]["message"] or "")
 
 
 def test_autostart_runner_writes_failed_status_on_boot_exception(monkeypatch, tmp_path: Path) -> None:
