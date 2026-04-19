@@ -38,6 +38,8 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert foundation_payload["foundation"]["registries"]["access_token_registry"]["available"] is True
     assert foundation_payload["foundation"]["registries"]["mcp_session_registry"]["available"] is True
     assert "ProfileOpsRead" in foundation_payload["foundation"]["capability_profiles"]["profiles"]
+    assert foundation_payload["foundation"]["descriptor_cache"]["enabled"] is True
+    assert foundation_payload["foundation"]["surfaces"]["development"]["mode"] == "root_descriptor_cache"
     assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)
@@ -88,18 +90,31 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "mcp_client_profile" in descriptor_ids
     assert "capability_profiles" in descriptor_ids
     assert "mcp_session_profile" in descriptor_ids
+    assert "descriptor_bundle" in descriptor_ids
 
     capability_registry = client.get("/v1/root/mcp/descriptors/capability_registry", headers=scoped_headers)
     assert capability_registry.status_code == 200
-    capability_payload = capability_registry.json()["descriptor"]["payload"]
+    capability_descriptor = capability_registry.json()["descriptor"]
+    capability_payload = capability_descriptor["payload"]
     assert capability_payload["classes"]
     assert any(item["capability"] == "development.read.descriptors" for item in capability_payload["classes"])
+    assert capability_descriptor["metadata"]["ttl_seconds"] > 0
+    assert capability_descriptor["metadata"]["freshness"]["state"] == "fresh"
+    assert capability_descriptor["metadata"]["provenance"]["content_hash"]
 
     session_profile = client.get("/v1/root/mcp/descriptors/mcp_session_profile", headers=scoped_headers)
     assert session_profile.status_code == 200
     session_profile_payload = session_profile.json()["descriptor"]["payload"]
     assert session_profile_payload["session_registry"]["available"] is True
     assert session_profile_payload["client_bootstrap"]["subnet_transport_params_required"] is False
+
+    bundle = client.get("/v1/root/mcp/descriptors/descriptor_bundle", headers=scoped_headers)
+    assert bundle.status_code == 200
+    bundle_descriptor = bundle.json()["descriptor"]
+    assert bundle_descriptor["payload"]["bundle_id"] == "root_descriptor_bundle"
+    assert bundle_descriptor["payload"]["descriptor_count"] >= 1
+    assert bundle_descriptor["metadata"]["provenance"]["build_version"]
+    assert bundle_descriptor["metadata"]["fresh_until"]
 
 
 def test_root_mcp_call_records_audit(monkeypatch) -> None:

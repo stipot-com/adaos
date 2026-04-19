@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from adaos.build_info import BUILD_INFO
 from adaos.sdk.core.exporter import export as sdk_export
 from adaos.services.agent_context import get_ctx
 from adaos.services.system_model import CANONICAL_KIND_REGISTRY, CANONICAL_RELATION_REGISTRY
@@ -23,11 +26,39 @@ from .targets import managed_target_registry_summary
 from .tokens import DEFAULT_ACCESS_TOKEN_CAPABILITIES, access_token_registry_summary
 
 
+DESCRIPTOR_CACHE_CLASS_DEFAULTS: dict[str, dict[str, Any]] = {
+    "sdk": {"ttl_seconds": 900, "stability": "experimental", "freshness": "fresh"},
+    "vocabulary": {"ttl_seconds": 3600, "stability": "stable", "freshness": "fresh"},
+    "schema": {"ttl_seconds": 3600, "stability": "stable", "freshness": "fresh"},
+    "templates": {"ttl_seconds": 900, "stability": "experimental", "freshness": "fresh"},
+    "policy": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
+    "client": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
+    "auth": {"ttl_seconds": 300, "stability": "experimental", "freshness": "fresh"},
+    "bundle": {"ttl_seconds": 600, "stability": "experimental", "freshness": "fresh"},
+}
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _with_ttl(issued_at: str, ttl_seconds: int) -> str:
+    base = datetime.fromisoformat(issued_at)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return (base + timedelta(seconds=max(1, int(ttl_seconds)))).replace(microsecond=0).isoformat()
+
+
+def _json_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _package_root() -> Path:
@@ -119,22 +150,115 @@ def _descriptor_entry(
     *,
     title: str,
     summary: str,
-    stability: str = "experimental",
     source_kind: str,
+    descriptor_class: str,
+    stability: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
+    defaults = dict(DESCRIPTOR_CACHE_CLASS_DEFAULTS.get(str(descriptor_class), {}))
+    ttl_seconds = int(defaults.get("ttl_seconds") or 600)
+    effective_stability = str(stability or defaults.get("stability") or "experimental")
     return {
         "descriptor_id": descriptor_id,
         "title": title,
         "summary": summary,
-        "stability": stability,
+        "descriptor_class": descriptor_class,
+        "stability": effective_stability,
         "publication_mode": "root-curated",
         "source": {
             "kind": source_kind,
             "published_by": "root",
         },
+        "cache": {
+            "enabled": True,
+            "mode": "root_descriptor_cache",
+            "ttl_seconds": ttl_seconds,
+            "freshness_policy": str(defaults.get("freshness") or "fresh"),
+        },
         "tags": list(tags or []),
     }
+
+
+def _descriptor_bundle_metadata(entry: dict[str, Any], payload: Any, *, level: str = "std") -> dict[str, Any]:
+    issued_at = _iso_now()
+    cache = dict(entry.get("cache") or {})
+    ttl_seconds = int(cache.get("ttl_seconds") or 600)
+    return {
+        "descriptor_id": entry["descriptor_id"],
+        "level": level,
+        "generated_at": issued_at,
+        "fresh_until": _with_ttl(issued_at, ttl_seconds),
+        "ttl_seconds": ttl_seconds,
+        "freshness": {
+            "state": "fresh",
+            "cache_mode": str(cache.get("mode") or "root_descriptor_cache"),
+            "served_from": "root",
+        },
+        "provenance": {
+            "source_kind": entry["source"]["kind"],
+            "published_by": entry["source"]["published_by"],
+            "build_version": BUILD_INFO.version,
+            "build_date": BUILD_INFO.build_date,
+            "content_hash": _json_hash(payload),
+        },
+    }
+
+
+def _descriptor_payload(descriptor_id: str, *, level: str = "std") -> Any:
+    token = str(descriptor_id or "").strip().lower()
+    if token == "sdk_metadata":
+        effective_level = str(level or "std").strip().lower() or "std"
+        if effective_level not in {"mini", "std", "rich"}:
+            effective_level = "std"
+        return sdk_export(level=effective_level)
+    if token == "system_model_vocabulary":
+        return _system_model_vocabulary()
+    if token == "skill_manifest_schema":
+        return _skill_manifest_schema()
+    if token == "scenario_manifest_schema":
+        return _scenario_manifest_schema()
+    if token == "template_catalog":
+        return _template_catalog()
+    if token == "capability_registry":
+        return capability_registry_payload()
+    if token == "mcp_client_profile":
+        return _client_profile()
+    if token == "access_token_profile":
+        return access_token_registry_summary()
+    if token == "capability_profiles":
+        return {
+            "available": True,
+            "kind": "named_capability_profiles",
+            "profiles": [
+                {
+                    "profile_id": profile_id,
+                    "capabilities": list(capabilities),
+                }
+                for profile_id, capabilities in sorted(DEFAULT_CAPABILITY_PROFILES.items())
+            ],
+        }
+    if token == "mcp_session_profile":
+        return {
+            "session_registry": mcp_session_registry_summary(),
+            "client_bootstrap": {
+                "mode": "bearer_only",
+                "subnet_transport_params_required": False,
+                "issuer": "root",
+            },
+        }
+    if token == "descriptor_bundle":
+        descriptor_ids = [
+            item["descriptor_id"]
+            for item in list_descriptor_sets()
+            if item["descriptor_id"] != "descriptor_bundle"
+        ]
+        items = [get_descriptor_set(item_id, level=level) for item_id in descriptor_ids]
+        return {
+            "bundle_id": "root_descriptor_bundle",
+            "descriptor_count": len(items),
+            "descriptors": items,
+        }
+    raise KeyError(token)
 
 
 def list_descriptor_sets() -> list[dict[str, Any]]:
@@ -144,6 +268,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="SDK metadata",
             summary="Root-curated metadata view over the AdaOS SDK exporter.",
             source_kind="internal_sdk_export",
+            descriptor_class="sdk",
             tags=["development", "sdk", "metadata"],
         ),
         _descriptor_entry(
@@ -151,6 +276,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="System model vocabulary",
             summary="Canonical kinds, relations, statuses, and projection classes used by AdaOS.",
             source_kind="system_model_registry",
+            descriptor_class="vocabulary",
             tags=["development", "system-model", "vocabulary"],
         ),
         _descriptor_entry(
@@ -158,6 +284,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Skill manifest schema",
             summary="Current JSON schema for skill manifests and related runtime metadata.",
             source_kind="skill_manifest_schema",
+            descriptor_class="schema",
             tags=["development", "skill", "schema"],
         ),
         _descriptor_entry(
@@ -165,6 +292,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Scenario manifest schema",
             summary="Current JSON schema for scenario manifests.",
             source_kind="scenario_manifest_schema",
+            descriptor_class="schema",
             tags=["development", "scenario", "schema"],
         ),
         _descriptor_entry(
@@ -172,6 +300,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Template catalog",
             summary="Built-in skill and scenario template names available for scaffolding workflows.",
             source_kind="template_catalog",
+            descriptor_class="templates",
             tags=["development", "templates", "scaffold"],
         ),
         _descriptor_entry(
@@ -179,6 +308,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Capability registry",
             summary="Root MCP capability classes, default grants, and risk hints.",
             source_kind="root_mcp_policy_registry",
+            descriptor_class="policy",
             tags=["development", "policy", "capabilities"],
         ),
         _descriptor_entry(
@@ -186,6 +316,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="MCP client profile",
             summary="Root MCP client configuration shape for external tools such as Codex or VS Code integrations.",
             source_kind="root_mcp_client_profile",
+            descriptor_class="client",
             tags=["development", "client", "integration"],
         ),
         _descriptor_entry(
@@ -193,6 +324,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Access token profile",
             summary="Bounded Root MCP access-token defaults and registry summary.",
             source_kind="root_mcp_access_token_registry",
+            descriptor_class="auth",
             tags=["development", "auth", "tokens"],
         ),
         _descriptor_entry(
@@ -200,6 +332,7 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="Capability profiles",
             summary="Named capability profiles for root-issued MCP session leases and future plane-scoped bootstrap flows.",
             source_kind="root_mcp_capability_profiles",
+            descriptor_class="auth",
             tags=["development", "auth", "profiles"],
         ),
         _descriptor_entry(
@@ -207,7 +340,16 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             title="MCP session profile",
             summary="Root-issued MCP session lease registry and bearer-only client bootstrap guidance.",
             source_kind="root_mcp_session_registry",
+            descriptor_class="auth",
             tags=["development", "auth", "sessions"],
+        ),
+        _descriptor_entry(
+            "descriptor_bundle",
+            title="Descriptor bundle",
+            summary="Root-built bundle over the current descriptive registry for LLM bootstrap and cache-backed development workflows.",
+            source_kind="root_descriptor_bundle",
+            descriptor_class="bundle",
+            tags=["development", "bundle", "cache"],
         ),
     ]
 
@@ -217,8 +359,14 @@ def descriptor_registry_summary() -> dict[str, Any]:
     return {
         "available": True,
         "publication_mode": "root-curated",
+        "cache_mode": "root_descriptor_cache",
         "descriptor_count": len(items),
         "descriptors": [item["descriptor_id"] for item in items],
+        "descriptor_classes": sorted({str(item.get("descriptor_class") or "").strip() for item in items if str(item.get("descriptor_class") or "").strip()}),
+        "cache_policies": {
+            key: {"ttl_seconds": int(value.get("ttl_seconds") or 0), "stability": str(value.get("stability") or "experimental")}
+            for key, value in sorted(DESCRIPTOR_CACHE_CLASS_DEFAULTS.items())
+        },
         "capability_registry": capability_registry_summary(),
         "managed_target_registry": managed_target_registry_summary(),
         "control_report_registry": control_report_registry_summary(),
@@ -229,67 +377,19 @@ def descriptor_registry_summary() -> dict[str, Any]:
 
 def get_descriptor_set(descriptor_id: str, *, level: str = "std") -> dict[str, Any]:
     token = str(descriptor_id or "").strip().lower()
-    if token == "sdk_metadata":
-        effective_level = str(level or "std").strip().lower() or "std"
-        if effective_level not in {"mini", "std", "rich"}:
-            effective_level = "std"
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {
-            **entry,
-            "level": effective_level,
-            "payload": sdk_export(level=effective_level),
-        }
-    if token == "system_model_vocabulary":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": _system_model_vocabulary()}
-    if token == "skill_manifest_schema":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": _skill_manifest_schema()}
-    if token == "scenario_manifest_schema":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": _scenario_manifest_schema()}
-    if token == "template_catalog":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": _template_catalog()}
-    if token == "capability_registry":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": capability_registry_payload()}
-    if token == "mcp_client_profile":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": _client_profile()}
-    if token == "access_token_profile":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {**entry, "payload": access_token_registry_summary()}
-    if token == "capability_profiles":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {
-            **entry,
-            "payload": {
-                "available": True,
-                "kind": "named_capability_profiles",
-                "profiles": [
-                    {
-                        "profile_id": profile_id,
-                        "capabilities": list(capabilities),
-                    }
-                    for profile_id, capabilities in sorted(DEFAULT_CAPABILITY_PROFILES.items())
-                ],
-            },
-        }
-    if token == "mcp_session_profile":
-        entry = next(item for item in list_descriptor_sets() if item["descriptor_id"] == token)
-        return {
-            **entry,
-            "payload": {
-                "session_registry": mcp_session_registry_summary(),
-                "client_bootstrap": {
-                    "mode": "bearer_only",
-                    "subnet_transport_params_required": False,
-                    "issuer": "root",
-                },
-            },
-        }
-    raise KeyError(token)
+    effective_level = str(level or "std").strip().lower() or "std"
+    if effective_level not in {"mini", "std", "rich"}:
+        effective_level = "std"
+    entry = next((item for item in list_descriptor_sets() if item["descriptor_id"] == token), None)
+    if entry is None:
+        raise KeyError(token)
+    payload = _descriptor_payload(token, level=effective_level)
+    return {
+        **entry,
+        "level": effective_level,
+        "metadata": _descriptor_bundle_metadata(entry, payload, level=effective_level),
+        "payload": payload,
+    }
 
 
 __all__ = [

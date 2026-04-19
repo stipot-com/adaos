@@ -78,7 +78,7 @@ def _foundation_summary() -> dict[str, Any]:
         "surfaces": {
             "development": {
                 "enabled": True,
-                "mode": "root-curated-descriptors",
+                "mode": "root_descriptor_cache",
                 "scope": "descriptor registry over internal services, schemas, and stable vocabularies",
             },
             "operations": {
@@ -124,6 +124,11 @@ def _foundation_summary() -> dict[str, Any]:
         "capability_profiles": {
             "available": True,
             "profiles": sorted(DEFAULT_CAPABILITY_PROFILES.keys()),
+        },
+        "descriptor_cache": {
+            "enabled": True,
+            "mode": "root_descriptor_cache",
+            "freshness_contract": "ttl-backed pseudo-static descriptors served directly from root",
         },
         "tool_contract_count": len(contracts),
     }
