@@ -649,6 +649,8 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
                         "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
                         "publish_status": "inline_available",
                         "remote_available": True,
+                        "fetch_strategy": "inline_content",
+                        "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
                     },
                     {
                         "artifact_id": "mem-001-raw",
@@ -656,13 +658,15 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
                         "published_ref": "root://hub-memory-profile/mem-001/mem-001-raw",
                         "publish_status": "kind_not_allowed",
                         "remote_available": False,
+                        "fetch_strategy": "local_control_pull",
+                        "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
                     },
                 ],
             },
             "operations_tail": [{"event": "tool_invoked"}],
             "telemetry_tail": [{"sampled_at": 1.0, "rss_growth_bytes": 64}],
             "artifact_payloads": [{"artifact_id": "mem-001-final", "content": {"top_allocations": []}}],
-            "artifact_policy": {"delivery_mode": "inline_json_only", "max_inline_bytes": 262144},
+            "artifact_policy": {"delivery_mode": "inline_json_only", "fallback_delivery_mode": "local_control_pull", "max_inline_bytes": 262144},
         },
     )
     assert report.status_code == 200
@@ -713,6 +717,7 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     assert artifact_list.status_code == 200
     artifact_list_payload = artifact_list.json()
     assert artifact_list_payload["artifact_policy"]["delivery_mode"] == "inline_json_only"
+    assert artifact_list_payload["artifact_policy"]["fallback_delivery_mode"] == "local_control_pull"
     assert len(artifact_list_payload["artifacts"]) == 2
     assert artifact_list_payload["artifacts"][0]["remote_available"] is True
     assert artifact_list_payload["artifacts"][1]["publish_status"] == "kind_not_allowed"
@@ -725,6 +730,7 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     artifact_payload = artifact_item.json()
     assert artifact_payload["exists"] is True
     assert artifact_payload["artifact"]["artifact_id"] == "mem-001-final"
+    assert artifact_payload["artifact"]["fetch_strategy"] == "inline_content"
     assert artifact_payload["content"]["top_allocations"] == []
 
 

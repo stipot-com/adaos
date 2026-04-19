@@ -61,6 +61,7 @@ from adaos.services.realtime_sidecar import (
 )
 from adaos.services.root.memory_profile_sync import (
     memory_profile_artifact_published_ref,
+    memory_profile_artifact_source_api_path,
     report_hub_memory_profile,
 )
 from adaos.services.runtime_paths import current_base_dir
@@ -2296,6 +2297,19 @@ class SupervisorManager:
                             session_id=token,
                             artifact_id=artifact_id,
                         ) if artifact_id else item.get("published_ref"),
+                        "fetch_strategy": (
+                            "inline_content"
+                            if bool(item.get("remote_available")) or str(item.get("publish_status") or "").strip() == "inline_available"
+                            else "local_control_pull"
+                        ),
+                        "source_api_path": (
+                            memory_profile_artifact_source_api_path(
+                                session_id=token,
+                                artifact_id=artifact_id,
+                            )
+                            if artifact_id
+                            else item.get("source_api_path")
+                        ),
                     }
                 )
             updated["artifact_refs"] = published_artifacts

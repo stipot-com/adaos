@@ -261,6 +261,8 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
                     "artifact_id": "mem-001-final",
                     "kind": "tracemalloc_final_snapshot",
                     "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
+                    "fetch_strategy": "inline_content",
+                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
                 },
                 "exists": True,
                 "content": {"top_allocations": []},
@@ -273,6 +275,8 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "memory artifact: session=mem-001 id=mem-001-final kind=tracemalloc_final_snapshot exists=True" in result.output
     assert "published ref: root://hub-memory-profile/mem-001/mem-001-final" in result.output
+    assert "fetch strategy: inline_content" in result.output
+    assert "source api path: /api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final" in result.output
     assert "content keys: top_allocations" in result.output
 
 
@@ -303,6 +307,7 @@ def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
                         "kind": "tracemalloc_final_snapshot",
                         "publish_status": "inline_available",
                         "remote_available": True,
+                        "fetch_strategy": "inline_content",
                         "size_bytes": 128,
                     },
                     {
@@ -310,6 +315,7 @@ def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
                         "kind": "heap_dump",
                         "publish_status": "kind_not_allowed",
                         "remote_available": False,
+                        "fetch_strategy": "local_control_pull",
                         "size_bytes": 4096,
                     },
                 ],
@@ -323,3 +329,62 @@ def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
     assert "memory artifacts: session=mem-001 count=2 delivery=inline_json_only limit=262144" in result.output
     assert "artifact: id=mem-001-final kind=tracemalloc_final_snapshot status=inline_available remote=True size=128" in result.output
     assert "artifact: id=mem-001-raw kind=heap_dump status=kind_not_allowed remote=False size=4096" in result.output
+
+
+def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) -> None:
+    hub_cli = _import_hub_cli()
+    monkeypatch.setattr(hub_cli, "get_ctx", lambda: type("Ctx", (), {"config": type("Cfg", (), {"subnet_id": "subnet-test-1", "root_settings": type("Root", (), {"base_url": "https://root.test"})()})()})())
+    monkeypatch.setattr(hub_cli, "_root_verify_from_conf", lambda conf: True)
+    monkeypatch.setattr(hub_cli, "resolve_control_base_url", lambda: "http://127.0.0.1:8777")
+    monkeypatch.setattr(hub_cli, "_local_control_token", lambda base: "dev-token")
+    monkeypatch.setenv("ROOT_TOKEN", "root-token")
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @staticmethod
+        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str) -> dict:
+            assert root_token == "root-token"
+            assert session_id == "mem-001"
+            assert artifact_id == "mem-001-raw"
+            return {
+                "ok": True,
+                "session_id": "mem-001",
+                "artifact": {
+                    "artifact_id": "mem-001-raw",
+                    "kind": "heap_dump",
+                    "fetch_strategy": "local_control_pull",
+                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
+                },
+                "exists": False,
+                "content": None,
+            }
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "ok": True,
+                "exists": True,
+                "artifact": {"artifact_id": "mem-001-raw", "kind": "heap_dump"},
+                "content": {"format": "local-only", "chunks": []},
+            }
+
+    def _fake_get(url, headers=None, timeout=None):
+        assert url == "http://127.0.0.1:8777/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw"
+        assert headers == {"X-AdaOS-Token": "dev-token"}
+        return _Response()
+
+    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli.requests, "get", _fake_get)
+
+    result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifact-pull", "mem-001", "mem-001-raw"])
+
+    assert result.exit_code == 0
+    assert "memory artifact pull: session=mem-001 id=mem-001-raw kind=heap_dump strategy=local_control_pull exists=True" in result.output
+    assert "delivery: current_hub_control" in result.output
+    assert "content keys: chunks, format" in result.output

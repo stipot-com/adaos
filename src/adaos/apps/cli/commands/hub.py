@@ -7,6 +7,7 @@ import ssl
 from pathlib import Path
 from typing import Any
 
+import requests
 import typer
 
 from adaos.services.agent_context import get_ctx
@@ -84,6 +85,21 @@ def _resolve_root_base_url(conf: Any, explicit_root: str | None = None) -> str:
     if zone_id == "ru" and base_url in {"https://api.inimatic.com", "http://api.inimatic.com"}:
         return f"https://{zone_id}.api.inimatic.com"
     return base_url
+
+
+def _local_memory_artifact_pull(*, session_id: str, artifact_id: str, source_api_path: str | None = None) -> dict[str, Any]:
+    base = resolve_control_base_url()
+    token = _local_control_token(base)
+    path = str(source_api_path or f"/api/supervisor/memory/sessions/{session_id}/artifacts/{artifact_id}").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    response = requests.get(
+        base.rstrip("/") + path,
+        headers={"X-AdaOS-Token": token},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    return dict(response.json() or {})
 
 
 @root_link_app.command("status")
@@ -741,6 +757,10 @@ def hub_root_memory_artifact(
     )
     if artifact.get("published_ref"):
         typer.echo(f"published ref: {artifact.get('published_ref')}")
+    if artifact.get("fetch_strategy"):
+        typer.echo(f"fetch strategy: {artifact.get('fetch_strategy')}")
+    if artifact.get("source_api_path"):
+        typer.echo(f"source api path: {artifact.get('source_api_path')}")
     content = payload.get("content")
     if isinstance(content, dict):
         typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
@@ -798,6 +818,71 @@ def hub_root_memory_artifacts(
             f"remote={bool(item.get('remote_available'))} "
             f"size={item.get('size_bytes') or 0}"
         )
+
+
+@root_link_app.command("memory-artifact-pull")
+def hub_root_memory_artifact_pull(
+    session_id: str,
+    artifact_id: str,
+    root: str | None = typer.Option(None, "--root", help="Root server base URL"),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help="ROOT_TOKEN used for root reports. Falls back to ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Fetch a published memory-profile artifact, falling back to current-hub control for local-only artifacts."""
+    ctx = get_ctx()
+    conf = ctx.config
+    root_base = _resolve_root_base_url(conf, root)
+    root_token = str(
+        token
+        or os.getenv("HUB_ROOT_TOKEN")
+        or os.getenv("ADAOS_ROOT_TOKEN")
+        or os.getenv("ROOT_TOKEN")
+        or ""
+    ).strip()
+    if not root_token:
+        raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
+    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
+    payload = client.root_memory_profile_artifact(
+        root_token=root_token,
+        session_id=session_id,
+        artifact_id=artifact_id,
+    )
+    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
+    merged = dict(payload)
+    if not isinstance(merged.get("content"), dict) and str(artifact.get("fetch_strategy") or "").strip() == "local_control_pull":
+        local_payload = _local_memory_artifact_pull(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            source_api_path=str(artifact.get("source_api_path") or "").strip() or None,
+        )
+        merged["local_pull"] = {
+            "attempted": True,
+            "succeeded": True,
+            "source": "current_hub_control",
+        }
+        merged["exists"] = bool(local_payload.get("exists"))
+        if isinstance(local_payload.get("content"), dict):
+            merged["content"] = local_payload.get("content")
+    if json_output:
+        _print(merged, json_output=True)
+        return
+    typer.echo(
+        "memory artifact pull: "
+        f"session={merged.get('session_id') or session_id} "
+        f"id={artifact.get('artifact_id') or artifact_id} "
+        f"kind={artifact.get('kind') or '-'} "
+        f"strategy={artifact.get('fetch_strategy') or '-'} "
+        f"exists={bool(merged.get('exists'))}"
+    )
+    if merged.get("local_pull"):
+        typer.echo("delivery: current_hub_control")
+    content = merged.get("content")
+    if isinstance(content, dict):
+        typer.echo(f"content keys: {', '.join(sorted(str(key) for key in content.keys())[:8])}")
 
 
 @sidecar_app.command("status")

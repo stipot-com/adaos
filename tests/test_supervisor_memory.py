@@ -256,13 +256,18 @@ def test_build_memory_profile_report_marks_remote_artifact_policy(tmp_path) -> N
     refs = report["session"]["artifact_refs"]
     assert refs[0]["publish_status"] == "inline_available"
     assert refs[0]["remote_available"] is True
+    assert refs[0]["fetch_strategy"] == "inline_content"
+    assert refs[0]["source_api_path"] == "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final"
     assert refs[1]["publish_status"] == "size_limit_exceeded"
     assert refs[1]["remote_available"] is False
+    assert refs[1]["fetch_strategy"] == "local_control_pull"
     assert refs[2]["publish_status"] == "kind_not_allowed"
     assert refs[2]["remote_available"] is False
+    assert refs[2]["fetch_strategy"] == "local_control_pull"
     assert len(report["artifact_payloads"]) == 1
     assert report["artifact_payloads"][0]["artifact_id"] == "mem-001-final"
     assert report["artifact_policy"]["delivery_mode"] == "inline_json_only"
+    assert report["artifact_policy"]["fallback_delivery_mode"] == "local_control_pull"
 
 
 def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeypatch, tmp_path) -> None:

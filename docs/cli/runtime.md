@@ -96,6 +96,7 @@ adaos hub root reports --kind memory-profile --state finished --suspected-only
 adaos hub root memory-session <SESSION_ID>
 adaos hub root memory-artifacts <SESSION_ID>
 adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>
+adaos hub root memory-artifact-pull <SESSION_ID> <ARTIFACT_ID>
 adaos hub join-code create
 adaos hub root status
 adaos hub root reconnect
@@ -103,7 +104,7 @@ adaos node join --join-code <CODE>
 adaos node role set --role member
 ```
 
-`adaos hub root reports --kind memory-profile` is the first operator-facing Phase 3 retrieval path for remotely published memory-profile summaries. It complements the local `runtime memory-*` commands by showing what root has already ingested for one hub, can be narrowed further with `--session-id`, and now also supports compact remote filtering such as `--state finished --suspected-only`. `adaos hub root memory-session <SESSION_ID>` opens one remotely published profiling incident directly and prints the compact RSS / retry / artifact summary without requiring raw JSON output. `adaos hub root memory-artifacts <SESSION_ID>` lists the remote artifact catalog together with publish-policy status such as `inline_available`, `size_limit_exceeded`, or `kind_not_allowed`. `adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>` fetches the currently supported remote artifact payloads for that session; at this stage Phase 3 only inlines small JSON artifacts that pass the publish policy, while heavier files remain local-first.
+`adaos hub root reports --kind memory-profile` is the first operator-facing Phase 3 retrieval path for remotely published memory-profile summaries. It complements the local `runtime memory-*` commands by showing what root has already ingested for one hub, can be narrowed further with `--session-id`, and now also supports compact remote filtering such as `--state finished --suspected-only`. `adaos hub root memory-session <SESSION_ID>` opens one remotely published profiling incident directly and prints the compact RSS / retry / artifact summary without requiring raw JSON output. `adaos hub root memory-artifacts <SESSION_ID>` lists the remote artifact catalog together with publish-policy status such as `inline_available`, `size_limit_exceeded`, or `kind_not_allowed`. `adaos hub root memory-artifact <SESSION_ID> <ARTIFACT_ID>` fetches the currently supported remote artifact payloads for that session and now also prints the fetch strategy plus the local supervisor source path. `adaos hub root memory-artifact-pull <SESSION_ID> <ARTIFACT_ID>` is the current bridge step for heavier local-only artifacts: it uses root metadata first and, when the artifact is not stored inline at root, falls back to the current hub control API for direct retrieval.
 
 ## Yjs webspace operations
 

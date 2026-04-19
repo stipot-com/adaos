@@ -85,6 +85,12 @@ def memory_profile_artifact_published_ref(*, session_id: str, artifact_id: str) 
     return f"root://hub-memory-profile/{str(session_id or '').strip()}/{str(artifact_id or '').strip()}"
 
 
+def memory_profile_artifact_source_api_path(*, session_id: str, artifact_id: str) -> str:
+    token = str(session_id or "").strip()
+    ref = str(artifact_id or "").strip()
+    return f"/api/supervisor/memory/sessions/{token}/artifacts/{ref}"
+
+
 def _artifact_publish_status(*, kind: str, content_type: str | None, path_text: str) -> tuple[str, bool, Path | None, int | None]:
     if kind not in _REMOTE_ARTIFACT_ALLOWED_KINDS:
         return ("kind_not_allowed", False, None, None)
@@ -123,6 +129,7 @@ def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dic
             path_text=path_text,
         )
         published_ref = memory_profile_artifact_published_ref(session_id=session_id, artifact_id=artifact_id) if session_id and artifact_id else None
+        remote_available = publish_status == "inline_available"
         compact_artifacts.append(
             {
                 "artifact_id": artifact_id,
@@ -132,7 +139,13 @@ def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dic
                 "created_at": item.get("created_at"),
                 "published_ref": published_ref,
                 "publish_status": publish_status,
-                "remote_available": publish_status == "inline_available",
+                "remote_available": remote_available,
+                "fetch_strategy": "inline_content" if remote_available else "local_control_pull",
+                "source_api_path": (
+                    memory_profile_artifact_source_api_path(session_id=session_id, artifact_id=artifact_id)
+                    if session_id and artifact_id
+                    else None
+                ),
             }
         )
         if len(inline_payloads) >= _REMOTE_ARTIFACT_MAX_COUNT:
@@ -172,6 +185,12 @@ def _inline_artifact_payloads(session_summary: dict[str, Any]) -> tuple[list[dic
                 "remote_available": bool(
                     item.get("publish_status") == "inline_available"
                     and str(item.get("artifact_id") or "").strip() in published_ids
+                ),
+                "fetch_strategy": (
+                    "inline_content"
+                    if item.get("publish_status") == "inline_available"
+                    and str(item.get("artifact_id") or "").strip() in published_ids
+                    else "local_control_pull"
                 ),
             }
             for item in compact_artifacts
@@ -225,6 +244,7 @@ def build_memory_profile_report(
         "artifact_payloads": inline_payloads,
         "artifact_policy": {
             "delivery_mode": "inline_json_only",
+            "fallback_delivery_mode": "local_control_pull",
             "max_inline_artifacts": _REMOTE_ARTIFACT_MAX_COUNT,
             "max_inline_bytes": _REMOTE_ARTIFACT_MAX_BYTES,
             "allowed_kinds": sorted(_REMOTE_ARTIFACT_ALLOWED_KINDS),
@@ -281,5 +301,6 @@ def report_hub_memory_profile(
 __all__ = [
     "build_memory_profile_report",
     "memory_profile_artifact_published_ref",
+    "memory_profile_artifact_source_api_path",
     "report_hub_memory_profile",
 ]
