@@ -45,6 +45,19 @@ A skill may be:
 
 This separation lets AdaOS keep discovery simple without forcing every skill into eager runtime work.
 
+### Prefer cheap inactive handlers over deferred subscription wiring
+
+For the first general activation architecture, AdaOS should keep lazy skills subscribed early but make inactive handlers cheap.
+
+That means:
+
+- subscriptions may still be registered during startup
+- inactive handlers must avoid repository, git, config, filesystem, or YDoc-heavy work
+- inactive handlers may enqueue lightweight invalidation or no-op quickly
+- expensive refresh and background maintenance must wait for activation
+
+This is preferred over dynamic subscribe and unsubscribe wiring because it is simpler, safer, and easier to roll out incrementally across existing skills.
+
 ### One source of truth for dependency ownership
 
 Scenario dependency ownership belongs to the scenario manifest.
@@ -270,6 +283,12 @@ This is an intentional transitional step:
 - first remove event-loop blocking and startup regressions
 - then centralize activation state and policy enforcement
 
+Current subscription decision:
+
+- eager skills may use normal always-registered handlers
+- lazy and on-demand skills should keep early subscriptions but behave as `cheap while inactive`
+- central runtime activation should eventually decide whether heavy work is admitted, but handler registration itself does not need to be deferred in the first production-safe rollout
+
 ## Migration Guidance
 
 Recommended migration order:
@@ -288,7 +307,7 @@ Still required for the target architecture:
 2. respect `startup_allowed`, `background_refresh`, and `client_presence` centrally
 3. decide whether lazy skills should use:
    - cheap always-registered handlers while inactive
-   - or truly deferred subscription wiring
+   - or truly deferred subscription wiring for a later optimization pass
 4. move more hot-path metadata reads from repository/git/config access into registry or SQLite-backed fast paths
 5. convert UI-heavy scenario skills to true on-demand detail loading instead of broad eager projection rebuilds
 

@@ -85,6 +85,10 @@
         "bash": {
           "type": "string",
           "description": "Shell interpreter for Bash-style skills."
+        },
+        "activation": {
+          "$ref": "#/$defs/skillActivationPolicy",
+          "description": "Runtime activation policy used to distinguish eager platform skills from lazy or on-demand scenario support skills."
         }
       }
     },
@@ -337,6 +341,52 @@
         }
       },
       "required": ["name"]
+    },
+
+    "skillActivationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["eager", "lazy", "on_demand"],
+          "default": "eager",
+          "description": "Activation mode for the skill runtime."
+        },
+        "startup_allowed": {
+          "type": "boolean",
+          "description": "Whether the runtime may perform expensive activation work during startup."
+        },
+        "background_refresh": {
+          "type": "boolean",
+          "description": "Whether background refresh loops are permitted when the skill is inactive."
+        },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scenarios_active": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Scenario ids that may activate this skill."
+            },
+            "client_presence": {
+              "type": "boolean",
+              "description": "Whether an interested client must be present before the skill becomes active."
+            },
+            "webspace_scope": {
+              "type": "string",
+              "enum": ["active", "any", "listed"],
+              "description": "How activation should be scoped across webspaces."
+            },
+            "webspaces": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Explicit webspace ids used when webspace_scope is listed."
+            }
+          }
+        }
+      }
     }
   }
 }

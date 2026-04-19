@@ -34,6 +34,29 @@
       "description": "List of skills this scenario depends on (skill ids).",
       "items": { "type": "string" }
     },
+    "runtime": {
+      "type": "object",
+      "description": "Typed runtime metadata for scenario orchestration and skill binding.",
+      "additionalProperties": false,
+      "properties": {
+        "skills": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": {
+              "type": "array",
+              "description": "Scenario-owned required skills. This supersedes legacy depends for new manifests.",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "optional": {
+              "type": "array",
+              "description": "Optional skills that the scenario may use when present but must not require for installation.",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
     "updated_at": {
       "type": "string",
       "description": "Optional ISO-8601 timestamp of the last manifest update."

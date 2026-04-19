@@ -67,6 +67,45 @@ class SkillActivationPolicy:
             payload["background_refresh"] = bool(self.background_refresh)
         return payload
 
+    @classmethod
+    def from_mapping(cls, value: Any) -> "SkillActivationPolicy | None":
+        if not isinstance(value, dict):
+            return None
+
+        raw_mode = _clean_text(value.get("mode")) or "eager"
+        mode: ActivationMode = "eager"
+        if raw_mode in {"eager", "lazy", "on_demand"}:
+            mode = raw_mode
+
+        when_raw = value.get("when")
+        when_dict = when_raw if isinstance(when_raw, dict) else {}
+
+        webspace_scope_raw = _clean_text(when_dict.get("webspace_scope"))
+        webspace_scope: ActivationWebspaceScope | None = None
+        if webspace_scope_raw in {"active", "any", "listed"}:
+            webspace_scope = webspace_scope_raw
+
+        startup_allowed = value.get("startup_allowed")
+        if not isinstance(startup_allowed, bool):
+            startup_allowed = None
+        background_refresh = value.get("background_refresh")
+        if not isinstance(background_refresh, bool):
+            background_refresh = None
+
+        return cls(
+            mode=mode,
+            when=SkillActivationWhen(
+                scenarios_active=_clean_name_list(when_dict.get("scenarios_active")),
+                webspaces=_clean_name_list(when_dict.get("webspaces")),
+                client_presence=when_dict.get("client_presence")
+                if isinstance(when_dict.get("client_presence"), bool)
+                else None,
+                webspace_scope=webspace_scope,
+            ),
+            startup_allowed=startup_allowed,
+            background_refresh=background_refresh,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ScenarioSkillBindings:
@@ -86,45 +125,7 @@ def parse_skill_activation_policy(manifest: dict[str, Any]) -> SkillActivationPo
     runtime = manifest.get("runtime")
     if not isinstance(runtime, dict):
         return None
-    activation = runtime.get("activation")
-    if not isinstance(activation, dict):
-        return None
-
-    raw_mode = _clean_text(activation.get("mode")) or "eager"
-    mode: ActivationMode = "eager"
-    if raw_mode in {"eager", "lazy", "on_demand"}:
-        mode = raw_mode
-
-    when_raw = activation.get("when")
-    when_dict = when_raw if isinstance(when_raw, dict) else {}
-
-    webspace_scope_raw = _clean_text(when_dict.get("webspace_scope"))
-    webspace_scope: ActivationWebspaceScope | None = None
-    if webspace_scope_raw in {"active", "any", "listed"}:
-        webspace_scope = webspace_scope_raw
-
-    when = SkillActivationWhen(
-        scenarios_active=_clean_name_list(when_dict.get("scenarios_active")),
-        webspaces=_clean_name_list(when_dict.get("webspaces")),
-        client_presence=when_dict.get("client_presence")
-        if isinstance(when_dict.get("client_presence"), bool)
-        else None,
-        webspace_scope=webspace_scope,
-    )
-
-    startup_allowed = activation.get("startup_allowed")
-    if not isinstance(startup_allowed, bool):
-        startup_allowed = None
-    background_refresh = activation.get("background_refresh")
-    if not isinstance(background_refresh, bool):
-        background_refresh = None
-
-    return SkillActivationPolicy(
-        mode=mode,
-        when=when,
-        startup_allowed=startup_allowed,
-        background_refresh=background_refresh,
-    )
+    return SkillActivationPolicy.from_mapping(runtime.get("activation"))
 
 
 def parse_scenario_skill_bindings(manifest: dict[str, Any]) -> ScenarioSkillBindings:
@@ -143,3 +144,14 @@ def parse_scenario_skill_bindings(manifest: dict[str, Any]) -> ScenarioSkillBind
                     optional.append(item)
 
     return ScenarioSkillBindings(required=tuple(required), optional=tuple(optional))
+
+
+__all__ = [
+    "ActivationMode",
+    "ActivationWebspaceScope",
+    "ScenarioSkillBindings",
+    "SkillActivationPolicy",
+    "SkillActivationWhen",
+    "parse_scenario_skill_bindings",
+    "parse_skill_activation_policy",
+]
