@@ -274,3 +274,52 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
     assert "memory artifact: session=mem-001 id=mem-001-final kind=tracemalloc_final_snapshot exists=True" in result.output
     assert "published ref: root://hub-memory-profile/mem-001/mem-001-final" in result.output
     assert "content keys: top_allocations" in result.output
+
+
+def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
+    hub_cli = _import_hub_cli()
+    monkeypatch.setattr(hub_cli, "get_ctx", lambda: type("Ctx", (), {"config": type("Cfg", (), {"subnet_id": "subnet-test-1", "root_settings": type("Root", (), {"base_url": "https://root.test"})()})()})())
+    monkeypatch.setattr(hub_cli, "_root_verify_from_conf", lambda conf: True)
+    monkeypatch.setenv("ROOT_TOKEN", "root-token")
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @staticmethod
+        def root_memory_profile_artifacts(*, root_token: str, session_id: str) -> dict:
+            assert root_token == "root-token"
+            assert session_id == "mem-001"
+            return {
+                "ok": True,
+                "session_id": "mem-001",
+                "artifact_policy": {
+                    "delivery_mode": "inline_json_only",
+                    "max_inline_bytes": 262144,
+                },
+                "artifacts": [
+                    {
+                        "artifact_id": "mem-001-final",
+                        "kind": "tracemalloc_final_snapshot",
+                        "publish_status": "inline_available",
+                        "remote_available": True,
+                        "size_bytes": 128,
+                    },
+                    {
+                        "artifact_id": "mem-001-raw",
+                        "kind": "heap_dump",
+                        "publish_status": "kind_not_allowed",
+                        "remote_available": False,
+                        "size_bytes": 4096,
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+
+    result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifacts", "mem-001"])
+
+    assert result.exit_code == 0
+    assert "memory artifacts: session=mem-001 count=2 delivery=inline_json_only limit=262144" in result.output
+    assert "artifact: id=mem-001-final kind=tracemalloc_final_snapshot status=inline_available remote=True size=128" in result.output
+    assert "artifact: id=mem-001-raw kind=heap_dump status=kind_not_allowed remote=False size=4096" in result.output

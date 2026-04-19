@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi.testclient import TestClient
 
 from adaos.apps import supervisor
+from adaos.services.root.memory_profile_sync import build_memory_profile_report
 from adaos.services.supervisor_memory import (
     MemoryOperationEvent,
     MemorySessionSummary,
@@ -213,6 +215,54 @@ def test_publish_memory_profile_stamps_artifact_published_refs(monkeypatch, tmp_
     assert stopped["session"]["session_state"] == "cancelled"
     assert stopped["runtime"]["requested_session_id"] is None
     assert stopped["runtime"]["requested_profile_mode"] is None
+
+
+def test_build_memory_profile_report_marks_remote_artifact_policy(tmp_path) -> None:
+    inline_path = tmp_path / "inline.json"
+    inline_path.write_text(json.dumps({"top_allocations": []}), encoding="utf-8")
+    oversize_path = tmp_path / "oversize.json"
+    oversize_path.write_text("x" * (256 * 1024 + 32), encoding="utf-8")
+
+    conf = type("Cfg", (), {"subnet_id": "subnet-test-1", "node_id": "node-1", "role": "hub"})()
+    report = build_memory_profile_report(
+        conf,
+        session_summary={
+            "session_id": "mem-001",
+            "profile_mode": "trace_profile",
+            "session_state": "finished",
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-final",
+                    "kind": "tracemalloc_final_snapshot",
+                    "content_type": "application/json",
+                    "path": str(inline_path),
+                },
+                {
+                    "artifact_id": "mem-001-big",
+                    "kind": "tracemalloc_trace_final",
+                    "content_type": "application/json",
+                    "path": str(oversize_path),
+                },
+                {
+                    "artifact_id": "mem-001-raw",
+                    "kind": "heap_dump",
+                    "content_type": "application/octet-stream",
+                    "path": str(tmp_path / "raw.bin"),
+                },
+            ],
+        },
+    )
+
+    refs = report["session"]["artifact_refs"]
+    assert refs[0]["publish_status"] == "inline_available"
+    assert refs[0]["remote_available"] is True
+    assert refs[1]["publish_status"] == "size_limit_exceeded"
+    assert refs[1]["remote_available"] is False
+    assert refs[2]["publish_status"] == "kind_not_allowed"
+    assert refs[2]["remote_available"] is False
+    assert len(report["artifact_payloads"]) == 1
+    assert report["artifact_payloads"][0]["artifact_id"] == "mem-001-final"
+    assert report["artifact_policy"]["delivery_mode"] == "inline_json_only"
 
 
 def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeypatch, tmp_path) -> None:

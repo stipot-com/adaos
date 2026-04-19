@@ -35,6 +35,7 @@ from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
 from adaos.services.root_mcp.memory_reports import (
     get_memory_profile_artifact,
+    list_memory_profile_artifacts,
     get_memory_profile_report,
     ingest_memory_profile_report,
     list_memory_profile_reports,
@@ -802,6 +803,47 @@ async def hub_memory_profile_artifact(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         **artifact,
+    }
+
+
+@router.get("/v1/hubs/memory_profile/reports/{session_id}/artifacts")
+async def hub_memory_profile_artifacts(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    root_token: str | None = Header(default=None, alias="X-Root-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_read_auth_or_legacy_root_token(
+        authorization=authorization,
+        owner_token=owner_token,
+        root_token=root_token,
+    )
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    report_item = get_memory_profile_report(session_id)
+    if report_item is None:
+        raise HTTPException(status_code=404, detail="memory profile report was not found")
+    report = report_item.get("report") if isinstance(report_item.get("report"), dict) else {}
+    target_id = str(report_item.get("hub_id") or "").strip()
+    allowed_target_ids = _allowed_target_ids(auth)
+    if allowed_target_ids and target_id not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
+    target_subnet = str(report.get("subnet_id") or "").strip()
+    target_zone = str(report.get("zone") or "").strip()
+    if scope.get("subnet_id") and target_subnet and scope["subnet_id"] != target_subnet:
+        raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Managed target is outside the requested subnet scope."})
+    if scope.get("zone") and target_zone and scope["zone"] != target_zone:
+        raise HTTPException(status_code=403, detail={"code": "zone_mismatch", "message": "Managed target is outside the requested zone scope."})
+    artifacts = list_memory_profile_artifacts(session_id)
+    if artifacts is None:
+        raise HTTPException(status_code=404, detail="memory profile report was not found")
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        **artifacts,
     }
 
 

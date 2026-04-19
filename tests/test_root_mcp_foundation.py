@@ -642,11 +642,27 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
                 "profile_mode": "trace_profile",
                 "session_state": "finished",
                 "suspected_leak": True,
-                "artifact_refs": [{"artifact_id": "mem-001-final", "kind": "tracemalloc_final_snapshot", "published_ref": "root://hub-memory-profile/mem-001/mem-001-final"}],
+                "artifact_refs": [
+                    {
+                        "artifact_id": "mem-001-final",
+                        "kind": "tracemalloc_final_snapshot",
+                        "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
+                        "publish_status": "inline_available",
+                        "remote_available": True,
+                    },
+                    {
+                        "artifact_id": "mem-001-raw",
+                        "kind": "heap_dump",
+                        "published_ref": "root://hub-memory-profile/mem-001/mem-001-raw",
+                        "publish_status": "kind_not_allowed",
+                        "remote_available": False,
+                    },
+                ],
             },
             "operations_tail": [{"event": "tool_invoked"}],
             "telemetry_tail": [{"sampled_at": 1.0, "rss_growth_bytes": 64}],
             "artifact_payloads": [{"artifact_id": "mem-001-final", "content": {"top_allocations": []}}],
+            "artifact_policy": {"delivery_mode": "inline_json_only", "max_inline_bytes": 262144},
         },
     )
     assert report.status_code == 200
@@ -689,6 +705,17 @@ def test_root_memory_profile_reports_ingest_and_list(monkeypatch, tmp_path) -> N
     report_payload = report_item.json()["report"]
     assert report_payload["session_id"] == "mem-001"
     assert report_payload["report"]["session"]["session_state"] == "finished"
+
+    artifact_list = client.get(
+        "/v1/hubs/memory_profile/reports/mem-001/artifacts",
+        headers={**owner_headers, "X-AdaOS-Subnet-Id": "subnet-test-1", "X-AdaOS-Zone": "lab-b"},
+    )
+    assert artifact_list.status_code == 200
+    artifact_list_payload = artifact_list.json()
+    assert artifact_list_payload["artifact_policy"]["delivery_mode"] == "inline_json_only"
+    assert len(artifact_list_payload["artifacts"]) == 2
+    assert artifact_list_payload["artifacts"][0]["remote_available"] is True
+    assert artifact_list_payload["artifacts"][1]["publish_status"] == "kind_not_allowed"
 
     artifact_item = client.get(
         "/v1/hubs/memory_profile/reports/mem-001/artifacts/mem-001-final",
