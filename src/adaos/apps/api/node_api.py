@@ -766,6 +766,14 @@ class InfrastateActionRequest(BaseModel):
     value: Any | None = None
 
 
+class InfraAccessActionRequest(BaseModel):
+    id: str = Field(..., min_length=1)
+    webspace_id: str | None = None
+    target_id: str | None = None
+    capability_profile: str | None = None
+    ttl_seconds: int | None = None
+
+
 def _raise_400(detail: str) -> None:
     raise HTTPException(status_code=400, detail=detail)
 
@@ -1202,6 +1210,92 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
         "action": event_payload["id"],
         "operation_id": operation_id,
         "result": action_result,
+        "snapshot": snapshot,
+    }
+
+
+@router.post("/infra_access/action", dependencies=[Depends(require_token)])
+async def node_infra_access_action(payload: InfraAccessActionRequest) -> dict[str, Any]:
+    conf = load_config()
+    target_webspace_id = str(payload.webspace_id or "default").strip() or "default"
+    if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "error": "hub_role_required",
+        }
+    ctx = get_ctx()
+    mgr = SkillManager(
+        repo=ctx.skills_repo,
+        registry=SqliteSkillRegistry(ctx.sql),
+        git=ctx.git,
+        paths=ctx.paths,
+        bus=getattr(ctx, "bus", None),
+        caps=ctx.caps,
+        settings=ctx.settings,
+    )
+    action_id = str(payload.id or "").strip().lower()
+    target_id = str(payload.target_id or "").strip() or None
+
+    def _run() -> tuple[dict[str, Any], dict[str, Any]]:
+        if action_id == "refresh":
+            snapshot = mgr.run_tool(
+                "infra_access_skill",
+                "refresh_snapshot",
+                {
+                    "webspace_id": target_webspace_id,
+                    "target_id": target_id,
+                },
+            )
+            return (
+                {"ok": True, "accepted": True, "action": action_id},
+                snapshot if isinstance(snapshot, dict) else {"raw": snapshot},
+            )
+        if action_id == "issue_codex_session":
+            result = mgr.run_tool(
+                "infra_access_skill",
+                "issue_codex_connection",
+                {
+                    "webspace_id": target_webspace_id,
+                    "target_id": target_id,
+                    "capability_profile": str(payload.capability_profile or "ProfileOpsRead"),
+                    "ttl_seconds": int(payload.ttl_seconds or 28_800),
+                },
+            )
+            snapshot = mgr.run_tool(
+                "infra_access_skill",
+                "get_snapshot",
+                {
+                    "webspace_id": target_webspace_id,
+                    "target_id": target_id,
+                },
+            )
+            return (
+                result if isinstance(result, dict) else {"ok": True, "accepted": True, "action": action_id, "raw": result},
+                snapshot if isinstance(snapshot, dict) else {"raw": snapshot},
+            )
+        raise HTTPException(status_code=400, detail=f"unsupported infra_access action: {action_id}")
+
+    try:
+        result, snapshot = await anyio.to_thread.run_sync(_run)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("node infra_access action failed webspace=%s action=%s", target_webspace_id, action_id, exc_info=True)
+        return {
+            "ok": False,
+            "accepted": False,
+            "webspace_id": target_webspace_id,
+            "action": action_id,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": bool(result.get("ok", True)),
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "action": action_id,
+        "result": result,
         "snapshot": snapshot,
     }
 

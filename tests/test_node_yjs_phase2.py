@@ -566,6 +566,80 @@ def test_node_infrastate_action_marketplace_install_returns_fast_operation_ack(m
     assert result["snapshot"] == {}
 
 
+def test_node_infra_access_action_endpoint_runs_skill_tools(monkeypatch) -> None:
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module,
+        "get_ctx",
+        lambda: SimpleNamespace(skills_repo=None, sql=None, git=None, paths=None, bus=None, caps=None, settings=None),
+    )
+
+    class _FakeSkillManager:
+        def __init__(self, *args, **kwargs) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        def run_tool(self, skill_name: str, tool_name: str, payload: dict[str, object]):
+            self.calls.append((skill_name, tool_name, dict(payload)))
+            if tool_name == "issue_codex_connection":
+                return {
+                    "ok": True,
+                    "session_id": "sess-1",
+                    "access_token": "secret",
+                }
+            if tool_name in {"get_snapshot", "refresh_snapshot"}:
+                return {
+                    "ok": True,
+                    "summary": {"label": "Active MCP credentials"},
+                }
+            return {"ok": True}
+
+    manager = _FakeSkillManager()
+    monkeypatch.setattr(node_api_module, "SkillManager", lambda *args, **kwargs: manager)
+    monkeypatch.setattr(node_api_module, "SqliteSkillRegistry", lambda *_args, **_kwargs: None)
+
+    async def _fake_run_sync(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(node_api_module.anyio.to_thread, "run_sync", _fake_run_sync)
+
+    result = asyncio.run(
+        node_api_module.node_infra_access_action(
+            node_api_module.InfraAccessActionRequest(
+                id="issue_codex_session",
+                webspace_id="default",
+                capability_profile="ProfileOpsRead",
+                ttl_seconds=600,
+            )
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["action"] == "issue_codex_session"
+    assert result["result"]["session_id"] == "sess-1"
+    assert result["snapshot"]["summary"]["label"] == "Active MCP credentials"
+    assert manager.calls == [
+        (
+            "infra_access_skill",
+            "issue_codex_connection",
+            {
+                "webspace_id": "default",
+                "target_id": None,
+                "capability_profile": "ProfileOpsRead",
+                "ttl_seconds": 600,
+            },
+        ),
+        (
+            "infra_access_skill",
+            "get_snapshot",
+            {
+                "webspace_id": "default",
+                "target_id": None,
+            },
+        ),
+    ]
+
+
 def test_node_yjs_set_home_requires_scenario_id(monkeypatch) -> None:
     monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
 
