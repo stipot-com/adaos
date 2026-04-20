@@ -124,9 +124,30 @@ def get_local_operational_surface(
 ) -> dict[str, Any]:
     context = get_local_target_context(target_id=target_id, root_url=root_url)
     client = get_management_client(root_url=context["root_url"])
-    if not context["target_id"]:
-        raise RuntimeError("Unable to infer local target_id for Root MCP access.")
-    return dict(client.get_operational_surface(str(context["target_id"])))
+    foundation = client.foundation()
+    session_profile = client.get_descriptor("mcp_session_profile")
+    foundation_result = dict(foundation.get("result") or {}) if isinstance(foundation.get("result"), dict) else {}
+    session_result = dict(session_profile.get("result") or {}) if isinstance(session_profile.get("result"), dict) else {}
+    session_registry = dict(session_result.get("session_registry") or {}) if isinstance(session_result.get("session_registry"), dict) else {}
+    return {
+        "ok": True,
+        "response": {
+            "result": {
+                "operational_surface": {
+                    "token_management": {
+                        "enabled": True,
+                        "issuer_mode": "root_mcp",
+                        "token_management_route": "root_mcp",
+                        "preferred_bootstrap": str(
+                            ((foundation_result.get("client") or {}) if isinstance(foundation_result.get("client"), dict) else {}).get("preferred_bootstrap")
+                            or "root-issued MCP Session Lease"
+                        ),
+                        "session_capability_profiles": list(session_registry.get("capability_profiles") or []),
+                    }
+                }
+            }
+        },
+    }
 
 
 def list_local_access_tokens(
@@ -141,9 +162,9 @@ def list_local_access_tokens(
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
     return dict(
-        client.list_target_access_tokens(
-            str(context["target_id"]),
+        client.list_access_tokens(
             limit=int(limit),
+            target_id=str(context["target_id"]),
             active_only=bool(active_only),
         )
     )
@@ -161,9 +182,9 @@ def list_local_mcp_sessions(
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
     return dict(
-        client.list_target_mcp_sessions(
-            str(context["target_id"]),
+        client.list_session_leases(
             limit=int(limit),
+            target_id=str(context["target_id"]),
             active_only=bool(active_only),
         )
     )
@@ -179,7 +200,7 @@ def get_local_activity_log(
     client = get_management_client(root_url=context["root_url"])
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
-    return dict(client.get_target_activity_log(str(context["target_id"]), limit=int(limit)))
+    return dict(client.recent_audit(limit=int(limit), target_id=str(context["target_id"])))
 
 
 def issue_local_codex_mcp_session(
@@ -196,12 +217,14 @@ def issue_local_codex_mcp_session(
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
     return dict(
-        client.issue_target_mcp_session(
-            str(context["target_id"]),
-            audience=str(audience),
-            ttl_seconds=int(ttl_seconds),
-            capability_profile=str(capability_profile),
-            note=str(note or "infra_access_skill Codex bootstrap").strip(),
+        client.issue_session_lease(
+            {
+                "target_id": str(context["target_id"]),
+                "audience": str(audience),
+                "ttl_seconds": int(ttl_seconds),
+                "capability_profile": str(capability_profile),
+                "note": str(note or "infra_access_skill Codex bootstrap").strip(),
+            }
         )
     )
 

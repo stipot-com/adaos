@@ -56,3 +56,13 @@ adaos sandbox run "python -c 'while True: pass'" --cpu 1 --wall 10
 
 * Генерация навыков из LLM, шаблоны, `push/rollback`, валидация/prep.
 * Свободная установка из произвольных репозиториев.
+
+## Отладка в браузере
+
+* Если нужно больше шума в консоли, в DevTools выполни:
+```JS
+localStorage.setItem('adaos.debug', '1')
+location.reload()
+```
+
+* YJS Snapshot: Alt+W

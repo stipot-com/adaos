@@ -14,6 +14,9 @@ def _load_module():
             def set(self, slot, value, *, webspace_id=None):
                 return None
 
+            async def set_async(self, slot, value, *, webspace_id=None):
+                return None
+
         fake_ctx.subnet = _FakeSubnet()
         fake_ctx.current_user = object()
         fake_ctx.selected_user = object()
@@ -116,7 +119,12 @@ def test_infra_access_skill_snapshot_and_projection(monkeypatch) -> None:
             }
         },
     )
-    monkeypatch.setattr(module.ctx_subnet, "set", lambda slot, value, webspace_id=None: projected.append((webspace_id, value)))
+    monkeypatch.setattr(module, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+
+    async def _fake_set_async(slot, value, *, webspace_id=None):
+        projected.append((webspace_id, value))
+
+    monkeypatch.setattr(module.ctx_subnet, "set_async", _fake_set_async)
 
     snapshot = module.get_snapshot(webspace_id="default")
 
@@ -126,7 +134,7 @@ def test_infra_access_skill_snapshot_and_projection(monkeypatch) -> None:
     assert snapshot["tokens"][1]["title"] == "Access token tok-1"
     assert snapshot["codex_help"][0]["content"]["step_2"].startswith("adaos dev root mcp prepare-codex")
     assert projected and projected[0][0] == "default"
-    assert projected[0][1]["connections"]["mcp_http_url"] == "https://root.test/v1/root/mcp"
+    assert projected[0][1]["connection"]["mcp_http_url"] == "https://root.test/v1/root/mcp"
 
 
 def test_infra_access_skill_issue_codex_connection(monkeypatch) -> None:
@@ -167,3 +175,39 @@ def test_infra_access_skill_issue_codex_connection(monkeypatch) -> None:
     assert payload["access_token"] == "secret-token"
     assert payload["mcp_http_url"] == "https://root.test/v1/root/mcp"
     assert "--apply-codex" in payload["codex_prepare_command"]
+
+
+def test_infra_access_skill_projects_fallback_snapshot(monkeypatch) -> None:
+    module = _load_module()
+
+    projected: list[tuple[str | None, dict]] = []
+    module._CACHE["ts"] = 0.0
+    module._CACHE["snapshot"] = None
+
+    monkeypatch.setattr(
+        module.sdk_root_mcp,
+        "get_local_target_context",
+        lambda **kwargs: {
+            "root_url": "https://root.test",
+            "target_id": "hub:test-subnet",
+            "subnet_id": "subnet:test-subnet",
+            "zone": "lab-a",
+        },
+    )
+    monkeypatch.setattr(
+        module.sdk_root_mcp,
+        "get_local_operational_surface",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("root auth missing")),
+    )
+    monkeypatch.setattr(module, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+
+    async def _fake_set_async(slot, value, *, webspace_id=None):
+        projected.append((webspace_id, value))
+
+    monkeypatch.setattr(module.ctx_subnet, "set_async", _fake_set_async)
+
+    snapshot = module.refresh_snapshot(webspace_id="default")
+
+    assert snapshot["ok"] is False
+    assert "root auth missing" in snapshot["summary"]["description"]
+    assert projected and projected[0][1]["events"][0]["id"] == "snapshot-error"
