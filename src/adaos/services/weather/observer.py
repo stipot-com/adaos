@@ -19,7 +19,11 @@ _YDOC_LOOPS: Dict[str, asyncio.AbstractEventLoop | None] = {}
 _PENDING_DOC_CHECKS: Dict[str, bool] = {}
 _LAST_CITY_IN_DOC: Dict[str, Optional[str]] = {}
 _LAST_DOC_CHECK_AT: Dict[str, float] = {}
+_LAST_NO_CITY_LOG_AT: Dict[str, float] = {}
 _OBSERVER_STATS: Dict[str, Dict[str, Any]] = {}
+_ACTIVE_CITY_CHECK_INTERVAL_S = 0.5
+_IDLE_CITY_CHECK_INTERVAL_S = 5.0
+_NO_CITY_LOG_INTERVAL_S = 30.0
 
 
 def _stats_entry(webspace_id: str) -> dict[str, Any]:
@@ -38,6 +42,7 @@ def _stats_entry(webspace_id: str) -> dict[str, Any]:
         "emit_total": 0,
         "no_city_total": 0,
         "same_city_skip_total": 0,
+        "idle_throttled_total": 0,
         "loop_missing_total": 0,
         "loop_schedule_failed_total": 0,
         "error_total": 0,
@@ -166,6 +171,20 @@ def _ensure_city_observer(webspace_id: str, ydoc):
     stats["attach_total"] = int(stats.get("attach_total") or 0) + 1
     stats["last_attach_at"] = time.time()
 
+    def _check_interval_s() -> float:
+        city = _LAST_CITY_IN_DOC.get(key)
+        if isinstance(city, str) and city.strip():
+            return _ACTIVE_CITY_CHECK_INTERVAL_S
+        return _IDLE_CITY_CHECK_INTERVAL_S
+
+    def _log_no_city() -> None:
+        now = time.monotonic()
+        last = _LAST_NO_CITY_LOG_AT.get(key)
+        if last is not None and (now - last) < _NO_CITY_LOG_INTERVAL_S:
+            return
+        _LAST_NO_CITY_LOG_AT[key] = now
+        _log.debug("weather observer check webspace=%s city=None", key)
+
     def _emit_event(city: str) -> None:
         try:
             ctx = get_ctx()
@@ -186,13 +205,15 @@ def _ensure_city_observer(webspace_id: str, ydoc):
         stats["emit_check_total"] = int(stats.get("emit_check_total") or 0) + 1
         stats["last_check_at"] = time.time()
         city = _current_city_from_doc(ydoc)
-        _log.debug("weather observer check webspace=%s city=%s", key, city)
         if not city:
+            _LAST_CITY_IN_DOC[key] = None
             stats["no_city_total"] = int(stats.get("no_city_total") or 0) + 1
+            _log_no_city()
             return
         if _LAST_CITY_IN_DOC.get(key) == city:
             stats["same_city_skip_total"] = int(stats.get("same_city_skip_total") or 0) + 1
             return
+        _log.debug("weather observer check webspace=%s city=%s", key, city)
         _LAST_CITY_IN_DOC[key] = city
         stats["emit_total"] = int(stats.get("emit_total") or 0) + 1
         stats["last_emit_at"] = time.time()
@@ -204,8 +225,11 @@ def _ensure_city_observer(webspace_id: str, ydoc):
         stats["last_callback_at"] = time.time()
         now = time.monotonic()
         last = _LAST_DOC_CHECK_AT.get(key)
-        if last is not None and (now - last) < 0.5:
+        min_interval_s = _check_interval_s()
+        if last is not None and (now - last) < min_interval_s:
             stats["throttled_total"] = int(stats.get("throttled_total") or 0) + 1
+            if min_interval_s > _ACTIVE_CITY_CHECK_INTERVAL_S:
+                stats["idle_throttled_total"] = int(stats.get("idle_throttled_total") or 0) + 1
             return
         if _PENDING_DOC_CHECKS.get(key):
             stats["pending_skip_total"] = int(stats.get("pending_skip_total") or 0) + 1
@@ -274,5 +298,6 @@ def forget_weather_room_observer(webspace_id: str, ydoc_id: int | None = None) -
             _YDOC_LOOPS.pop(key, None)
             _PENDING_DOC_CHECKS.pop(key, None)
             _LAST_CITY_IN_DOC.pop(key, None)
+            _LAST_NO_CITY_LOG_AT.pop(key, None)
     _LAST_DOC_CHECK_AT.pop(key, None)
 
