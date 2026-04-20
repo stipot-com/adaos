@@ -232,6 +232,12 @@ They should converge on the same:
 - policy decisions, visibility rules, and governance overlays
 - operational event model for requests, outcomes, incidents, and history
 
+That shared event vocabulary should now be refined by the browser-facing
+[Operational Event Model](operational-event-model.md), which adds explicit
+projection demand, lifecycle, platform-emitter, and per-webspace Yjs
+materialization rules for pages, widgets, modals, pinned panels, and platform
+diagnostics.
+
 In practical terms:
 
 - `MCP Development Surface` should reuse the same canonical descriptors and task-shaped context packets that help `Infrascope` explain skills, scenarios, and dependencies

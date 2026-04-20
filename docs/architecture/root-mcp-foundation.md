@@ -219,6 +219,13 @@ That event model should be shared across:
 - diagnostics and incident timelines
 - later analytics and workflow effectiveness reporting
 
+For browser-facing workspace consumers, that shared operational vocabulary
+should now align with the dedicated
+[Operational Event Model](operational-event-model.md), which adds explicit
+projection-demand, lifecycle, platform-emitter, and per-webspace
+materialization semantics on top of the broader audit and request/result
+envelope defined here.
+
 ## Root Descriptor Cache
 
 The foundation should also include a root-hosted `descriptor cache` for stable and pseudo-static descriptive information.

@@ -17,6 +17,30 @@ Architecture is defined in [Infrascope](infrascope.md). This page focuses on seq
 5. Governance is part of the object model.
    Ownership, visibility, and policy should not be postponed until after the UI is built.
 
+## Priority Pre-Phase: Projection Demand and Event Harmonization
+
+Before expanding browser-facing scenarios with more monolithic Yjs snapshots,
+AdaOS should establish a shared projection/subscription runtime contract.
+
+This pre-phase is now tracked separately so that it stays implementation-focused:
+
+- [Operational Event Model](operational-event-model.md): target-state event, demand, lifecycle, platform-emitter, and access contract
+- [Operational Event Model Roadmap](operational-event-model-roadmap.md): master implementation order and dependency map across communication, runtime, client, and pilot work
+- [Projection Subscription Roadmap](projection-subscription-roadmap.md): priority checklist for demand-driven per-webspace projections
+
+This priority slice should land before major new browser-facing materialization
+work because it defines:
+
+- how browser clients declare projection demand
+- how multiple active projections coexist in one webspace
+- how skills and platform emitters dispatch updates per webspace instead of globally
+- how platform-owned diagnostics, system messages, and errors appear without being hidden inside one skill snapshot
+- how access metadata such as `shared`, `owner`, `guest`, and `dev` is published without introducing separate owner/guest payload branches in MVP
+
+This slice should still follow the communication-hardening phases.
+It is intended to become the architectural layer that sits above node-browser
+and runtime communication guarantees, not a shortcut around them.
+
 ## Reference Scenarios
 
 Each Phase should improve at least one of these end-to-end scenarios:

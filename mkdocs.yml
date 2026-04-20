@@ -148,6 +148,9 @@ nav:
       - Agent Context: architecture/context.md
       - Security: architecture/security.md
       - Infrascope: architecture/infrascope.md
+      - Operational Event Model: architecture/operational-event-model.md
+      - Operational Event Model Roadmap: architecture/operational-event-model-roadmap.md
+      - Projection Subscription Roadmap: architecture/projection-subscription-roadmap.md
       - Root MCP Foundation: architecture/root-mcp-foundation.md
       - Root MCP Roadmap: architecture/root-mcp-roadmap.md
       - Infrascope Roadmap: architecture/infrascope-roadmap.md

@@ -32,6 +32,9 @@ When a page is explicitly labeled as a roadmap or target-state design, it captur
 Current target-state control-plane extensions are documented in:
 
 - [Infrascope](infrascope.md): human-facing control-plane architecture over the canonical system model
+- [Operational Event Model](operational-event-model.md): target event, demand, lifecycle, and Yjs materialization contract for browser-facing projections
+- [Operational Event Model Roadmap](operational-event-model-roadmap.md): master implementation order across communication, runtime contracts, Yjs shape, client adapters, platform emitters, and skill pilots
+- [Projection Subscription Roadmap](projection-subscription-roadmap.md): priority checklist for moving skills and scenarios to demand-driven per-webspace projections
 - [Root MCP Foundation](root-mcp-foundation.md): root-hosted agent-facing foundation for future MCP development and operations surfaces
 - [Root MCP Roadmap](root-mcp-roadmap.md): sequencing for planes, descriptor cache, session leases, and companion slices such as `ProfileOps`
 - [AdaOS Supervisor](adaos-supervisor.md): local always-on process and update supervision authority above the restartable runtime
