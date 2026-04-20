@@ -197,6 +197,7 @@ def test_weather_observer_reattaches_for_new_doc(monkeypatch) -> None:
     monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
     monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
     monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_LAST_NO_CITY_LOG_AT", {})
     monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
     monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
 
@@ -232,6 +233,7 @@ def test_weather_observer_schedules_on_captured_loop(monkeypatch) -> None:
     monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
     monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
     monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_LAST_NO_CITY_LOG_AT", {})
     monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
     monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
 
@@ -263,6 +265,7 @@ def test_weather_observer_runs_inline_without_loop(monkeypatch) -> None:
     monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
     monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
     monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_LAST_NO_CITY_LOG_AT", {})
     monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
     monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
 
@@ -281,3 +284,37 @@ def test_weather_observer_runs_inline_without_loop(monkeypatch) -> None:
     assert selected["inline_total"] == 1
     assert selected["loop_missing_total"] == 1
     assert selected["pending"] is False
+
+
+def test_weather_observer_idles_when_city_missing(monkeypatch) -> None:
+    monkeypatch.setattr(weather_observer, "_YDOC_OBSERVERS", {})
+    monkeypatch.setattr(weather_observer, "_YDOC_LOOPS", {})
+    monkeypatch.setattr(weather_observer, "_PENDING_DOC_CHECKS", {})
+    monkeypatch.setattr(weather_observer, "_LAST_CITY_IN_DOC", {})
+    monkeypatch.setattr(weather_observer, "_LAST_DOC_CHECK_AT", {})
+    monkeypatch.setattr(weather_observer, "_LAST_NO_CITY_LOG_AT", {})
+    monkeypatch.setattr(weather_observer, "_OBSERVER_STATS", {})
+    monkeypatch.setattr(weather_observer, "_current_city_from_doc", lambda _ydoc: None)
+
+    debug_calls = []
+
+    def _debug(msg, *args, **kwargs):  # noqa: ARG001
+        debug_calls.append(msg % args if args else msg)
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(weather_observer.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(weather_observer._log, "debug", _debug)
+    ydoc = _FakeYDoc()
+
+    weather_observer._ensure_city_observer("default", ydoc)
+
+    callback = ydoc.observe_after_transaction_calls[0]
+    callback()
+    clock["now"] += 1.0
+    callback()
+
+    selected = weather_observer.weather_observer_snapshot(webspace_id="default")["selected"]
+    assert selected["emit_check_total"] == 2
+    assert selected["throttled_total"] == 1
+    assert selected["idle_throttled_total"] == 1
+    assert debug_calls == ["weather observer check webspace=default city=None"]

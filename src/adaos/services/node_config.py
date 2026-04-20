@@ -11,6 +11,7 @@ import uuid
 import yaml
 from adaos.adapters.db.sqlite import durable_state_delete, durable_state_get, durable_state_put
 from adaos.services.agent_context import get_ctx, AgentContext  # type: ignore
+from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 from adaos.services.node_runtime_state import (
     load_node_runtime_state,
     load_nats_runtime_config,
@@ -246,8 +247,12 @@ class NodeConfig:
         if is_canonical_subnet_id(self.subnet_id) and self.subnet_settings.bootstrap_id != self.subnet_id:
             self.subnet_settings.bootstrap_id = self.subnet_id
             changed = True
-        if not self.root_settings.base_url:
-            self.root_settings.base_url = "https://api.inimatic.com"
+        normalized_root_base = resolve_effective_root_base_url(
+            self.root_settings.base_url,
+            zone_id=(env_zone_id or self.zone_id),
+        )
+        if self.root_settings.base_url != normalized_root_base:
+            self.root_settings.base_url = normalized_root_base
             changed = True
         if not self.root_settings.ca_cert:
             self.root_settings.ca_cert = "keys/ca.cert"
@@ -543,6 +548,16 @@ def _default_conf() -> NodeConfig:
     return conf
 
 
+def resolve_effective_root_base_url(base_url: str | None, *, zone_id: str | None = None) -> str:
+    normalized_zone = canonical_zone_id(str(zone_id or "").strip().lower())
+    normalized_base = str(base_url or "").strip().rstrip("/")
+    if not normalized_base:
+        return zone_public_base_url(normalized_zone)
+    if normalized_base in {"https://api.inimatic.com", "http://api.inimatic.com"} and normalized_zone:
+        return zone_public_base_url(normalized_zone)
+    return normalized_base
+
+
 def _looks_like_root_state(raw: Any) -> bool:
     if not isinstance(raw, dict):
         return False
@@ -760,6 +775,12 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         raw_root_settings = {}
 
     root_settings = _settings_from_dict(RootSettings, raw_root_settings)
+    loaded_zone_id = (str(data.get("zone_id") or "").strip().lower() or None)
+    env_zone_id = str(os.environ.get("ADAOS_ZONE_ID", "") or "").strip().lower() or None
+    root_settings.base_url = resolve_effective_root_base_url(
+        root_settings.base_url,
+        zone_id=(env_zone_id or loaded_zone_id),
+    )
     subnet_settings = _settings_from_dict(SubnetSettings, data.get("subnet"))
     node_settings = _settings_from_dict(NodeSettings, data.get("node"))
     dev_settings = _settings_from_dict(DevSettings, data.get("dev"))
@@ -782,7 +803,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     root_state = persisted_root_state or _normalize_root_state(raw_root_state)
 
     conf = NodeConfig(
-        zone_id=(str(data.get("zone_id") or "").strip().lower() or None),
+        zone_id=loaded_zone_id,
         node_id=node_id,
         subnet_id=subnet_id,
         role=role,

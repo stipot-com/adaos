@@ -1983,7 +1983,12 @@ def node_join(
     cfg.subnet_id = subnet_id
     cfg.hub_url = rendezvous_url
     try:
-        cfg.root_settings.base_url = root.strip()
+        from adaos.services.node_config import resolve_effective_root_base_url
+
+        cfg.root_settings.base_url = resolve_effective_root_base_url(
+            root.strip(),
+            zone_id=getattr(cfg, "zone_id", None),
+        )
     except Exception:
         pass
     cfg.role = "member"

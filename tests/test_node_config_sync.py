@@ -404,3 +404,32 @@ def test_load_config_migrates_legacy_nats_runtime_state_and_alias() -> None:
     assert runtime_nats["pass"] == "secret-1"
     assert load_subnet_alias(subnet_id="sn_runtime01") == "office"
     assert "nats" not in saved
+
+
+def test_load_config_normalizes_root_base_url_to_zone_effective_host() -> None:
+    ctx = get_ctx()
+    node_path = Path(ctx.paths.base_dir()) / "node.yaml"
+    node_path.write_text(
+        yaml.safe_dump(
+            {
+                "zone_id": "ru",
+                "node_id": "node-zone",
+                "subnet_id": "sn_zone01",
+                "role": "hub",
+                "root": {
+                    "base_url": "https://api.inimatic.com",
+                    "ca_cert": "keys/ca.cert",
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    node_config_mod._NODE_CONFIG_CACHE.clear()
+
+    fresh = load_config()
+    saved = yaml.safe_load(node_path.read_text(encoding="utf-8")) or {}
+
+    assert fresh.root_settings.base_url == "https://ru.api.inimatic.com"
+    assert ((saved.get("root") or {}).get("base_url")) == "https://ru.api.inimatic.com"

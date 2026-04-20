@@ -53,8 +53,8 @@ def _root_client(conf) -> RootHttpClient | None:
     except Exception:
         return None
     base_url = str(
-        getattr(ctx.settings, "api_base", None)
-        or getattr(getattr(conf, "root_settings", None), "base_url", None)
+        getattr(getattr(conf, "root_settings", None), "base_url", None)
+        or getattr(ctx.settings, "api_base", None)
         or ""
     ).rstrip("/")
     if not base_url:

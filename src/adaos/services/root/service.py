@@ -661,11 +661,6 @@ def _insecure_tls_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _is_default_root_base_url(value: str | None) -> bool:
-    normalized = str(value or "").strip().rstrip("/").lower()
-    return normalized in {"", "https://api.inimatic.com", "http://api.inimatic.com"}
-
-
 class RootDeveloperService:
     """High-level orchestration for Root developer workflows."""
 
@@ -1552,9 +1547,6 @@ class RootDeveloperService:
         if self._client_factory:
             return self._client_factory(cfg)
         base_url = cfg.root_settings.base_url or "https://api.inimatic.com"
-        zone_id = canonical_zone_id((os.getenv("ADAOS_ZONE_ID") or cfg.zone_id or "").strip().lower())
-        if zone_id and _is_default_root_base_url(base_url):
-            base_url = zone_public_base_url(zone_id)
         return RootHttpClient(base_url=base_url)
 
     def _owner_auth_client(self, cfg: NodeConfig) -> RootHttpClient:
