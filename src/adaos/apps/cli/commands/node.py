@@ -469,6 +469,27 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     if sync_runtime:
         assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
         transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
+        ownership = (
+            sync_runtime.get("ownership_boundaries")
+            if isinstance(sync_runtime.get("ownership_boundaries"), dict)
+            else {}
+        )
+        selector = ownership.get("selector") if isinstance(ownership.get("selector"), dict) else {}
+        effective = (
+            ownership.get("effective_projection")
+            if isinstance(ownership.get("effective_projection"), dict)
+            else {}
+        )
+        compatibility = (
+            ownership.get("compatibility_caches")
+            if isinstance(ownership.get("compatibility_caches"), dict)
+            else {}
+        )
+        transport_session = (
+            ownership.get("transport_session")
+            if isinstance(ownership.get("transport_session"), dict)
+            else {}
+        )
         webspaces = sync_runtime.get("webspaces") if isinstance(sync_runtime.get("webspaces"), dict) else {}
         default_ws = webspaces.get("default") if isinstance(webspaces.get("default"), dict) else {}
         typer.echo(
@@ -518,6 +539,19 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"age={transport.get('last_reset_age_s') if transport.get('last_reset_age_s') is not None else '-'} "
                 f"dup={'yes' if transport.get('last_reset_duplicate_recent') else 'no'} "
                 f"fp={transport.get('last_reset_fingerprint') or '-'}"
+            )
+        if ownership:
+            effective_state = (
+                "ready"
+                if effective.get("ready")
+                else str(effective.get("readiness_state") or "").strip() or "pending"
+            )
+            typer.echo(
+                "sync_runtime.boundaries: "
+                f"selector={selector.get('owner') or '-'}:{selector.get('current_scenario') or selector.get('home_scenario') or '-'} "
+                f"effective={effective.get('owner') or '-'}:{effective_state} "
+                f"compat={compatibility.get('owner') or '-'}:{compatibility.get('mode') or '-'} "
+                f"transport={transport_session.get('owner') or '-'}->{transport_session.get('planned_owner') or '-'}"
             )
     if media_runtime:
         assessment = media_runtime.get("assessment") if isinstance(media_runtime.get("assessment"), dict) else {}

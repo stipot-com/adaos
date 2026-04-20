@@ -541,6 +541,27 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "selected_webspace_id": "desk",
                     "assessment": {"state": "nominal", "reason": "bounded sync runtime observed"},
                     "transport": {"server_ready": True},
+                    "ownership_boundaries": {
+                        "state": "explicit",
+                        "selector": {
+                            "owner": "shared",
+                            "current_scenario": "web_desktop",
+                            "home_scenario": "web_desktop",
+                        },
+                        "effective_projection": {
+                            "owner": "runtime",
+                            "ready": True,
+                            "readiness_state": "ready",
+                        },
+                        "compatibility_caches": {
+                            "owner": "runtime",
+                            "mode": "fallback_cache",
+                        },
+                        "transport_session": {
+                            "owner": "runtime",
+                            "planned_owner": "sidecar",
+                        },
+                    },
                     "action_overrides": {
                         "backup": {"enabled": True, "reason": "persist current state", "source_of_truth": "current_runtime"},
                         "reset": {"enabled": True, "reason": "hard reset", "source_of_truth": "scenario"},
@@ -611,6 +632,8 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     )
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
+    assert objects["runtime:hub:hub-1/yjs-sync"]["actual_state"]["ownership_boundaries"]["state"] == "explicit"
+    assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["ownership_boundaries"]["transport_session"]["planned_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
     assert objects["runtime:hub:hub-1/media-plane"]["runtime"]["update_guard"]["current_support"] == "not_applicable"
 
