@@ -77,10 +77,19 @@ The intended order across all workstreams is:
 
 ### Phase 0. Communication Prerequisites
 
-- [ ] `phase0.comm_order_locked`: treat communication hardening as a prerequisite for this roadmap
-- [ ] `phase0.node_browser_ready`: finish the node-browser communication guarantees needed by browser-facing projection work
-- [ ] `phase0.runtime_comm_ready`: finish the runtime-side communication guarantees needed by core/skill event contracts
-- [ ] `phase0.webspace_runtime_baseline`: keep webspace rebuild/materialization ownership aligned with the pointer/projection roadmap
+- [x] `phase0.comm_order_locked`: treat communication hardening as a prerequisite for this roadmap
+- [ ] `phase0.node_browser_ready`: in progress; Realtime Reliability marks browser/member semantic channels complete for the current scope, but `Yjs as SyncChannel` is still only at `checkpoint reached`, and the current reliability status still says Yjs ownership boundaries remain implicit
+- [ ] `phase0.runtime_comm_ready`: in progress; Realtime Reliability still reports hub-root delivery guarantees, sidecar ownership expansion, and browser-safe supervisor/warm-switch hardening as unfinished communication work, so the runtime communication prerequisite is not fully closed yet
+- [x] `phase0.webspace_runtime_baseline`: webspace rebuild/materialization ownership is aligned with the pointer/projection roadmap, and the browser runtime now consumes that baseline through lightweight diagnostics plus shared page-runtime adapters instead of bespoke component-only reads
+
+Current checkpoint as of 2026-04-20:
+
+- communication-first ordering is now explicitly locked in this roadmap and the companion projection roadmap
+- browser runtime consumers now treat `infrastate`, `infrascope`, and `subnet_env` as one operational-overlay class, observing root `data` updates consistently instead of drifting per branch
+- page runtime now exposes `runtime.sync`, `runtime.channels`, `runtime.materialization`, and `runtime.phase0.baseline` transforms so declarative surfaces can consume local communication/materialization prerequisites directly
+- focused client tests cover the Phase 0 baseline for operational-overlay reads, observer placement, semantic communication snapshots, and runtime prerequisite snapshots
+- webspace pointer/projection ownership is materially aligned, but the remaining Phase 0 blockers now sit in the subordinate Realtime Reliability track rather than in webspace runtime ownership
+- dependency reading rule for this roadmap: subordinate status wins over local convenience adapters, so Event Model Phase 0 stays open until Realtime Reliability closes the remaining communication work it still marks as in progress
 
 References:
 

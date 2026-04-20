@@ -15,7 +15,7 @@ Fix AdaOS reliability from the top down:
 This ordering is deliberate.
 The project must not start with sidecar or transport adapters as if they alone solved reliability.
 
-## Current status: 2026-04-13
+## Current status: 2026-04-20
 
 ### Done
 
@@ -44,6 +44,20 @@ The project must not start with sidecar or transport adapters as if they alone s
 - local process/update supervision now has a separate supervisor authority in managed deployments, but browser-safe visibility and warm-switch recovery hardening are still in progress
 - Yjs ownership boundaries for desktop and scenario state are still implicit
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
+
+### Event Model dependency note
+
+For [Operational Event Model Roadmap](operational-event-model-roadmap.md)
+Phase 0 dependency tracking, the current implementation should be read as:
+
+- `browser/member semantic channels`: materially ready for current scope
+- `Yjs as SyncChannel`: advanced checkpoint reached, but not yet closed as a completed reliability phase
+- `local supervisor browser-safe continuity`: materially improved, but still in progress
+- `/ws` and `/yws` ownership migration`: still explicitly incomplete and runtime-owned
+
+That means Realtime Reliability is already strong enough to support Event Model
+baseline alignment work, but it should not yet be treated as a fully closed
+communication prerequisite for Event Model Phase 0.
 
 ### Newly implemented foundation
 
