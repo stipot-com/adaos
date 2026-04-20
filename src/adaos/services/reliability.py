@@ -4725,6 +4725,218 @@ def _build_yjs_ownership_boundaries(
     }
 
 
+def _event_model_phase0_task(
+    *,
+    task_id: str,
+    status: str,
+    summary: str,
+    completed_criteria: list[str] | None = None,
+    pending_criteria: list[str] | None = None,
+    pending_reasons: list[str] | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "status": str(status or "").strip() or "in_progress",
+        "summary": str(summary or "").strip(),
+        "completed_criteria": list(completed_criteria or []),
+        "pending_criteria": list(pending_criteria or []),
+        "pending_reasons": list(pending_reasons or []),
+        "evidence": dict(evidence or {}),
+    }
+
+
+def _event_model_phase0_communication_checkpoint(
+    *,
+    sync_runtime: dict[str, Any] | None,
+    sidecar_runtime: dict[str, Any] | None,
+    hub_root_protocol: dict[str, Any] | None,
+) -> dict[str, Any]:
+    sync_payload = sync_runtime if isinstance(sync_runtime, dict) else {}
+    sidecar_payload = sidecar_runtime if isinstance(sidecar_runtime, dict) else {}
+    protocol_payload = hub_root_protocol if isinstance(hub_root_protocol, dict) else {}
+
+    channel_contract = sync_payload.get("channel_contract") if isinstance(sync_payload.get("channel_contract"), dict) else {}
+    transport = sync_payload.get("transport") if isinstance(sync_payload.get("transport"), dict) else {}
+    continuity = (
+        sidecar_payload.get("continuity_contract")
+        if isinstance(sidecar_payload.get("continuity_contract"), dict)
+        else {}
+    )
+    progress = sidecar_payload.get("progress") if isinstance(sidecar_payload.get("progress"), dict) else {}
+    route_tunnel_contract = (
+        sidecar_payload.get("route_tunnel_contract")
+        if isinstance(sidecar_payload.get("route_tunnel_contract"), dict)
+        else {}
+    )
+    hardening = (
+        protocol_payload.get("hardening_coverage")
+        if isinstance(protocol_payload.get("hardening_coverage"), dict)
+        else {}
+    )
+    sidecar_enabled = bool(sidecar_payload.get("enabled"))
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    ws_handoff_state = _sidecar_route_tunnel_state(enabled=sidecar_enabled, entry=ws_entry)
+    yws_handoff_state = _sidecar_route_tunnel_state(enabled=sidecar_enabled, entry=yws_entry)
+    ws_handoff_ready = ws_handoff_state == "ready"
+    yws_handoff_ready = yws_handoff_state == "ready"
+    yjs_sync_scope_ready = bool(channel_contract.get("completed_for_scope"))
+    hub_root_class_a_ready = str(hardening.get("state") or "").strip().lower() == "complete"
+    continuity_state = str(continuity.get("current_support") or "").strip().lower() or "unknown"
+    continuity_ready = continuity_state == "ready"
+    ws_blocker = next(
+        (str(item).strip() for item in (ws_entry.get("blockers") or []) if str(item).strip()),
+        "",
+    )
+    yws_blocker = next(
+        (str(item).strip() for item in (yws_entry.get("blockers") or []) if str(item).strip()),
+        "",
+    )
+
+    node_completed = ["browser_member_semantic_channels"]
+    node_pending: list[str] = []
+    node_pending_reasons: list[str] = []
+    if yjs_sync_scope_ready:
+        node_completed.append("yjs_as_sync_channel")
+    else:
+        node_pending.append("yjs_as_sync_channel")
+        node_pending_reasons.append("sync.channel_contract.incomplete")
+    if yws_handoff_ready:
+        node_completed.append("browser_yjs_ws_handoff")
+    else:
+        node_pending.append("browser_yjs_ws_handoff")
+        node_pending_reasons.append(
+            yws_blocker or f"sidecar.browser_yjs_ws_handoff.{yws_handoff_state}"
+        )
+    node_status = "done" if not node_pending else "in_progress"
+    node_summary = (
+        "browser/member communication prerequisites are ready for the current scope"
+        if node_status == "done"
+        else "browser/member semantic channels and Yjs SyncChannel are in place, but browser /yws transport ownership migration is still incomplete"
+    )
+
+    runtime_completed: list[str] = []
+    runtime_pending: list[str] = []
+    runtime_pending_reasons: list[str] = []
+    if hub_root_class_a_ready:
+        runtime_completed.append("hub_root_class_a_hardening")
+    else:
+        runtime_pending.append("hub_root_class_a_hardening")
+        runtime_pending_reasons.append(
+            f"hub_root.class_a.{str(hardening.get('state') or 'unknown').strip().lower() or 'unknown'}"
+        )
+    if ws_handoff_ready:
+        runtime_completed.append("browser_events_ws_handoff")
+    else:
+        runtime_pending.append("browser_events_ws_handoff")
+        runtime_pending_reasons.append(
+            ws_blocker or f"sidecar.browser_events_ws_handoff.{ws_handoff_state}"
+        )
+    if yws_handoff_ready:
+        runtime_completed.append("browser_yjs_ws_handoff")
+    else:
+        runtime_pending.append("browser_yjs_ws_handoff")
+        runtime_pending_reasons.append(
+            yws_blocker or f"sidecar.browser_yjs_ws_handoff.{yws_handoff_state}"
+        )
+    if continuity_ready:
+        runtime_completed.append("sidecar_continuity")
+    else:
+        runtime_pending.append("sidecar_continuity")
+        runtime_pending_reasons.append(f"sidecar.continuity.{continuity_state}")
+    runtime_pending.append("browser_safe_supervisor_continuity")
+    runtime_pending_reasons.append("supervisor.browser_safe_continuity.in_progress")
+    runtime_status = "done" if not runtime_pending else "in_progress"
+    runtime_summary = (
+        "hub-root Class A coverage, sidecar ownership expansion, and browser-safe supervisor continuity are ready"
+        if runtime_status == "done"
+        else "hub-root Class A hardening is explicit, but sidecar ownership expansion and browser-safe supervisor continuity still keep runtime communication prerequisites open"
+    )
+
+    tasks = {
+        "phase0.node_browser_ready": _event_model_phase0_task(
+            task_id="phase0.node_browser_ready",
+            status=node_status,
+            summary=node_summary,
+            completed_criteria=node_completed,
+            pending_criteria=node_pending,
+            pending_reasons=node_pending_reasons,
+            evidence={
+                "yjs_sync_channel_ready": yjs_sync_scope_ready,
+                "browser_yjs_ws_handoff": {
+                    "state": yws_handoff_state,
+                    "owner": str(yws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(yws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(yws_entry.get("handoff_ready")),
+                    "blocker": yws_blocker or None,
+                },
+                "sync_transport_owner": str(transport.get("owner") or "").strip().lower() or None,
+                "sync_transport_planned_owner": str(transport.get("planned_owner") or "").strip().lower() or None,
+            },
+        ),
+        "phase0.runtime_comm_ready": _event_model_phase0_task(
+            task_id="phase0.runtime_comm_ready",
+            status=runtime_status,
+            summary=runtime_summary,
+            completed_criteria=runtime_completed,
+            pending_criteria=runtime_pending,
+            pending_reasons=runtime_pending_reasons,
+            evidence={
+                "hub_root_class_a": {
+                    "state": str(hardening.get("state") or "").strip().lower() or "unknown",
+                    "covered_flows": int(hardening.get("covered_flows") or 0),
+                    "total_flows": int(hardening.get("total_flows") or 0),
+                },
+                "browser_events_ws_handoff": {
+                    "state": ws_handoff_state,
+                    "owner": str(ws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(ws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(ws_entry.get("handoff_ready")),
+                    "blocker": ws_blocker or None,
+                },
+                "browser_yjs_ws_handoff": {
+                    "state": yws_handoff_state,
+                    "owner": str(yws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(yws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(yws_entry.get("handoff_ready")),
+                    "blocker": yws_blocker or None,
+                },
+                "sidecar_continuity": {
+                    "state": continuity_state,
+                    "required": bool(continuity.get("required")),
+                    "hub_runtime_update": str(continuity.get("hub_runtime_update") or "").strip().lower() or None,
+                    "pending_boundaries": list(continuity.get("pending_boundaries") or []),
+                },
+                "browser_safe_supervisor_continuity": {
+                    "state": "in_progress",
+                    "summary": "browser-safe supervisor and warm-switch continuity hardening still remains open across browser topologies",
+                },
+                "sidecar_progress": {
+                    "state": str(progress.get("state") or "").strip().lower() or "unknown",
+                    "completed_milestones": int(progress.get("completed_milestones") or 0),
+                    "milestone_total": int(progress.get("milestone_total") or 0),
+                    "current_milestone": str(progress.get("current_milestone") or "").strip() or None,
+                },
+            },
+        ),
+    }
+    remaining_tasks = [
+        task_id
+        for task_id, entry in tasks.items()
+        if isinstance(entry, dict) and str(entry.get("status") or "") != "done"
+    ]
+    return {
+        "state": "ready" if not remaining_tasks else "in_progress",
+        "ready": not remaining_tasks,
+        "tracked_tasks": list(tasks.keys()),
+        "completed_task_total": len(tasks) - len(remaining_tasks),
+        "task_total": len(tasks),
+        "remaining_tasks": remaining_tasks,
+        "tasks": tasks,
+    }
+
+
 def _build_yjs_selected_webspace_snapshot(webspace_id: str | None) -> dict[str, Any]:
     target_webspace_id = str(webspace_id or "").strip() or "default"
     try:
@@ -5184,6 +5396,11 @@ def reliability_snapshot(
         transport_strategy=transport_strategy,
         media_runtime=media_runtime,
     )
+    event_model_phase0_communication = _event_model_phase0_communication_checkpoint(
+        sync_runtime=sync_runtime,
+        sidecar_runtime=sidecar_runtime,
+        hub_root_protocol=hub_root_protocol,
+    )
     return {
         "ok": True,
         "node": {
@@ -5217,5 +5434,6 @@ def reliability_snapshot(
             "sidecar_runtime": sidecar_runtime,
             "sync_runtime": sync_runtime,
             "media_runtime": media_runtime,
+            "event_model_phase0_communication": event_model_phase0_communication,
         },
     }

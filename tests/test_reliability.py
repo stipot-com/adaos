@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    _event_model_phase0_communication_checkpoint,
     _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
     hub_member_connection_state_snapshot,
@@ -844,6 +845,89 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert snapshot["selected_webspace"]["command_trace"]["last_reset"]["fingerprint"] == "rst123def456"
 
 
+def test_event_model_phase0_communication_checkpoint_tracks_remaining_runtime_gaps() -> None:
+    checkpoint = _event_model_phase0_communication_checkpoint(
+        sync_runtime={
+            "channel_contract": {
+                "completed_for_scope": True,
+            },
+            "transport": {
+                "owner": "runtime",
+                "planned_owner": "sidecar",
+            },
+        },
+        sidecar_runtime={
+            "enabled": True,
+            "continuity_contract": {
+                "required": True,
+                "hub_runtime_update": "preserve_sidecar",
+                "current_support": "planned",
+                "pending_boundaries": ["browser_events_ws", "browser_yjs_ws"],
+            },
+            "progress": {
+                "state": "in_progress",
+                "completed_milestones": 2,
+                "milestone_total": 4,
+                "current_milestone": "browser_yjs_ws_handoff",
+            },
+            "route_tunnel_contract": {
+                "current_support": "planned",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                },
+                "yws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                },
+            },
+        },
+        hub_root_protocol={
+            "hardening_coverage": {
+                "state": "complete",
+                "covered_flows": 6,
+                "total_flows": 6,
+            }
+        },
+    )
+
+    assert checkpoint["state"] == "in_progress"
+    assert checkpoint["ready"] is False
+    assert checkpoint["completed_task_total"] == 0
+    assert checkpoint["task_total"] == 2
+    assert checkpoint["remaining_tasks"] == [
+        "phase0.node_browser_ready",
+        "phase0.runtime_comm_ready",
+    ]
+    node_browser = checkpoint["tasks"]["phase0.node_browser_ready"]
+    runtime_comm = checkpoint["tasks"]["phase0.runtime_comm_ready"]
+    assert node_browser["status"] == "in_progress"
+    assert node_browser["completed_criteria"] == [
+        "browser_member_semantic_channels",
+        "yjs_as_sync_channel",
+    ]
+    assert node_browser["pending_reasons"] == [
+        "Yjs websocket/session ownership still lives in the runtime gateway",
+    ]
+    assert node_browser["evidence"]["browser_yjs_ws_handoff"]["state"] == "planned"
+    assert runtime_comm["status"] == "in_progress"
+    assert runtime_comm["completed_criteria"] == ["hub_root_class_a_hardening"]
+    assert runtime_comm["pending_reasons"] == [
+        "browser route websocket still terminates in the runtime FastAPI app",
+        "Yjs websocket/session ownership still lives in the runtime gateway",
+        "sidecar.continuity.planned",
+        "supervisor.browser_safe_continuity.in_progress",
+    ]
+    assert runtime_comm["evidence"]["hub_root_class_a"]["state"] == "complete"
+    assert runtime_comm["evidence"]["sidecar_continuity"]["hub_runtime_update"] == "preserve_sidecar"
+    assert runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["state"] == "in_progress"
+
+
 def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:
     monkeypatch.setitem(
         sys.modules,
@@ -1256,6 +1340,72 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             },
                         },
                     },
+                    "event_model_phase0_communication": {
+                        "state": "in_progress",
+                        "ready": False,
+                        "tracked_tasks": [
+                            "phase0.node_browser_ready",
+                            "phase0.runtime_comm_ready",
+                        ],
+                        "completed_task_total": 0,
+                        "task_total": 2,
+                        "remaining_tasks": [
+                            "phase0.node_browser_ready",
+                            "phase0.runtime_comm_ready",
+                        ],
+                        "tasks": {
+                            "phase0.node_browser_ready": {
+                                "id": "phase0.node_browser_ready",
+                                "status": "in_progress",
+                                "pending_reasons": [
+                                    "Yjs websocket/session ownership still lives in the runtime gateway",
+                                ],
+                                "evidence": {
+                                    "yjs_sync_channel_ready": True,
+                                    "browser_yjs_ws_handoff": {
+                                        "state": "planned",
+                                        "owner": "runtime",
+                                        "planned_owner": "sidecar",
+                                        "blocker": "Yjs websocket/session ownership still lives in the runtime gateway",
+                                    },
+                                },
+                            },
+                            "phase0.runtime_comm_ready": {
+                                "id": "phase0.runtime_comm_ready",
+                                "status": "in_progress",
+                                "pending_reasons": [
+                                    "browser route websocket still terminates in the runtime FastAPI app",
+                                    "Yjs websocket/session ownership still lives in the runtime gateway",
+                                    "sidecar.continuity.planned",
+                                    "supervisor.browser_safe_continuity.in_progress",
+                                ],
+                                "evidence": {
+                                    "hub_root_class_a": {
+                                        "state": "complete",
+                                        "covered_flows": 6,
+                                        "total_flows": 6,
+                                    },
+                                    "browser_events_ws_handoff": {
+                                        "state": "planned",
+                                        "owner": "runtime",
+                                        "planned_owner": "sidecar",
+                                    },
+                                    "browser_yjs_ws_handoff": {
+                                        "state": "planned",
+                                        "owner": "runtime",
+                                        "planned_owner": "sidecar",
+                                    },
+                                    "sidecar_continuity": {
+                                        "state": "planned",
+                                        "hub_runtime_update": "preserve_sidecar",
+                                    },
+                                    "browser_safe_supervisor_continuity": {
+                                        "state": "in_progress",
+                                    },
+                                },
+                            },
+                        },
+                    },
                     "media_runtime": {
                         "assessment": {"state": "nominal"},
                         "counts": {
@@ -1308,6 +1458,11 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "sync_runtime.boundaries: selector=shared:web_desktop effective=runtime:ready compat=runtime:fallback_cache transport=runtime->sidecar" in result.output
     assert "rooms=1 opens=2/3 single=2 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
+    assert "event_model.phase0.communication: state=in_progress done=0/2 open=phase0.node_browser_ready,phase0.runtime_comm_ready" in result.output
+    assert "event_model.phase0.node_browser_ready: status=in_progress yjs=yes yws=planned owner=runtime->sidecar" in result.output
+    assert "event_model.phase0.node_browser_ready.blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
+    assert "event_model.phase0.runtime_comm_ready: status=in_progress class_a=complete:6/6 ws=planned yws=planned continuity=planned supervisor=in_progress" in result.output
+    assert "event_model.phase0.runtime_comm_ready.blockers: browser route websocket still terminates in the runtime FastAPI app, Yjs websocket/session ownership still lives in the runtime gateway, sidecar.continuity.planned, supervisor.browser_safe_continuity.in_progress" in result.output
     assert "media.update_guard: live=yes" in result.output
     assert "member=defer hub=preserve_sidecar" in result.output
 

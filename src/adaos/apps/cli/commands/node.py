@@ -686,6 +686,101 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"bases={route_runtime.get('last_open_base_total') or 0} "
                 f"last_http={route_runtime.get('last_http_method') or '-'}:{route_runtime.get('last_http_path') or '-'}"
             )
+    phase0_comm = (
+        runtime.get("event_model_phase0_communication")
+        if isinstance(runtime.get("event_model_phase0_communication"), dict)
+        else {}
+    )
+    if phase0_comm:
+        remaining = ",".join(str(item) for item in (phase0_comm.get("remaining_tasks") or []) if item)
+        tasks = phase0_comm.get("tasks") if isinstance(phase0_comm.get("tasks"), dict) else {}
+        node_browser = (
+            tasks.get("phase0.node_browser_ready")
+            if isinstance(tasks.get("phase0.node_browser_ready"), dict)
+            else {}
+        )
+        runtime_comm = (
+            tasks.get("phase0.runtime_comm_ready")
+            if isinstance(tasks.get("phase0.runtime_comm_ready"), dict)
+            else {}
+        )
+        node_evidence = (
+            node_browser.get("evidence")
+            if isinstance(node_browser.get("evidence"), dict)
+            else {}
+        )
+        runtime_evidence = (
+            runtime_comm.get("evidence")
+            if isinstance(runtime_comm.get("evidence"), dict)
+            else {}
+        )
+        node_yws = (
+            node_evidence.get("browser_yjs_ws_handoff")
+            if isinstance(node_evidence.get("browser_yjs_ws_handoff"), dict)
+            else {}
+        )
+        runtime_class_a = (
+            runtime_evidence.get("hub_root_class_a")
+            if isinstance(runtime_evidence.get("hub_root_class_a"), dict)
+            else {}
+        )
+        runtime_ws = (
+            runtime_evidence.get("browser_events_ws_handoff")
+            if isinstance(runtime_evidence.get("browser_events_ws_handoff"), dict)
+            else {}
+        )
+        runtime_yws = (
+            runtime_evidence.get("browser_yjs_ws_handoff")
+            if isinstance(runtime_evidence.get("browser_yjs_ws_handoff"), dict)
+            else {}
+        )
+        runtime_continuity = (
+            runtime_evidence.get("sidecar_continuity")
+            if isinstance(runtime_evidence.get("sidecar_continuity"), dict)
+            else {}
+        )
+        runtime_supervisor = (
+            runtime_evidence.get("browser_safe_supervisor_continuity")
+            if isinstance(runtime_evidence.get("browser_safe_supervisor_continuity"), dict)
+            else {}
+        )
+        typer.echo(
+            "event_model.phase0.communication: "
+            f"state={phase0_comm.get('state') or '-'} "
+            f"done={phase0_comm.get('completed_task_total') or 0}/{phase0_comm.get('task_total') or 0} "
+            f"open={remaining or '-'}"
+        )
+        if node_browser:
+            typer.echo(
+                "event_model.phase0.node_browser_ready: "
+                f"status={node_browser.get('status') or '-'} "
+                f"yjs={'yes' if node_evidence.get('yjs_sync_channel_ready') else 'no'} "
+                f"yws={node_yws.get('state') or '-'} "
+                f"owner={node_yws.get('owner') or '-'}->{node_yws.get('planned_owner') or '-'}"
+            )
+            node_blocker = str(node_yws.get("blocker") or "").strip()
+            if node_blocker:
+                typer.echo(f"event_model.phase0.node_browser_ready.blocker: {node_blocker}")
+        if runtime_comm:
+            typer.echo(
+                "event_model.phase0.runtime_comm_ready: "
+                f"status={runtime_comm.get('status') or '-'} "
+                f"class_a={runtime_class_a.get('state') or '-'}:"
+                f"{runtime_class_a.get('covered_flows') or 0}/{runtime_class_a.get('total_flows') or 0} "
+                f"ws={runtime_ws.get('state') or '-'} "
+                f"yws={runtime_yws.get('state') or '-'} "
+                f"continuity={runtime_continuity.get('state') or '-'} "
+                f"supervisor={runtime_supervisor.get('state') or '-'}"
+            )
+            runtime_blockers = [
+                str(item).strip()
+                for item in (runtime_comm.get("pending_reasons") or [])
+                if str(item).strip()
+            ]
+            if runtime_blockers:
+                typer.echo(
+                    f"event_model.phase0.runtime_comm_ready.blockers: {', '.join(runtime_blockers)}"
+                )
     if hub_member:
         assessment = hub_member.get("assessment") if isinstance(hub_member.get("assessment"), dict) else {}
         channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}

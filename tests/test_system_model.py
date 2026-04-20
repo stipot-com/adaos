@@ -491,6 +491,82 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "active_zone_id": "eu",
                     "selected_server": "wss://api.inimatic.com/nats",
                 },
+                "event_model_phase0_communication": {
+                    "state": "in_progress",
+                    "ready": False,
+                    "tracked_tasks": [
+                        "phase0.node_browser_ready",
+                        "phase0.runtime_comm_ready",
+                    ],
+                    "completed_task_total": 0,
+                    "task_total": 2,
+                    "remaining_tasks": [
+                        "phase0.node_browser_ready",
+                        "phase0.runtime_comm_ready",
+                    ],
+                    "tasks": {
+                        "phase0.node_browser_ready": {
+                            "id": "phase0.node_browser_ready",
+                            "status": "in_progress",
+                            "summary": "browser/member communication prerequisites are not fully ready yet",
+                            "completed_criteria": ["browser_member_semantic_channels"],
+                            "pending_criteria": ["browser_yjs_ws_handoff"],
+                            "pending_reasons": [
+                                "Yjs websocket/session ownership still lives in the runtime gateway",
+                            ],
+                            "evidence": {
+                                "browser_yjs_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                    "blocker": "Yjs websocket/session ownership still lives in the runtime gateway",
+                                },
+                            },
+                        },
+                        "phase0.runtime_comm_ready": {
+                            "id": "phase0.runtime_comm_ready",
+                            "status": "in_progress",
+                            "summary": "runtime communication prerequisites are still open",
+                            "completed_criteria": ["hub_root_class_a_hardening"],
+                            "pending_criteria": [
+                                "browser_events_ws_handoff",
+                                "browser_yjs_ws_handoff",
+                                "sidecar_continuity",
+                                "browser_safe_supervisor_continuity",
+                            ],
+                            "pending_reasons": [
+                                "browser route websocket still terminates in the runtime FastAPI app",
+                                "Yjs websocket/session ownership still lives in the runtime gateway",
+                                "sidecar.continuity.planned",
+                                "supervisor.browser_safe_continuity.in_progress",
+                            ],
+                            "evidence": {
+                                "hub_root_class_a": {
+                                    "state": "complete",
+                                    "covered_flows": 6,
+                                    "total_flows": 6,
+                                },
+                                "browser_events_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                },
+                                "browser_yjs_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                },
+                                "sidecar_continuity": {
+                                    "state": "planned",
+                                    "hub_runtime_update": "preserve_sidecar",
+                                },
+                                "browser_safe_supervisor_continuity": {
+                                    "state": "in_progress",
+                                },
+                            },
+                        },
+                    },
+                },
                 "sidecar_runtime": {
                     "enabled": True,
                     "status": "ready",
@@ -625,6 +701,11 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert projection["subject"]["health"]["route"] == "online"
     assert projection["subject"]["health"]["sync"] == "online"
     assert projection["context"]["blocked_capabilities"] == ["root_routed_browser_proxy"]
+    assert projection["context"]["event_model_phase0_communication"]["state"] == "in_progress"
+    assert (
+        projection["subject"]["runtime"]["event_model_phase0_communication"]["tasks"]["phase0.runtime_comm_ready"]["status"]
+        == "in_progress"
+    )
 
     objects = {item["id"]: item for item in projection["objects"]}
     assert objects["root:eu"]["kind"] == "root"

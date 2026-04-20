@@ -548,6 +548,7 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
     readiness_tree = coerce_mapping(runtime.get("readiness_tree"))
     degraded_matrix = coerce_mapping(runtime.get("degraded_matrix"))
     zone = coerce_mapping(runtime.get("hub_root_zone"))
+    phase0_communication = coerce_mapping(runtime.get("event_model_phase0_communication"))
     blocked_capabilities = sorted(
         key
         for key, item in degraded_matrix.items()
@@ -564,6 +565,7 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
             },
             "blocked_capabilities": blocked_capabilities,
             "hub_root_zone": zone,
+            "event_model_phase0_communication": phase0_communication,
         }
     )
 
@@ -1305,6 +1307,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
             {
                 "blocked_capabilities": focus_context.get("blocked_capabilities"),
                 "hub_root_zone": focus_context.get("hub_root_zone"),
+                "event_model_phase0_communication": focus_context.get("event_model_phase0_communication"),
             }
         )
     )

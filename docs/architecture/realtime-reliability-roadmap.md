@@ -23,6 +23,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - runtime reliability model is represented in code and exposed through `GET /api/node/reliability`
 - `adaos node reliability` surfaces readiness, degraded matrix, and channel diagnostics
 - browser/page runtime now consumes read-only communication diagnostics through shared `runtime.reliability`, `runtime.supervisor`, and `runtime.phase0.communication` transforms instead of keeping sidecar/supervisor visibility inside one header-only component path
+- node API, CLI, canonical control-plane reliability projection, and browser/page runtime now share one explicit `event_model_phase0_communication` checkpoint for the two still-open Event Model Phase 0 communication tasks
 - Infra State shows realtime summary and transport diagnostics through Yjs-backed UI
 - runtime now exposes canonical channel overview entries for `hub_root`, `hub_root_browser`, and `browser_hub_sync`
 - runtime now exposes `hub_root_transport_strategy` with current transport, candidate list, recent attempts, reconnect/failure history, and active hypothesis parameters
@@ -55,6 +56,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 - `Yjs ownership boundaries`: now explicit in runtime diagnostics for selector, effective branches, compatibility caches, and transport/session lifecycle
 - `Yjs as SyncChannel`: complete for the current sync-channel scope; remaining browser-facing work now sits in `/yws` transport ownership migration rather than in the sync contract itself
 - `hub_root` Class A coverage: explicit in runtime diagnostics and now consumed by browser/page runtime communication snapshots instead of being visible only in CLI/control-plane tooling
+- `event_model_phase0_communication` checkpoint: explicit across node API, CLI, canonical control-plane projection, and browser/page runtime, so Event Model Phase 0 reads the same two open communication tasks everywhere
 - `local supervisor browser-safe continuity`: materially improved, but still in progress
 - `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned
 
