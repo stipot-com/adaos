@@ -14,6 +14,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.apps.cli.active_control import probe_control_api, resolve_control_base_url, resolve_control_token
 from adaos.services.join_codes import create as create_join_code
 from adaos.services.root.client import RootHttpClient, RootHttpError
+from adaos.services.root_mcp.client import RootMcpClient, RootMcpClientConfig
 from adaos.services.root.service import RootAuthError, RootAuthService
 
 app = typer.Typer(help="Hub operations.")
@@ -107,6 +108,36 @@ def _local_memory_artifact_pull(
     )
     response.raise_for_status()
     return dict(response.json() or {})
+
+
+def _root_mcp_client(conf: Any, *, root_base: str, root_token: str) -> RootMcpClient:
+    zone = str(
+        os.getenv("ADAOS_ZONE_ID")
+        or getattr(conf, "zone_id", None)
+        or ""
+    ).strip() or None
+    subnet_id = str(getattr(conf, "subnet_id", None) or "").strip() or None
+    return RootMcpClient(
+        RootMcpClientConfig(
+            root_url=root_base,
+            subnet_id=subnet_id,
+            access_token=root_token,
+            zone=zone,
+        )
+    )
+
+
+def _profileops_target_id(conf: Any, explicit: str | None = None) -> str:
+    token = str(explicit or getattr(conf, "subnet_id", None) or "").strip()
+    if not token:
+        raise typer.BadParameter("Missing subnet_id for ProfileOps target resolution.")
+    return token if token.startswith("hub:") else f"hub:{token}"
+
+
+def _mcp_result(payload: dict[str, Any]) -> dict[str, Any]:
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    return dict(result)
 
 
 @root_link_app.command("status")
@@ -556,18 +587,19 @@ def hub_root_reports(
         raise typer.BadParameter("kind must be one of: all, control, core-update, memory-profile")
 
     client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
+    mcp_client = _root_mcp_client(conf, root_base=root_base, root_token=root_token)
     payload: dict[str, Any] = {"ok": True, "root_url": root_base}
     if kind_key in {"all", "control"}:
         payload["control"] = client.root_control_reports(root_token=root_token, hub_id=target_hub_id)
     if kind_key in {"all", "core-update", "core_update"}:
         payload["core_update"] = client.root_core_update_reports(root_token=root_token, hub_id=target_hub_id)
     if kind_key in {"all", "memory-profile", "memory_profile"}:
-        payload["memory_profile"] = client.root_memory_profile_reports(
-            root_token=root_token,
-            hub_id=target_hub_id,
-            session_id=session_id,
-            session_state=state,
-            suspected_only=(True if suspected_only else None),
+        payload["memory_profile"] = _mcp_result(
+            mcp_client.list_profileops_sessions(
+                _profileops_target_id(conf, target_hub_id),
+                state=state,
+                suspected_only=bool(suspected_only),
+            )
         )
     if json_output:
         _print(payload, json_output=True)
@@ -626,7 +658,7 @@ def hub_root_reports(
                 f"slot={slot.get('active_slot') or '-'}"
             )
 
-    memory_items = payload.get("memory_profile", {}).get("reports") if isinstance(payload.get("memory_profile"), dict) else None
+    memory_items = payload.get("memory_profile", {}).get("sessions") if isinstance(payload.get("memory_profile"), dict) else None
     if isinstance(memory_items, list):
         typer.echo("memory_profile reports:")
         if not memory_items:
@@ -634,16 +666,12 @@ def hub_root_reports(
         for item in memory_items:
             if not isinstance(item, dict):
                 continue
-            report = item.get("report") if isinstance(item.get("report"), dict) else {}
-            proto = _protocol(report)
-            session = report.get("session") if isinstance(report.get("session"), dict) else {}
+            session = item.get("session") if isinstance(item.get("session"), dict) else {}
             typer.echo(
                 "  "
-                f"{item.get('hub_id') or report.get('subnet_id') or '-'} "
+                f"{item.get('hub_id') or '-'} "
                 f"session={item.get('session_id') or session.get('session_id') or '-'} "
-                f"cursor={proto.get('cursor') or 0} "
-                f"message={proto.get('message_id') or '-'} "
-                f"root_received={report.get('root_received_at') or '-'} "
+                f"reported={item.get('reported_at') or '-'} "
                 f"mode={session.get('profile_mode') or '-'} "
                 f"state={session.get('session_state') or '-'} "
                 f"suspected={bool(session.get('suspected_leak'))} "
@@ -675,12 +703,12 @@ def hub_root_memory_session(
     ).strip()
     if not root_token:
         raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
-    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
-    payload = client.root_memory_profile_report(root_token=root_token, session_id=session_id)
+    client = _root_mcp_client(conf, root_base=root_base, root_token=root_token)
+    payload = _mcp_result(client.get_profileops_session(_profileops_target_id(conf), session_id))
     if json_output:
         _print(payload, json_output=True)
         return
-    report_item = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    report_item = payload.get("session") if isinstance(payload.get("session"), dict) else {}
     report = report_item.get("report") if isinstance(report_item.get("report"), dict) else {}
     session = report.get("session") if isinstance(report.get("session"), dict) else {}
     operations_tail = report.get("operations_tail") if isinstance(report.get("operations_tail"), list) else []
@@ -688,7 +716,7 @@ def hub_root_memory_session(
     artifact_refs = session.get("artifact_refs") if isinstance(session.get("artifact_refs"), list) else []
     typer.echo(
         "memory profile: "
-        f"hub={report_item.get('hub_id') or report.get('subnet_id') or '-'} "
+        f"hub={report_item.get('hub_id') or '-'} "
         f"session={report_item.get('session_id') or session.get('session_id') or '-'} "
         f"mode={session.get('profile_mode') or '-'} "
         f"state={session.get('session_state') or '-'} "
@@ -746,13 +774,15 @@ def hub_root_memory_artifact(
     ).strip()
     if not root_token:
         raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
-    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
-    payload = client.root_memory_profile_artifact(
-        root_token=root_token,
-        session_id=session_id,
-        artifact_id=artifact_id,
-        offset=0,
-        max_bytes=max_bytes,
+    client = _root_mcp_client(conf, root_base=root_base, root_token=root_token)
+    payload = _mcp_result(
+        client.get_profileops_artifact(
+            _profileops_target_id(conf),
+            session_id,
+            artifact_id,
+            offset=0,
+            max_bytes=max_bytes,
+        )
     )
     if json_output:
         _print(payload, json_output=True)
@@ -817,11 +847,8 @@ def hub_root_memory_artifacts(
     ).strip()
     if not root_token:
         raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
-    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
-    payload = client.root_memory_profile_artifacts(
-        root_token=root_token,
-        session_id=session_id,
-    )
+    client = _root_mcp_client(conf, root_base=root_base, root_token=root_token)
+    payload = _mcp_result(client.list_profileops_artifacts(_profileops_target_id(conf), session_id))
     if json_output:
         _print(payload, json_output=True)
         return
@@ -873,13 +900,15 @@ def hub_root_memory_artifact_pull(
     ).strip()
     if not root_token:
         raise typer.BadParameter("Missing ROOT_TOKEN. Pass --token or set ROOT_TOKEN/ADAOS_ROOT_TOKEN/HUB_ROOT_TOKEN.")
-    client = RootHttpClient(base_url=root_base, verify=_root_verify_from_conf(conf))
-    payload = client.root_memory_profile_artifact(
-        root_token=root_token,
-        session_id=session_id,
-        artifact_id=artifact_id,
-        offset=0,
-        max_bytes=max_bytes,
+    client = _root_mcp_client(conf, root_base=root_base, root_token=root_token)
+    payload = _mcp_result(
+        client.get_profileops_artifact(
+            _profileops_target_id(conf),
+            session_id,
+            artifact_id,
+            offset=0,
+            max_bytes=max_bytes,
+        )
     )
     artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
     merged = dict(payload)

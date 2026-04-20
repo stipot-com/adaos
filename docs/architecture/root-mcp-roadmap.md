@@ -170,7 +170,7 @@ This milestone is the first point where live Codex trials should cover AdaOS arc
 - [x] `ProfileOpsRead` is available through MCP
 - [x] `ProfileOpsControl` is available through bounded typed writes
 - [x] profiler reads/writes appear in shared Root MCP audit history
-- [ ] Infrascope and Codex consume the same profiler contracts
+- [x] Infrascope and Codex consume the same profiler contracts
 
 This milestone is the first live approval point for real supervisor-profiler MCP workflows.
 
@@ -233,9 +233,9 @@ Phase is complete when:
 
 ### `ProfileOps-4`. Human/Agent Surface Convergence
 
-- [ ] let Infrascope consume the same typed profiler tools for remote inspection
-- [ ] use the same contracts for Codex, operator UI, and later approval-aware workflows
-- [ ] keep direct report endpoints as substrate and compatibility paths, not as the primary product surface
+- [x] let Infrascope consume the same typed profiler tools for remote inspection
+- [x] use the same contracts for Codex, operator UI, and later approval-aware workflows
+- [x] keep direct report endpoints as substrate and compatibility paths, not as the primary product surface
 
 Phase is complete when:
 

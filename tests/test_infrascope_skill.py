@@ -187,6 +187,53 @@ def test_infrascope_skill_inventory_and_inspector_shape(monkeypatch):
     assert inspector["topology"] == {"edges": [{"from": "hub-1", "to": "member-1"}]}
 
 
+def test_infrascope_profileops_panel_uses_root_mcp_contracts(monkeypatch):
+    mod = _load_infrascope_module()
+
+    local = _FakeCanonicalObject("hub:local", "hub", "Local hub", status="online")
+    projection = SimpleNamespace(
+        subject=local,
+        objects=[],
+        context={
+            "summary_tile": {"label": "health", "value": "online", "subtitle": "steady"},
+            "health_strip": [],
+            "active_incidents": [],
+            "active_runtimes": [],
+            "quota_summary": [],
+            "recent_changes": [],
+        },
+    )
+
+    class _FakeProfileOpsClient:
+        def get_profileops_status(self, target_id: str) -> dict[str, object]:
+            assert target_id == "hub:test-subnet"
+            return {"response": {"result": {"target_id": target_id, "report_count": 2}}}
+
+        def list_profileops_sessions(self, target_id: str, *, state: str | None = None, suspected_only: bool = False) -> dict[str, object]:
+            assert target_id == "hub:test-subnet"
+            return {"response": {"result": {"sessions": [{"session_id": "mem-001"}, {"session_id": "mem-002"}]}}}
+
+        def list_profileops_incidents(self, target_id: str) -> dict[str, object]:
+            assert target_id == "hub:test-subnet"
+            return {"response": {"result": {"incidents": [{"session_id": "mem-002", "severity": "high"}]}}}
+
+    monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: projection)
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [local])
+    monkeypatch.setattr(mod, "current_object_inspector", lambda object_id, task_goal=None, webspace_id=None: SimpleNamespace(subject=local, context={}, incidents=[], summary="ok"))
+    monkeypatch.setattr(mod, "_profileops_target_id", lambda: "hub:test-subnet")
+    monkeypatch.setattr(mod, "_profileops_client", lambda: _FakeProfileOpsClient())
+
+    panel = mod.get_profileops_panel()
+    snapshot = mod.get_snapshot()
+
+    assert panel["available"] is True
+    assert panel["source"] == "root_mcp_profileops"
+    assert panel["status"]["report_count"] == 2
+    assert snapshot["operations"]["profileops"]["available"] is True
+    assert snapshot["operations"]["profileops"]["sessions"][0]["session_id"] == "mem-001"
+    assert snapshot["inspectors"]["local"]["profileops"]["incidents"][0]["session_id"] == "mem-002"
+
+
 def test_infrascope_skill_returns_safe_fallback_for_unknown_object(monkeypatch):
     mod = _load_infrascope_module()
 

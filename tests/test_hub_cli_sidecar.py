@@ -136,45 +136,35 @@ def test_hub_root_reports_prints_memory_profile_rows(monkeypatch) -> None:
     monkeypatch.setenv("ROOT_TOKEN", "root-token")
 
     class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
         @staticmethod
-        def root_memory_profile_reports(
+        def list_profileops_sessions(
+            target_id: str,
             *,
-            root_token: str,
-            hub_id: str | None = None,
-            session_id: str | None = None,
-            session_state: str | None = None,
-            suspected_only: bool | None = None,
+            state: str | None = None,
+            suspected_only: bool = False,
         ) -> dict:
-            assert root_token == "root-token"
-            assert hub_id == "subnet-test-1"
-            assert session_id is None
-            assert session_state is None
-            assert suspected_only is None
+            assert target_id == "hub:subnet-test-1"
+            assert state is None
+            assert suspected_only is False
             return {
-                "ok": True,
-                "reports": [
+                "response": {"result": {
+                    "sessions": [
                     {
                         "hub_id": "hub:subnet-test-1",
                         "session_id": "mem-001",
-                        "report": {
-                            "root_received_at": "2026-04-18T12:00:01Z",
-                            "_protocol": {"message_id": "mem-msg-1", "cursor": 3},
-                            "session": {
-                                "session_id": "mem-001",
-                                "profile_mode": "trace_profile",
-                                "session_state": "finished",
-                                "suspected_leak": True,
-                                "artifact_refs": [{"artifact_id": "mem-001-final"}],
-                            },
+                        "reported_at": "2026-04-18T12:00:01Z",
+                        "session": {
+                            "session_id": "mem-001",
+                            "profile_mode": "trace_profile",
+                            "session_state": "finished",
+                            "suspected_leak": True,
+                            "artifact_refs": [{"artifact_id": "mem-001-final"}],
                         },
                     }
-                ],
+                ]}}
             }
 
-    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli, "_root_mcp_client", lambda conf, root_base, root_token: _Client())
 
     result = CliRunner().invoke(hub_cli.app, ["root", "reports", "--kind", "memory-profile"])
 
@@ -193,16 +183,12 @@ def test_hub_root_memory_session_prints_remote_summary(monkeypatch) -> None:
     monkeypatch.setenv("ROOT_TOKEN", "root-token")
 
     class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
         @staticmethod
-        def root_memory_profile_report(*, root_token: str, session_id: str) -> dict:
-            assert root_token == "root-token"
+        def get_profileops_session(target_id: str, session_id: str) -> dict:
+            assert target_id == "hub:subnet-test-1"
             assert session_id == "mem-001"
             return {
-                "ok": True,
-                "report": {
+                "response": {"result": {"session": {
                     "hub_id": "hub:subnet-test-1",
                     "session_id": "mem-001",
                     "report": {
@@ -224,10 +210,10 @@ def test_hub_root_memory_session_prints_remote_summary(monkeypatch) -> None:
                         "operations_tail": [{"event": "tool_invoked"}],
                         "telemetry_tail": [{"sampled_at": 1.0}],
                     },
-                },
+                }}}
             }
 
-    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli, "_root_mcp_client", lambda conf, root_base, root_token: _Client())
 
     result = CliRunner().invoke(hub_cli.app, ["root", "memory-session", "mem-001"])
 
@@ -246,37 +232,35 @@ def test_hub_root_memory_artifact_prints_remote_artifact(monkeypatch) -> None:
     monkeypatch.setenv("ROOT_TOKEN", "root-token")
 
     class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
         @staticmethod
-        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
-            assert root_token == "root-token"
+        def get_profileops_artifact(target_id: str, session_id: str, artifact_id: str, *, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
+            assert target_id == "hub:subnet-test-1"
             assert session_id == "mem-001"
             assert artifact_id == "mem-001-final"
             assert offset == 0
             assert max_bytes == 256 * 1024
             return {
-                "ok": True,
-                "session_id": "mem-001",
-                "artifact": {
-                    "artifact_id": "mem-001-final",
-                    "kind": "tracemalloc_final_snapshot",
-                    "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
-                    "fetch_strategy": "inline_content",
-                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
-                },
-                "exists": True,
-                "delivery": {
-                    "mode": "root_inline_content",
-                    "relay_supported": True,
-                    "relay_reason": "inline_content_available_at_root",
-                },
-                "transfer": {"encoding": "json", "chunk_bytes": 64, "remaining_bytes": 0, "truncated": False},
-                "content": {"top_allocations": []},
+                "response": {"result": {
+                    "session_id": "mem-001",
+                    "artifact": {
+                        "artifact_id": "mem-001-final",
+                        "kind": "tracemalloc_final_snapshot",
+                        "published_ref": "root://hub-memory-profile/mem-001/mem-001-final",
+                        "fetch_strategy": "inline_content",
+                        "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-final",
+                    },
+                    "exists": True,
+                    "delivery": {
+                        "mode": "root_inline_content",
+                        "relay_supported": True,
+                        "relay_reason": "inline_content_available_at_root",
+                    },
+                    "transfer": {"encoding": "json", "chunk_bytes": 64, "remaining_bytes": 0, "truncated": False},
+                    "content": {"top_allocations": []},
+                }}
             }
 
-    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli, "_root_mcp_client", lambda conf, root_base, root_token: _Client())
 
     result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifact", "mem-001", "mem-001-final"])
 
@@ -298,21 +282,18 @@ def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
     monkeypatch.setenv("ROOT_TOKEN", "root-token")
 
     class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
         @staticmethod
-        def root_memory_profile_artifacts(*, root_token: str, session_id: str) -> dict:
-            assert root_token == "root-token"
+        def list_profileops_artifacts(target_id: str, session_id: str) -> dict:
+            assert target_id == "hub:subnet-test-1"
             assert session_id == "mem-001"
             return {
-                "ok": True,
-                "session_id": "mem-001",
-                "artifact_policy": {
-                    "delivery_mode": "inline_json_only",
-                    "max_inline_bytes": 262144,
-                },
-                "artifacts": [
+                "response": {"result": {
+                    "session_id": "mem-001",
+                    "artifact_policy": {
+                        "delivery_mode": "inline_json_only",
+                        "max_inline_bytes": 262144,
+                    },
+                    "artifacts": [
                     {
                         "artifact_id": "mem-001-final",
                         "kind": "tracemalloc_final_snapshot",
@@ -329,10 +310,10 @@ def test_hub_root_memory_artifacts_prints_remote_catalog(monkeypatch) -> None:
                         "fetch_strategy": "local_control_pull",
                         "size_bytes": 4096,
                     },
-                ],
+                ]}}
             }
 
-    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli, "_root_mcp_client", lambda conf, root_base, root_token: _Client())
 
     result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifacts", "mem-001"])
 
@@ -351,43 +332,41 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
     monkeypatch.setenv("ROOT_TOKEN", "root-token")
 
     class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
         @staticmethod
-        def root_memory_profile_artifact(*, root_token: str, session_id: str, artifact_id: str, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
-            assert root_token == "root-token"
+        def get_profileops_artifact(target_id: str, session_id: str, artifact_id: str, *, offset: int = 0, max_bytes: int = 256 * 1024) -> dict:
+            assert target_id == "hub:subnet-test-1"
             assert session_id == "mem-001"
             assert artifact_id == "mem-001-raw"
             assert offset == 0
             assert max_bytes == 256 * 1024
             return {
-                "ok": True,
-                "session_id": "mem-001",
-                "artifact": {
-                    "artifact_id": "mem-001-raw",
-                    "kind": "heap_dump",
-                    "fetch_strategy": "local_control_pull",
-                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
-                },
-                "exists": False,
-                "delivery": {
-                    "mode": "local_control_pull",
-                    "relay_supported": False,
-                    "relay_reason": "root_direct_relay_not_configured_for_target",
-                    "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
-                },
-                "transfer": {
-                    "offset": 0,
-                    "requested_max_bytes": 262144,
-                    "size_bytes": 4096,
-                    "chunk_bytes": 0,
-                    "remaining_bytes": 0,
-                    "truncated": False,
-                    "encoding": "unavailable",
-                    "pull_supported": False,
-                },
-                "content": None,
+                "response": {"result": {
+                    "session_id": "mem-001",
+                    "artifact": {
+                        "artifact_id": "mem-001-raw",
+                        "kind": "heap_dump",
+                        "fetch_strategy": "local_control_pull",
+                        "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
+                    },
+                    "exists": False,
+                    "delivery": {
+                        "mode": "local_control_pull",
+                        "relay_supported": False,
+                        "relay_reason": "root_direct_relay_not_configured_for_target",
+                        "source_api_path": "/api/supervisor/memory/sessions/mem-001/artifacts/mem-001-raw",
+                    },
+                    "transfer": {
+                        "offset": 0,
+                        "requested_max_bytes": 262144,
+                        "size_bytes": 4096,
+                        "chunk_bytes": 0,
+                        "remaining_bytes": 0,
+                        "truncated": False,
+                        "encoding": "unavailable",
+                        "pull_supported": False,
+                    },
+                    "content": None,
+                }}
             }
 
     class _Response:
@@ -414,7 +393,7 @@ def test_hub_root_memory_artifact_pull_falls_back_to_local_control(monkeypatch) 
         assert headers == {"X-AdaOS-Token": "dev-token"}
         return _Response()
 
-    monkeypatch.setattr(hub_cli, "RootHttpClient", _Client)
+    monkeypatch.setattr(hub_cli, "_root_mcp_client", lambda conf, root_base, root_token: _Client())
     monkeypatch.setattr(hub_cli.requests, "get", _fake_get)
 
     result = CliRunner().invoke(hub_cli.app, ["root", "memory-artifact-pull", "mem-001", "mem-001-raw"])
