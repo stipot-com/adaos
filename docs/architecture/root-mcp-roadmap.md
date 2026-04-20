@@ -48,6 +48,7 @@ Phase is complete when:
 - [x] add initial audit primitives and event IDs
 - [x] expose only minimal read-oriented descriptors and placeholder operational contracts
 - [x] keep planes implicit at first, but avoid baking every projection directly into the foundation contract
+- [x] publish `/v1/root/mcp/*` through the zonal backend instead of leaving the external surface implicit
 
 ### Current Implementation Slice
 

@@ -31,6 +31,34 @@ The layer belongs on `root` because `root` is already the natural place for:
 - `audit aggregation point`
 - `agent-facing capability exposure point`
 
+## Zonal Publication Boundary
+
+`Root MCP Foundation` is a root-hosted surface, but clients do not talk to Python modules directly.
+For each self-contained zone, the zonal backend published on the zone root hostname must expose the external `Root MCP` entry family:
+
+- `/v1/root/mcp/foundation`
+- `/v1/root/mcp/contracts`
+- `/v1/root/mcp/descriptors`
+- `/v1/root/mcp/sessions`
+- `/v1/root/mcp/call`
+- `/v1/root/mcp/audit`
+
+This is a deployment obligation for the zonal backend, not an optional convenience route.
+
+The backend may satisfy that obligation in either of these ways:
+
+- directly host the `Root MCP` handlers
+- publish a thin facade/proxy to the local AdaOS Python API where the canonical handlers live
+
+The second form is preferred while the canonical `Root MCP` implementation remains in Python.
+
+The key rule is:
+
+- zonal backend publishes the stable external `Root MCP` URL family
+- canonical `Root MCP` logic stays in one place
+- root-local descriptive reads must not require a subnet roundtrip
+- target-routed operational reads and writes may delegate further into the subnet when the contract requires it
+
 The first operational target should be a `test hub`, but target operations should not be implemented as an always-open infra endpoint. They should be published through an installed and authorized `infra_access_skill`, which exposes a typed operational capability surface only while enabled. This aligns better with AdaOS's skill model, lifecycle, policy model, and future control plane.
 
 ## Proposed Architecture Extension
