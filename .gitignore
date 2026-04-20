@@ -19,3 +19,4 @@ ystore.db
 ystore.db-journal
 .adaos/diagnostics
 site
+.pytest-tmp
