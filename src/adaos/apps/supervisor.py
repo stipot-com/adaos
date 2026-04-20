@@ -1884,20 +1884,11 @@ class SupervisorManager:
             runtime_state = "starting"
         elif managed_alive:
             runtime_state = "spawned"
-        expected_executable = None
-        expected_cwd = None
-        managed_matches_active_slot = None
-        if isinstance(active_manifest, dict):
-            argv = active_manifest.get("argv")
-            if isinstance(argv, list) and argv:
-                expected_executable = str(argv[0] or "").strip() or None
-            expected_cwd = str(active_manifest.get("cwd") or "").strip() or None
-        if expected_executable or expected_cwd:
-            managed_matches_active_slot = True
-            if expected_executable and str(managed_executable or "").strip() != expected_executable:
-                managed_matches_active_slot = False
-            if expected_cwd and str(managed_cwd or "").strip() != expected_cwd:
-                managed_matches_active_slot = False
+        expected_executable, expected_cwd, managed_matches_active_slot = self._managed_runtime_slot_expectations(
+            manifest=active_manifest,
+            managed_executable=managed_executable,
+            managed_cwd=managed_cwd,
+        )
         warm_switch = self._warm_switch_state(
             current_slot=current_slot,
             update_status=update_status,
@@ -2009,6 +2000,29 @@ class SupervisorManager:
             "last_error": self._last_error,
             "updated_at": time.time(),
         }
+
+    def _managed_runtime_slot_expectations(
+        self,
+        *,
+        manifest: dict[str, Any] | None,
+        managed_executable: str | None,
+        managed_cwd: str | None,
+    ) -> tuple[str | None, str | None, bool | None]:
+        expected_executable = None
+        expected_cwd = None
+        matches_active_slot = None
+        if isinstance(manifest, dict):
+            argv = manifest.get("argv")
+            if isinstance(argv, list) and argv:
+                expected_executable = str(argv[0] or "").strip() or None
+            expected_cwd = str(manifest.get("cwd") or "").strip() or None
+        if expected_executable or expected_cwd:
+            matches_active_slot = True
+            if expected_executable and str(managed_executable or "").strip() != expected_executable:
+                matches_active_slot = False
+            if expected_cwd and str(managed_cwd or "").strip() != expected_cwd:
+                matches_active_slot = False
+        return expected_executable, expected_cwd, matches_active_slot
 
     def _persist_runtime_state(self) -> None:
         with contextlib.suppress(Exception):
@@ -2497,6 +2511,31 @@ class SupervisorManager:
             self._runtime_unhealthy_kind = None
             return None
         current_slot = str(active_slot() or "").strip().upper() or None
+        active_manifest = active_slot_manifest()
+        managed = _proc_details(proc, cwd_hint=self._managed_runtime_cwd)
+        managed_executable = str(managed.get("managed_executable") or "").strip() or None
+        managed_cwd = str(managed.get("managed_cwd") or "").strip() or None
+        expected_executable, expected_cwd, managed_matches_active_slot = self._managed_runtime_slot_expectations(
+            manifest=active_manifest,
+            managed_executable=managed_executable,
+            managed_cwd=managed_cwd,
+        )
+        if managed_matches_active_slot is False:
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
+            mismatch_detail = expected_executable or expected_cwd or current_slot or "active slot"
+            return {
+                "reason": "supervisor.runtime.slot_mismatch",
+                "message": (
+                    f"active runtime process does not match the active slot {current_slot or '-'}"
+                    f"; expected {mismatch_detail} and will be restarted"
+                ),
+                "active_slot": current_slot,
+                "managed_executable": managed_executable,
+                "managed_cwd": managed_cwd,
+                "expected_managed_executable": expected_executable,
+                "expected_managed_cwd": expected_cwd,
+            }
         runtime_port = self.slot_runtime_port(current_slot)
         runtime_url = self.slot_runtime_base_url(current_slot)
         listener_running = _listener_running(self.runtime_host, runtime_port)

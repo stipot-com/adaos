@@ -230,6 +230,48 @@ def test_runtime_shutdown_request_timeout_scales_with_drain_window() -> None:
     assert supervisor._runtime_shutdown_request_timeout(drain_timeout_sec=10.0, signal_delay_sec=0.25) >= 12.0
 
 
+def test_runtime_self_heal_restarts_when_managed_process_does_not_match_active_slot(monkeypatch) -> None:
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._desired_running = True
+    manager._stopping = False
+    manager._managed_runtime_cwd = "/slots/A/repo"
+    manager._last_start_at = 100.0
+
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "restarting", "phase": "launch"})
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["/slots/B/venv/bin/python"], "cwd": "/slots/B/repo"},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_proc_details",
+        lambda proc, cwd_hint=None: {
+            "managed_pid": 4321,
+            "managed_alive": True,
+            "managed_cmdline": ["/slots/A/venv/bin/python", "-m", "adaos.apps.autostart_runner"],
+            "managed_executable": "/slots/A/venv/bin/python",
+            "managed_cwd": "/slots/A/repo",
+        },
+    )
+
+    decision = manager._runtime_self_heal_decision(now=120.0)
+
+    assert isinstance(decision, dict)
+    assert decision["reason"] == "supervisor.runtime.slot_mismatch"
+    assert decision["active_slot"] == "B"
+    assert decision["managed_executable"] == "/slots/A/venv/bin/python"
+    assert decision["expected_managed_executable"] == "/slots/B/venv/bin/python"
+
+
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")

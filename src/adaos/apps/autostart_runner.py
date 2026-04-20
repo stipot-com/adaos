@@ -430,6 +430,23 @@ def _reconcile_interrupted_update_transition(current: dict[str, Any], *, plan: d
     return payload
 
 
+def _resume_post_apply_update_transition(current: dict[str, Any], *, plan: dict[str, Any] | None) -> bool:
+    if not isinstance(plan, dict) or not plan:
+        return False
+    state = str(current.get("state") or "").strip().lower()
+    phase = str(current.get("phase") or "").strip().lower()
+    if state != "restarting" or phase not in {"launch", "validate", "root_promoted", "root_promotion_pending"}:
+        return False
+    plan_action = str(plan.get("action") or "update").strip().lower()
+    if plan_action != "update":
+        return False
+    plan_target_slot = str(plan.get("target_slot") or "").strip().upper() or None
+    status_target_slot = str(current.get("target_slot") or "").strip().upper() or None
+    if plan_target_slot and status_target_slot and plan_target_slot != status_target_slot:
+        return False
+    return True
+
+
 def _update_validation_webspace_id() -> str:
     value = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_WEBSPACE_ID") or "default").strip()
     return value or "default"
@@ -1015,6 +1032,7 @@ def main() -> None:
         plan = None if skip_pending_update else read_plan()
         pending_update_succeeded = False
         prepared_restart_boot = False
+        current_status = read_status()
         conf = None
         try:
             conf = load_config()
@@ -1076,34 +1094,36 @@ def main() -> None:
                 }
                 write_status(payload)
             else:
-                phase = "execute_pending_update"
-                result = execute_pending_update(plan)
-                if conf is not None:
-                    _upload_update_report(result, conf)
-                if str(result.get("state") or "") != "succeeded":
-                    clear_plan()
-                    raise SystemExit(int(result.get("returncode") or 1) or 1)
-                pending_update_succeeded = True
-                target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
-                payload = {
-                    "state": "restarting",
-                    "phase": "launch",
-                    "message": (
-                        f"core update applied; restarting into slot {target_slot}"
-                        if target_slot
-                        else "core update applied; restarting runtime"
-                    ),
-                    "target_slot": target_slot,
-                    "plan": plan,
-                    "started_at": float(result.get("started_at") or time.time()),
-                    "finished_at": time.time(),
-                }
-                manifest = result.get("manifest")
-                if isinstance(manifest, dict) and manifest:
-                    payload["manifest"] = manifest
-                write_status(payload)
-                raise SystemExit(0)
-        if not prepared_restart_boot:
+                if _resume_post_apply_update_transition(current_status, plan=plan):
+                    pending_update_succeeded = True
+                else:
+                    phase = "execute_pending_update"
+                    result = execute_pending_update(plan)
+                    if conf is not None:
+                        _upload_update_report(result, conf)
+                    if str(result.get("state") or "") != "succeeded":
+                        clear_plan()
+                        raise SystemExit(int(result.get("returncode") or 1) or 1)
+                    pending_update_succeeded = True
+                    target_slot = str(result.get("target_slot") or active_slot() or "").strip().upper()
+                    payload = {
+                        "state": "restarting",
+                        "phase": "launch",
+                        "message": (
+                            f"core update applied; restarting into slot {target_slot}"
+                            if target_slot
+                            else "core update applied; restarting runtime"
+                        ),
+                        "target_slot": target_slot,
+                        "plan": plan,
+                        "started_at": float(result.get("started_at") or time.time()),
+                        "finished_at": time.time(),
+                    }
+                    manifest = result.get("manifest")
+                    if isinstance(manifest, dict) and manifest:
+                        payload["manifest"] = manifest
+                    write_status(payload)
+        if not prepared_restart_boot and not pending_update_succeeded:
             phase = "boot"
             current_status = read_status()
             reconciled = _reconcile_post_root_promotion_restart(current_status)
