@@ -1795,6 +1795,51 @@ def test_runtime_self_heal_decision_skips_listener_restart_while_update_apply_ru
     assert manager._runtime_unhealthy_kind is None
 
 
+def test_runtime_self_heal_decision_restarts_slot_mismatch_even_when_apply_status_is_stale(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 32123
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    manager._desired_running = True
+    manager._managed_runtime_cwd = "/slots/B/repo"
+    manager._last_start_at = 100.0
+
+    monkeypatch.setattr(supervisor, "read_core_update_status", lambda: {"state": "applying", "phase": "apply"})
+    monkeypatch.setattr(supervisor, "active_slot", lambda: "A")
+    monkeypatch.setattr(
+        supervisor,
+        "active_slot_manifest",
+        lambda: {"slot": "A", "argv": ["/slots/A/venv/bin/python"], "cwd": "/slots/A/repo"},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_proc_details",
+        lambda proc, cwd_hint=None: {
+            "managed_pid": 4321,
+            "managed_alive": True,
+            "managed_cmdline": ["/slots/B/venv/bin/python", "-m", "adaos.apps.autostart_runner"],
+            "managed_executable": "/slots/B/venv/bin/python",
+            "managed_cwd": "/slots/B/repo",
+        },
+    )
+
+    payload = manager._runtime_self_heal_decision(now=200.0)
+
+    assert isinstance(payload, dict)
+    assert payload["reason"] == "supervisor.runtime.slot_mismatch"
+    assert payload["active_slot"] == "A"
+    assert payload["managed_executable"] == "/slots/B/venv/bin/python"
+    assert payload["expected_managed_executable"] == "/slots/A/venv/bin/python"
+
+
 def test_runtime_state_payload_surfaces_warm_switch_admission(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

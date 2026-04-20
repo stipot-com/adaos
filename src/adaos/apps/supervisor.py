@@ -2503,13 +2503,6 @@ class SupervisorManager:
         update_status = read_core_update_status()
         update_state = str(update_status.get("state") or "").strip().lower()
         update_phase = str(update_status.get("phase") or "").strip().lower()
-        if update_state == "applying" and update_phase == "apply":
-            # During core_update_apply the runner intentionally has no listener yet.
-            # Let supervisor timeout/recovery handle a stalled apply instead of
-            # repeatedly restarting the process mid-apply every listener timeout.
-            self._runtime_unhealthy_since = None
-            self._runtime_unhealthy_kind = None
-            return None
         current_slot = str(active_slot() or "").strip().upper() or None
         active_manifest = active_slot_manifest()
         managed = _proc_details(proc, cwd_hint=self._managed_runtime_cwd)
@@ -2536,6 +2529,17 @@ class SupervisorManager:
                 "expected_managed_executable": expected_executable,
                 "expected_managed_cwd": expected_cwd,
             }
+        if update_state == "applying" and update_phase == "apply":
+            # During core_update_apply the runner intentionally has no listener yet.
+            # Let supervisor timeout/recovery handle a stalled apply instead of
+            # repeatedly restarting the process mid-apply every listener timeout.
+            #
+            # Keep slot-mismatch recovery above this guard so a stale applying/apply
+            # status cannot pin the supervisor to an outdated runtime after the
+            # active slot marker has already moved on.
+            self._runtime_unhealthy_since = None
+            self._runtime_unhealthy_kind = None
+            return None
         runtime_port = self.slot_runtime_port(current_slot)
         runtime_url = self.slot_runtime_base_url(current_slot)
         listener_running = _listener_running(self.runtime_host, runtime_port)
