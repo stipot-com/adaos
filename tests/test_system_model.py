@@ -540,6 +540,14 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "scope": "hub_local_only",
                     "selected_webspace_id": "desk",
                     "assessment": {"state": "nominal", "reason": "bounded sync runtime observed"},
+                    "channel_contract": {
+                        "channel_type": "sync_channel",
+                        "recovery_model": "snapshot_plus_diff",
+                        "replay_window": "bounded",
+                        "awareness_semantics": "ephemeral",
+                        "browser_local_persistence": "optional_indexeddb",
+                        "completed_for_scope": True,
+                    },
                     "transport": {"server_ready": True},
                     "ownership_boundaries": {
                         "state": "explicit",
@@ -632,6 +640,8 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     )
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
+    assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["channel_contract"]["completed_for_scope"] is True
+    assert objects["runtime:hub:hub-1/yjs-sync"]["actual_state"]["channel_contract"]["recovery_model"] == "snapshot_plus_diff"
     assert objects["runtime:hub:hub-1/yjs-sync"]["actual_state"]["ownership_boundaries"]["state"] == "explicit"
     assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["ownership_boundaries"]["transport_session"]["planned_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2

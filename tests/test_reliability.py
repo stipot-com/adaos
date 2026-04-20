@@ -802,10 +802,16 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     )
 
     snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
+    contract = snapshot["channel_contract"]
     transport = snapshot["transport"]
     ownership = snapshot["ownership_boundaries"]
 
     assert snapshot["available"] is True
+    assert contract["channel_type"] == "sync_channel"
+    assert contract["recovery_model"] == "snapshot_plus_diff"
+    assert contract["replay_window"] == "bounded"
+    assert contract["awareness_semantics"] == "ephemeral"
+    assert contract["completed_for_scope"] is True
     assert transport["owner"] == "runtime"
     assert transport["planned_owner"] == "sidecar"
     assert transport["lifecycle_manager"] == "supervisor"
@@ -1179,6 +1185,14 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                     },
                     "sync_runtime": {
                         "assessment": {"state": "nominal"},
+                        "channel_contract": {
+                            "channel_type": "sync_channel",
+                            "recovery_model": "snapshot_plus_diff",
+                            "replay_window": "bounded",
+                            "awareness_semantics": "ephemeral",
+                            "browser_local_persistence": "optional_indexeddb",
+                            "completed_for_scope": True,
+                        },
                         "webspace_total": 1,
                         "active_webspace_total": 1,
                         "compacted_webspace_total": 0,
@@ -1290,6 +1304,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "reloads=4/5 dup=3 resets=2/4 rdup=1" in result.output
     assert "sync_runtime.reload_last: client=http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301" in result.output
     assert "sync_runtime.reset_last: client=events_ws:127.0.0.1:54421" in result.output
+    assert "sync_runtime.contract: type=sync_channel recovery=snapshot_plus_diff replay=bounded awareness=ephemeral persistence=optional_indexeddb done=yes" in result.output
     assert "sync_runtime.boundaries: selector=shared:web_desktop effective=runtime:ready compat=runtime:fallback_cache transport=runtime->sidecar" in result.output
     assert "rooms=1 opens=2/3 single=2 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output

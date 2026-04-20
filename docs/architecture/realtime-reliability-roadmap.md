@@ -52,7 +52,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 
 - `browser/member semantic channels`: materially ready for current scope
 - `Yjs ownership boundaries`: now explicit in runtime diagnostics for selector, effective branches, compatibility caches, and transport/session lifecycle
-- `Yjs as SyncChannel`: advanced checkpoint reached, but not yet closed as a completed reliability phase
+- `Yjs as SyncChannel`: complete for the current sync-channel scope; remaining browser-facing work now sits in `/yws` transport ownership migration rather than in the sync contract itself
 - `local supervisor browser-safe continuity`: materially improved, but still in progress
 - `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned
 
@@ -355,6 +355,15 @@ Build abstraction from logical channel semantics, not from transport names.
 
 ## Phase 5: Yjs as SyncChannel
 
+### Status
+
+Completed for the current sync-channel scope.
+Hub and browser runtime surfaces now expose an explicit SyncChannel contract:
+bounded replay window, snapshot+diff recovery, optional browser IndexedDB
+persistence, explicit resync controls, and explicit separation of ephemeral
+awareness from document recovery. Remaining `/yws` ownership migration belongs
+to the sidecar/transport boundary work, not to the SyncChannel contract itself.
+
 ### Focus
 
 Make Yjs transport-independent without building a second distributed system around it.
@@ -379,13 +388,14 @@ Make Yjs transport-independent without building a second distributed system arou
 - Yjs reliability is not duplicated blindly across transport, log, and UI layers
 - awareness may drop without compromising document state
 
-### Checkpoint reached
+### Completed for current scope
 
 - hub-side YStore runtime now exposes bounded log and snapshot+diff state for operator diagnostics
 - browser sync now has an explicit resync path and runtime snapshot instead of scattered provider recreation logic
 - node reliability / hub-root status surface Yjs sync runtime alongside transport and protocol state
 - browser header now exposes a manual Yjs resync action, separate from scenario reseed/reload
 - browser sync runtime now separates document recovery from ephemeral awareness state
+- hub/browser runtime surfaces now also expose the SyncChannel contract explicitly instead of requiring operators to infer it from scattered implementation details
 - node API / CLI now expose explicit Yjs runtime and snapshot-backup control paths
 - hub-side node API / CLI now expose explicit per-webspace Yjs reload/reset control paths
 - Infra State now surfaces Yjs runtime state and local Yjs backup/reload/reset operator actions

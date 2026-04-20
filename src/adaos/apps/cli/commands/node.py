@@ -468,6 +468,11 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 typer.echo(f"sidecar.route_tunnel.yws_blocker: {yws_blocker}")
     if sync_runtime:
         assessment = sync_runtime.get("assessment") if isinstance(sync_runtime.get("assessment"), dict) else {}
+        contract = (
+            sync_runtime.get("channel_contract")
+            if isinstance(sync_runtime.get("channel_contract"), dict)
+            else {}
+        )
         transport = sync_runtime.get("transport") if isinstance(sync_runtime.get("transport"), dict) else {}
         ownership = (
             sync_runtime.get("ownership_boundaries")
@@ -539,6 +544,16 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"age={transport.get('last_reset_age_s') if transport.get('last_reset_age_s') is not None else '-'} "
                 f"dup={'yes' if transport.get('last_reset_duplicate_recent') else 'no'} "
                 f"fp={transport.get('last_reset_fingerprint') or '-'}"
+            )
+        if contract:
+            typer.echo(
+                "sync_runtime.contract: "
+                f"type={contract.get('channel_type') or '-'} "
+                f"recovery={contract.get('recovery_model') or '-'} "
+                f"replay={contract.get('replay_window') or '-'} "
+                f"awareness={contract.get('awareness_semantics') or '-'} "
+                f"persistence={contract.get('browser_local_persistence') or '-'} "
+                f"done={'yes' if contract.get('completed_for_scope') else 'no'}"
             )
         if ownership:
             effective_state = (
@@ -778,6 +793,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
 def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     assessment = runtime.get("assessment") if isinstance(runtime.get("assessment"), dict) else {}
+    contract = runtime.get("channel_contract") if isinstance(runtime.get("channel_contract"), dict) else {}
     transport = runtime.get("transport") if isinstance(runtime.get("transport"), dict) else {}
     selected = str(runtime.get("selected_webspace_id") or "").strip()
     action_overrides = runtime.get("action_overrides") if isinstance(runtime.get("action_overrides"), dict) else {}
@@ -814,6 +830,16 @@ def _print_yjs_runtime_summary(payload: dict[str, Any]) -> None:
         f"next={recommended_action} "
         f"risk={risk_level}"
     )
+    if contract:
+        typer.echo(
+            "  contract: "
+            f"type={contract.get('channel_type') or '-'} "
+            f"recovery={contract.get('recovery_model') or '-'} "
+            f"replay={contract.get('replay_window') or '-'} "
+            f"awareness={contract.get('awareness_semantics') or '-'} "
+            f"persistence={contract.get('browser_local_persistence') or '-'} "
+            f"done={'yes' if contract.get('completed_for_scope') else 'no'}"
+        )
     if selected_webspace:
         typer.echo(
             "  webspace: "

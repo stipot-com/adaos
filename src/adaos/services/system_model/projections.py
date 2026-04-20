@@ -818,6 +818,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "available": payload.get("available"),
                 "scope": payload.get("scope"),
                 "assessment": assessment,
+                "channel_contract": payload.get("channel_contract"),
                 "transport": payload.get("transport"),
                 "ownership_boundaries": payload.get("ownership_boundaries"),
                 "update_guard": payload.get("update_guard"),
@@ -830,6 +831,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
             {
                 "selected_webspace_id": selected_webspace_id,
                 "selected_webspace": selected_webspace,
+                "channel_contract": coerce_mapping(payload.get("channel_contract")),
                 "transport_ownership": coerce_mapping(payload.get("transport")),
                 "ownership_boundaries": coerce_mapping(payload.get("ownership_boundaries")),
             }

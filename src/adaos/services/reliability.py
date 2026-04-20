@@ -4300,6 +4300,7 @@ def yjs_sync_runtime_snapshot(
     role_norm = str(role or "").strip().lower()
     selected_webspace_id = str(webspace_id or "").strip()
     action_overrides: dict[str, Any] = {}
+    channel_contract = _build_yjs_sync_channel_contract()
     ownership_boundaries: dict[str, Any] = {}
     recovery_playbook: dict[str, Any] = {}
     recovery_guidance: dict[str, Any] = {}
@@ -4314,6 +4315,7 @@ def yjs_sync_runtime_snapshot(
                 "state": "not_applicable",
                 "reason": "local Yjs store runtime is observed on the hub only",
             },
+            "channel_contract": channel_contract,
             "transport": {},
             "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
@@ -4342,6 +4344,7 @@ def yjs_sync_runtime_snapshot(
                 "state": "unavailable",
                 "reason": f"failed to load Yjs store runtime: {exc}",
             },
+            "channel_contract": channel_contract,
             "transport": {},
             "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
@@ -4484,6 +4487,7 @@ def yjs_sync_runtime_snapshot(
             "state": assessment_state,
             "reason": "; ".join(reasons),
         },
+        "channel_contract": channel_contract,
         "transport": {
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
@@ -4570,6 +4574,20 @@ def yjs_sync_runtime_snapshot(
         "state_vector_fast_path_total": state_vector_fast_path_total,
         "state_vector_compute_total": state_vector_compute_total,
         "webspaces": webspaces,
+    }
+
+
+def _build_yjs_sync_channel_contract() -> dict[str, Any]:
+    return {
+        "channel_type": "sync_channel",
+        "transport_independence": "bounded_runtime_and_resync",
+        "recovery_model": "snapshot_plus_diff",
+        "replay_window": "bounded",
+        "browser_local_persistence": "optional_indexeddb",
+        "explicit_resync_controls": ["reload", "restore", "reset"],
+        "awareness_semantics": "ephemeral",
+        "transport_paths": ["yws", "webrtc_data:yjs"],
+        "completed_for_scope": True,
     }
 
 
@@ -5129,6 +5147,7 @@ def reliability_snapshot(
             "available": False,
             "scope": "hub_local_only",
             "selected_webspace_id": str(webspace_id or "").strip() or None,
+            "channel_contract": _build_yjs_sync_channel_contract(),
             "transport": {},
             "ownership_boundaries": {},
             "action_overrides": {},
