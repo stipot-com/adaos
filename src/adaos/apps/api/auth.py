@@ -52,6 +52,6 @@ async def require_token(
 
 
 def require_owner_token(token: str) -> None:
-    expected = os.getenv("ADAOS_ROOT_OWNER_TOKEN") or ""
+    expected = os.getenv("ADAOS_ROOT_OWNER_TOKEN") or os.getenv("ROOT_TOKEN") or ""
     if not expected or token != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid owner token")

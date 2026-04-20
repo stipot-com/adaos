@@ -42,6 +42,47 @@ DESCRIPTOR_CACHE_CLASS_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+def _plane_registry_payload() -> dict[str, Any]:
+    return {
+        "available": True,
+        "kind": "mcp_plane_registry",
+        "planes": [
+            {
+                "plane_id": "adaos_dev",
+                "title": "AdaOSDevPlane",
+                "enabled": True,
+                "surface": "development",
+                "mode": "typed_descriptive_plane",
+                "published_by": "root",
+                "preferred_for": ["llm_programmer", "authoring", "architecture_assistance"],
+                "descriptor_ids": [
+                    "architecture_catalog",
+                    "sdk_metadata",
+                    "template_catalog",
+                    "public_skill_registry_summary",
+                    "public_scenario_registry_summary",
+                ],
+                "tool_prefixes": ["adaos_dev."],
+                "capability_profiles": [],
+                "backing_store": "root_descriptor_cache",
+            },
+            {
+                "plane_id": "profile_ops",
+                "title": "ProfileOpsPlane",
+                "enabled": True,
+                "surface": "operations",
+                "mode": "typed_operational_plane",
+                "published_by": "root",
+                "preferred_for": ["profiler_inspection", "profiler_control", "operator_workflows"],
+                "descriptor_ids": ["capability_profiles", "mcp_session_profile"],
+                "tool_prefixes": ["hub.memory."],
+                "capability_profiles": ["ProfileOpsRead", "ProfileOpsControl"],
+                "backing_store": "root_descriptor_cache + supervisor_authority",
+            },
+        ],
+    }
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -377,6 +418,8 @@ def _descriptor_payload(descriptor_id: str, *, level: str = "std") -> Any:
         return _template_catalog()
     if token == "capability_registry":
         return capability_registry_payload()
+    if token == "mcp_plane_registry":
+        return _plane_registry_payload()
     if token == "mcp_client_profile":
         return _client_profile()
     if token == "access_token_profile":
@@ -482,6 +525,14 @@ def list_descriptor_sets() -> list[dict[str, Any]]:
             source_kind="root_mcp_policy_registry",
             descriptor_class="policy",
             tags=["development", "policy", "capabilities"],
+        ),
+        _descriptor_entry(
+            "mcp_plane_registry",
+            title="MCP plane registry",
+            summary="Published Root MCP plane registry covering descriptive and operational product surfaces over the foundation.",
+            source_kind="root_mcp_plane_registry",
+            descriptor_class="registry",
+            tags=["development", "planes", "registry"],
         ),
         _descriptor_entry(
             "mcp_client_profile",

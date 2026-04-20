@@ -617,7 +617,8 @@ def _run_prepared_restart_skill_migration(slot: str, manifest: dict[str, Any]) -
         ) from exc
     if not isinstance(payload, dict):
         raise RuntimeError("deferred skill runtime migration returned non-object payload")
-    if not bool(payload.get("ok")):
+    safe_for_core_update = bool(payload.get("safe_for_core_update"))
+    if not bool(payload.get("ok")) and not safe_for_core_update:
         raise RuntimeError(f"deferred skill runtime migration failed: {json.dumps(payload, ensure_ascii=False)}")
     updated_manifest = dict(manifest)
     updated_manifest["skill_runtime_migration"] = payload

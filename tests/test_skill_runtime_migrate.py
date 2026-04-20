@@ -126,7 +126,50 @@ def test_migrate_installed_skills_can_skip_tests(monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["failed_total"] == 0
     assert payload["run_tests"] is False
+    assert payload["safe_for_core_update"] is True
     assert payload["skills"][0]["tests"] == {}
+
+
+def test_migrate_installed_skills_marks_prepare_failures_safe_for_core_update(monkeypatch) -> None:
+    import adaos.apps.skill_runtime_migrate as mod
+
+    class _Row:
+        name = "broken_skill"
+        installed = True
+
+    class _Registry:
+        def __init__(self, _sql) -> None:
+            pass
+
+        def list(self):
+            return [_Row()]
+
+    class _Manager:
+        def runtime_status(self, name: str):
+            return {"version": "1.0.0", "active_slot": "A"}
+
+        def prepare_runtime(self, name: str, run_tests: bool = False):
+            raise RuntimeError("import failed during prepare")
+
+    class _Ctx:
+        sql = object()
+        skills_repo = object()
+        git = object()
+        paths = object()
+        bus = None
+        caps = object()
+
+    monkeypatch.setattr(mod, "init_ctx", lambda: None)
+    monkeypatch.setattr(mod, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", _Registry)
+    monkeypatch.setattr(mod, "_manager", lambda: _Manager())
+
+    payload = mod.migrate_installed_skills(run_tests=True)
+
+    assert payload["ok"] is False
+    assert payload["failed_total"] == 1
+    assert payload["safe_for_core_update"] is True
+    assert payload["skills"][0]["failed_stage"] == "prepare"
 
 
 def test_post_commit_checks_deactivate_failing_skills(monkeypatch) -> None:

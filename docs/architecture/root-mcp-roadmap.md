@@ -133,10 +133,10 @@ Phase is complete when:
 
 ## Phase 6. Plane Registration and Multiple Operational Planes
 
-- [ ] formalize plane registration contracts
-- [ ] let multiple operational planes coexist over the same foundation
-- [ ] keep capability profiles and tool catalogs plane-scoped where appropriate
-- [ ] avoid coupling feature-specific product surfaces directly to the foundation implementation
+- [x] formalize plane registration contracts
+- [x] let multiple operational planes coexist over the same foundation
+- [x] keep capability profiles and tool catalogs plane-scoped where appropriate
+- [x] avoid coupling feature-specific product surfaces directly to the foundation implementation
 
 ## Functional Maturity Milestones
 
@@ -144,7 +144,7 @@ Phase is complete when:
 
 - [x] root-hosted MCP foundation can be reached through local `stdio` bridge
 - [x] Codex can inspect managed target status and operational surface through the bridge
-- [ ] Codex can use named session/capability bootstrap instead of only workspace-local profile/token preparation
+- [x] Codex can use named session/capability bootstrap instead of only workspace-local profile/token preparation
 
 This milestone is the earliest point for repeated live trials with `Codex in VS Code` through the current local bridge model.
 

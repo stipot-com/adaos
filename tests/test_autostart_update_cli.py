@@ -828,7 +828,7 @@ def test_probe_http_json_uses_default_autostart_headers(monkeypatch) -> None:
     assert captured["headers"]["Accept"] == "application/json"
 
 
-def test_autostart_admin_headers_prefer_wrapper_service_token(monkeypatch) -> None:
+def test_autostart_admin_headers_prefer_local_cli_token_over_wrapper_service_token(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_TOKEN", "shell-token")
     monkeypatch.setattr(
         setup_cmd,
@@ -843,7 +843,7 @@ def test_autostart_admin_headers_prefer_wrapper_service_token(monkeypatch) -> No
 
     headers = setup_cmd._autostart_admin_headers()
 
-    assert headers["X-AdaOS-Token"] == "wrapper-service-token"
+    assert headers["X-AdaOS-Token"] == "shell-token"
 
 
 def test_autostart_inspect_json_outputs_payload(monkeypatch) -> None:

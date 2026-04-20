@@ -603,7 +603,7 @@ def prepare_slot(
                 shared_dotenv_path=shared_dotenv,
                 run_tests=True,
             )
-            if not bool(skill_runtime_migration.get("ok")):
+            if not bool(skill_runtime_migration.get("ok")) and not bool(skill_runtime_migration.get("safe_for_core_update")):
                 failed = []
                 for item in skill_runtime_migration.get("skills") or []:
                     if not isinstance(item, dict) or bool(item.get("ok")):

@@ -410,7 +410,7 @@ def _autostart_admin_base_url(token: Optional[str] = None) -> str:
         _push(f"http://{host}:{int(port)}")
     _push(resolve_control_base_url())
 
-    resolved_token = str(token or _autostart_service_token() or resolve_control_token(explicit=token)).strip()
+    resolved_token = str(_autostart_cli_token(token) or resolve_control_token(explicit=token)).strip()
     for base in candidates:
         code, _payload = probe_control_api(base_url=base, token=resolved_token, timeout_s=0.75)
         if code is not None:
@@ -433,18 +433,22 @@ def _autostart_service_token() -> str:
     return ""
 
 
-def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
+def _autostart_cli_token(token: Optional[str] = None) -> str:
     ctx = get_ctx()
     conf = getattr(ctx, "config", None)
-    resolved = str(
+    return str(
         token
-        or _autostart_service_token()
         or os.getenv("ADAOS_TOKEN")
         or os.getenv("ADAOS_HUB_TOKEN")
         or os.getenv("HUB_TOKEN")
         or getattr(conf, "token", None)
+        or _autostart_service_token()
         or ""
     ).strip()
+
+
+def _autostart_admin_headers(token: Optional[str] = None) -> dict[str, str]:
+    resolved = _autostart_cli_token(token)
     headers = {"Content-Type": "application/json"}
     if resolved:
         headers["X-AdaOS-Token"] = resolved

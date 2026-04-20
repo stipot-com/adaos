@@ -73,10 +73,47 @@ def _root_host_summary() -> dict[str, Any]:
     }
 
 
+def plane_registry() -> dict[str, Any]:
+    descriptor = get_descriptor_set("mcp_plane_registry")
+    payload = descriptor.get("payload") if isinstance(descriptor.get("payload"), dict) else {}
+    planes = payload.get("planes") if isinstance(payload.get("planes"), list) else []
+    return {
+        "available": bool(payload.get("available", True)),
+        "kind": str(payload.get("kind") or "mcp_plane_registry"),
+        "planes": [dict(item) for item in planes if isinstance(item, dict)],
+    }
+
+
+def _plane_items() -> list[dict[str, Any]]:
+    return list(plane_registry().get("planes") or [])
+
+
+def get_plane(plane_id: str) -> dict[str, Any] | None:
+    token = str(plane_id or "").strip().lower()
+    if not token:
+        return None
+    for item in _plane_items():
+        if str(item.get("plane_id") or "").strip().lower() == token:
+            return item
+    return None
+
+
+def _contract_plane_id(contract: RootMcpToolContract) -> str:
+    published_by = str((contract.metadata or {}).get("published_by") or "").strip().lower()
+    if published_by.startswith("plane:"):
+        return published_by.split(":", 1)[1].strip() or "foundation"
+    if contract.id.startswith("adaos_dev."):
+        return "adaos_dev"
+    if contract.id.startswith("hub.memory."):
+        return "profile_ops"
+    return "foundation"
+
+
 def _foundation_summary() -> dict[str, Any]:
     descriptors = list_descriptor_sets()
     managed_targets = list_target_descriptors()
     contracts = list_tool_contracts()
+    plane_items = _plane_items()
     return {
         "id": "root-mcp-foundation",
         "status": "experimental",
@@ -97,14 +134,7 @@ def _foundation_summary() -> dict[str, Any]:
                 "scope": "root-hosted contracts and managed-target descriptors before target-side infra_access_skill execution",
             },
         },
-        "planes": {
-            "adaos_dev": {
-                "enabled": True,
-                "mode": "typed_descriptive_plane",
-                "backing_store": "root_descriptor_cache",
-                "preferred_for": ["llm_programmer", "authoring", "architecture_assistance"],
-            },
-        },
+        "planes": {str(item.get("plane_id") or ""): item for item in plane_items if str(item.get("plane_id") or "").strip()},
         "entrypoints": {
             "foundation": "/v1/root/mcp/foundation",
             "contracts": "/v1/root/mcp/contracts",
@@ -143,6 +173,11 @@ def _foundation_summary() -> dict[str, Any]:
             "available": True,
             "profiles": sorted(DEFAULT_CAPABILITY_PROFILES.keys()),
         },
+        "plane_registry": {
+            "available": True,
+            "plane_count": len(plane_items),
+            "plane_ids": [str(item.get("plane_id") or "") for item in plane_items if str(item.get("plane_id") or "").strip()],
+        },
         "descriptor_cache": {
             "enabled": True,
             "mode": "root_descriptor_cache",
@@ -175,11 +210,34 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             surface=RootMcpSurface.DEVELOPMENT,
             summary="Return current root MCP tool contracts, including operational placeholders.",
             input_schema=schema_object(
-                properties={"surface": {"type": "string", "enum": [item.value for item in RootMcpSurface]}},
+                properties={
+                    "surface": {"type": "string", "enum": [item.value for item in RootMcpSurface]},
+                    "plane_id": {"type": "string"},
+                },
             ),
             output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
             required_capability="development.read.contracts",
             metadata={"published_by": "root", "handler": "list_contracts"},
+        ),
+        RootMcpToolContract(
+            id="development.list_planes",
+            title="List MCP planes",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return the published Root MCP plane registry over descriptive and operational planes.",
+            input_schema=schema_object(),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "root", "handler": "list_planes"},
+        ),
+        RootMcpToolContract(
+            id="development.get_plane",
+            title="Get MCP plane",
+            surface=RootMcpSurface.DEVELOPMENT,
+            summary="Return one published Root MCP plane descriptor and its current catalog hints.",
+            input_schema=schema_object(properties={"plane_id": {"type": "string"}}, required=["plane_id"]),
+            output_schema=deepcopy(ROOT_MCP_RESPONSE_SCHEMA),
+            required_capability="development.read.descriptors",
+            metadata={"published_by": "root", "handler": "get_plane"},
         ),
         RootMcpToolContract(
             id="development.list_descriptor_sets",
@@ -844,11 +902,14 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
     ]
 
 
-def list_tool_contracts(*, surface: str | None = None) -> list[RootMcpToolContract]:
+def list_tool_contracts(*, surface: str | None = None, plane_id: str | None = None) -> list[RootMcpToolContract]:
     items = [*_implemented_tool_contracts(), *_placeholder_operational_contracts()]
     if surface:
         token = str(surface or "").strip().lower()
         items = [item for item in items if item.surface.value == token]
+    if plane_id:
+        token = str(plane_id or "").strip().lower()
+        items = [item for item in items if _contract_plane_id(item) == token]
     return items
 
 
@@ -913,7 +974,22 @@ def _handle_describe_foundation(arguments: dict[str, Any], *, dry_run: bool) -> 
 
 def _handle_list_contracts(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     surface = str(arguments.get("surface") or "").strip().lower() or None
-    return {"contracts": [item.to_dict() for item in list_tool_contracts(surface=surface)]}
+    plane_id = str(arguments.get("plane_id") or "").strip().lower() or None
+    return {"contracts": [item.to_dict() for item in list_tool_contracts(surface=surface, plane_id=plane_id)]}
+
+
+def _handle_list_planes(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return plane_registry()
+
+
+def _handle_get_plane(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    plane_id = str(arguments.get("plane_id") or "").strip()
+    if not plane_id:
+        raise ValueError("plane_id is required")
+    plane = get_plane(plane_id)
+    if plane is None:
+        raise KeyError(plane_id)
+    return {"plane": plane}
 
 
 def _handle_list_descriptor_sets(arguments: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
@@ -1602,6 +1678,8 @@ def _handle_hub_rollback_last_test_deploy(arguments: dict[str, Any], *, dry_run:
 _HANDLERS: dict[str, Callable[[dict[str, Any], bool], dict[str, Any]]] = {
     "development.describe_foundation": lambda arguments, dry_run=False: _handle_describe_foundation(arguments, dry_run=dry_run),
     "development.list_contracts": lambda arguments, dry_run=False: _handle_list_contracts(arguments, dry_run=dry_run),
+    "development.list_planes": lambda arguments, dry_run=False: _handle_list_planes(arguments, dry_run=dry_run),
+    "development.get_plane": lambda arguments, dry_run=False: _handle_get_plane(arguments, dry_run=dry_run),
     "development.list_descriptor_sets": lambda arguments, dry_run=False: _handle_list_descriptor_sets(arguments, dry_run=dry_run),
     "development.get_descriptor_set": lambda arguments, dry_run=False: _handle_get_descriptor_set(arguments, dry_run=dry_run),
     "development.get_system_model_vocabulary": lambda arguments, dry_run=False: _handle_system_model_vocabulary(arguments, dry_run=dry_run),

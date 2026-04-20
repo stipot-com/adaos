@@ -410,3 +410,52 @@ def test_deactivate_runtime_blocks_execution_until_reactivated(monkeypatch) -> N
     status_after = mgr.runtime_status(skill_name)
     assert status_after["deactivated"] is False
     assert status_after["active"] is True
+
+
+def test_activate_runtime_does_not_switch_slot_before_smoke_import(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "atomic_activate_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: atomic_activate_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {"skill_env": str(kwargs["slot"].skill_env_path), "skill_memory": str(kwargs["slot"].skill_memory_path)},
+            "tools": {"handle": {"module": "skills.atomic_activate_skill.handlers.main", "callable": "handle"}},
+            "default_tool": "handle",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="A")
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="B")
+    assert env.read_active_slot("1.0.0") == "A"
+
+    monkeypatch.setattr(
+        mgr,
+        "_smoke_import",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("broken handler import")),
+    )
+
+    try:
+        mgr.activate_runtime(skill_name, version="1.0.0", slot="B")
+    except RuntimeError as exc:
+        assert "broken handler import" in str(exc)
+    else:  # pragma: no cover - regression guard
+        raise AssertionError("expected activation to fail")
+
+    assert env.read_active_slot("1.0.0") == "A"

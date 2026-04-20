@@ -41,7 +41,9 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert foundation_payload["foundation"]["descriptor_cache"]["enabled"] is True
     assert foundation_payload["foundation"]["surfaces"]["development"]["mode"] == "root_descriptor_cache"
     assert foundation_payload["foundation"]["planes"]["adaos_dev"]["enabled"] is True
+    assert foundation_payload["foundation"]["planes"]["profile_ops"]["enabled"] is True
     assert foundation_payload["foundation"]["preferred_descriptive_surface"] == "adaos_dev"
+    assert foundation_payload["foundation"]["plane_registry"]["plane_count"] >= 2
     assert foundation_payload["foundation"]["infra_access_skill"]["state"]["skill_name"] == "infra_access_skill"
 
     contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers)
@@ -68,6 +70,12 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "hub.memory.get_artifact" in contract_ids
     assert "hub.memory.start_profile" in contract_ids
     assert "hub.memory.publish_profile" in contract_ids
+    profile_plane_contracts = client.get("/v1/root/mcp/contracts", headers=scoped_headers, params={"plane_id": "profile_ops"})
+    assert profile_plane_contracts.status_code == 200
+    profile_plane_ids = {item["id"] for item in profile_plane_contracts.json()["contracts"]}
+    assert "hub.memory.get_status" in profile_plane_ids
+    assert "hub.memory.publish_profile" in profile_plane_ids
+    assert "hub.get_status" not in profile_plane_ids
     get_logs = next(item for item in contract_items if item["id"] == "hub.get_logs")
     assert get_logs["availability"] == "enabled"
     assert get_logs["metadata"]["published_by"] == "skill:infra_access_skill"
@@ -105,6 +113,7 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     assert "public_scenario_registry_summary" in descriptor_ids
     assert "descriptor_build_profile" in descriptor_ids
     assert "descriptor_bundle" in descriptor_ids
+    assert "mcp_plane_registry" in descriptor_ids
 
     capability_registry = client.get("/v1/root/mcp/descriptors/capability_registry", headers=scoped_headers)
     assert capability_registry.status_code == 200
@@ -121,6 +130,13 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     session_profile_payload = session_profile.json()["descriptor"]["payload"]
     assert session_profile_payload["session_registry"]["available"] is True
     assert session_profile_payload["client_bootstrap"]["subnet_transport_params_required"] is False
+
+    plane_registry = client.get("/v1/root/mcp/descriptors/mcp_plane_registry", headers=scoped_headers)
+    assert plane_registry.status_code == 200
+    plane_registry_payload = plane_registry.json()["descriptor"]["payload"]
+    assert plane_registry_payload["available"] is True
+    plane_ids = {item["plane_id"] for item in plane_registry_payload["planes"]}
+    assert {"adaos_dev", "profile_ops"} <= plane_ids
 
     architecture = client.get("/v1/root/mcp/descriptors/architecture_catalog", headers=scoped_headers)
     assert architecture.status_code == 200
@@ -158,6 +174,23 @@ def test_root_mcp_foundation_and_contracts(monkeypatch) -> None:
     plane_result = plane_call.json()["response"]["result"]["descriptor"]["payload"]
     assert plane_result["available"] is True
     assert plane_result["page_count"] >= 1
+
+    plane_list_call = client.post(
+        "/v1/root/mcp/call",
+        headers=scoped_headers,
+        json={"tool_id": "development.list_planes", "arguments": {}},
+    )
+    assert plane_list_call.status_code == 200
+    listed_planes = plane_list_call.json()["response"]["result"]["planes"]
+    assert any(item["plane_id"] == "profile_ops" for item in listed_planes)
+
+    plane_get_call = client.post(
+        "/v1/root/mcp/call",
+        headers=scoped_headers,
+        json={"tool_id": "development.get_plane", "arguments": {"plane_id": "adaos_dev"}},
+    )
+    assert plane_get_call.status_code == 200
+    assert plane_get_call.json()["response"]["result"]["plane"]["title"] == "AdaOSDevPlane"
 
     bundle = client.get("/v1/root/mcp/descriptors/descriptor_bundle", headers=scoped_headers)
     assert bundle.status_code == 200

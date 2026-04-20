@@ -42,11 +42,19 @@ class RootMcpClient:
     def foundation(self) -> dict[str, Any]:
         return dict(self._request("GET", "/v1/root/mcp/foundation"))
 
-    def list_contracts(self, *, surface: str | None = None) -> dict[str, Any]:
+    def list_contracts(self, *, surface: str | None = None, plane_id: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if surface:
             params["surface"] = surface
+        if plane_id:
+            params["plane_id"] = plane_id
         return dict(self._request("GET", "/v1/root/mcp/contracts", params=params))
+
+    def list_planes(self) -> dict[str, Any]:
+        return self.call("development.list_planes")
+
+    def get_plane(self, plane_id: str) -> dict[str, Any]:
+        return self.call("development.get_plane", arguments={"plane_id": str(plane_id)})
 
     def list_descriptors(self) -> dict[str, Any]:
         return dict(self._request("GET", "/v1/root/mcp/descriptors"))

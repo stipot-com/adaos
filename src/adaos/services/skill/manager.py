@@ -1158,6 +1158,7 @@ class SkillManager:
             manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
             if not manifest_path.exists():
                 raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
+        self._smoke_import(env=env, name=name, version=target_version, slot=target_slot)
         env.set_active_slot(target_version, target_slot)
         env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
@@ -1166,7 +1167,6 @@ class SkillManager:
         history["last_active_slot"] = target_slot
         history["last_active_at"] = datetime.now(timezone.utc).isoformat()
         env.write_version_metadata(target_version, metadata)
-        self._smoke_import(env=env, name=name, version=target_version)
         try:
             install_skill_in_capacity(name, target_version, active=True)
             try:
@@ -1803,21 +1803,28 @@ class SkillManager:
             raise FileNotFoundError(f"handler entrypoint missing: {handler_main}")
         handlers_init = handlers_dir / "__init__.py"
         if not handlers_init.exists():
-            handlers_init.write_text("from .main import handle  # noqa: F401\n", encoding="utf-8")
+            handlers_init.write_text(
+                "try:\n"
+                "    from .main import handle  # noqa: F401\n"
+                "except ImportError:\n"
+                "    handle = None  # type: ignore[assignment]\n",
+                encoding="utf-8",
+            )
         return target
 
-    def _smoke_import(self, *, env: SkillRuntimeEnvironment, name: str, version: str) -> None:
+    def _smoke_import(self, *, env: SkillRuntimeEnvironment, name: str, version: str, slot: str | None = None) -> None:
         module_name = f"skills.{name}.handlers.main"
+        slot_name = str(slot or "").strip().upper() or env.read_active_slot(version)
         try:
-            current_link = env.ensure_current_link(version)
+            slot_paths = env.build_slot_paths(version, slot_name)
         except Exception as exc:  # pragma: no cover - defensive guard
-            raise RuntimeError(f"failed to prepare slot link for {name}: {exc}") from exc
+            raise RuntimeError(f"failed to resolve slot {slot_name} for {name}: {exc}") from exc
 
-        src_path = current_link / "src"
+        src_path = slot_paths.src_dir
         if not src_path.exists():
             raise RuntimeError(f"active slot for {name} lacks src directory: {src_path}")
 
-        vendor_path = current_link / "vendor"
+        vendor_path = slot_paths.vendor_dir
 
         original_sys_path = list(sys.path)
         try:

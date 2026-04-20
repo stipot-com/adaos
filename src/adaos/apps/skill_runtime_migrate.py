@@ -46,6 +46,20 @@ def _tests_ok(results: dict[str, Any]) -> bool:
     return all(status == "passed" for status in _tests_payload(results).values())
 
 
+def _safe_for_core_update(items: list[dict[str, Any]]) -> bool:
+    failures = [item for item in items if not bool(item.get("ok"))]
+    if not failures:
+        return True
+    for item in failures:
+        stage = str(item.get("failed_stage") or item.get("stage") or "").strip().lower()
+        if bool(item.get("rollback_performed")) or bool(item.get("deactivated")):
+            continue
+        if stage in {"prepare", "activate"}:
+            continue
+        return False
+    return True
+
+
 def _runtime_status_safe(mgr: SkillManager, name: str) -> dict[str, Any]:
     try:
         payload = mgr.runtime_status(name)
@@ -130,6 +144,7 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
         "rollback_total": rollback_total,
         "deactivated_total": deactivated_total,
         "run_tests": bool(run_tests),
+        "safe_for_core_update": _safe_for_core_update(items),
         "skills": items,
     }
 
@@ -193,6 +208,7 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
         "deactivated_total": deactivated_total,
         "skipped_total": skipped_total,
         "deactivate_on_failure": bool(deactivate_on_failure),
+        "safe_for_core_update": _safe_for_core_update(items),
         "skills": items,
     }
 

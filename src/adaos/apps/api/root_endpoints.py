@@ -114,7 +114,7 @@ def _require_root_write_auth(*, authorization: str | None, owner_token: str | No
     Root-side write auth (best-effort for dev/self-hosted root).
 
     Accepted methods:
-    - `X-Owner-Token` (matches `ADAOS_ROOT_OWNER_TOKEN` via require_owner_token)
+    - `X-Owner-Token` (matches `ADAOS_ROOT_OWNER_TOKEN` or `ROOT_TOKEN` via require_owner_token)
     - `Authorization: Bearer ...` (optionally checked against `ADAOS_ROOT_BEARER_TOKEN` if set)
     """
     if owner_token:
@@ -918,6 +918,7 @@ async def root_mcp_foundation(
 @root_router.get("/mcp/contracts")
 async def root_mcp_contracts(
     surface: str | None = None,
+    plane_id: str | None = None,
     authorization: str | None = Header(default=None),
     owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
     subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
@@ -926,7 +927,7 @@ async def root_mcp_contracts(
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
     scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("development.read.contracts" if str(surface or "").strip().lower() != "operations" else "operations.read.contracts", auth=auth)
-    contracts = [item.to_dict() for item in list_tool_contracts(surface=surface)]
+    contracts = [item.to_dict() for item in list_tool_contracts(surface=surface, plane_id=plane_id)]
     return {
         "ok": True,
         "auth": {"method": auth.get("method")},
