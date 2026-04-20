@@ -42,7 +42,7 @@ def _root_client(conf) -> RootHttpClient | None:
         ctx = get_ctx()
     except Exception:
         return None
-    base_url = str(getattr(ctx.settings, "api_base", None) or getattr(getattr(conf, "root_settings", None), "base_url", None) or "").rstrip("/")
+    base_url = str(getattr(getattr(conf, "root_settings", None), "base_url", None) or getattr(ctx.settings, "api_base", None) or "").rstrip("/")
     if not base_url:
         return None
     cert_path = conf.hub_cert_path()

@@ -76,15 +76,6 @@ def _resolve_root_base_url(conf: Any, explicit_root: str | None = None) -> str:
         or getattr(getattr(conf, "root_settings", None), "base_url", None)
         or "https://api.inimatic.com"
     ).rstrip("/")
-    zone_id = (
-        str(os.getenv("ADAOS_ZONE_ID") or getattr(conf, "zone_id", None) or "")
-        .strip()
-        .lower()
-    )
-    if not re.fullmatch(r"[a-z]{2}", zone_id or ""):
-        zone_id = ""
-    if zone_id == "ru" and base_url in {"https://api.inimatic.com", "http://api.inimatic.com"}:
-        return f"https://{zone_id}.api.inimatic.com"
     return base_url
 
 

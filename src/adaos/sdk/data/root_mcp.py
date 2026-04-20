@@ -6,6 +6,7 @@ from typing import Any
 from adaos.sdk.core._ctx import require_ctx
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root_mcp.client import RootMcpClient, RootMcpClientConfig
+from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 
 
 def _load_config(ctx: Any) -> Any:
@@ -26,7 +27,13 @@ def _default_root_url(*, root_url: str | None = None) -> str:
     if root_url:
         return str(root_url).strip()
     cfg = _load_config(ctx)
-    return str(root_url or cfg.root_settings.base_url or ctx.settings.api_base or "").strip()
+    configured = str(getattr(getattr(cfg, "root_settings", None), "base_url", None) or "").strip()
+    if configured:
+        return configured
+    zone_id = canonical_zone_id(
+        str(os.getenv("ADAOS_ZONE_ID") or getattr(cfg, "zone_id", None) or os.getenv("ZONE_ID") or "").strip().lower()
+    )
+    return zone_public_base_url(zone_id)
 
 
 def _root_http_client(*, root_url: str | None = None) -> tuple[RootHttpClient, Any]:
