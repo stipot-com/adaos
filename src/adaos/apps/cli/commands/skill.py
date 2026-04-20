@@ -137,6 +137,27 @@ def _read_local_artifact_version(kind: str, artifact_dir: Path) -> str | None:
     return _clean_version_text(entry.get("version"))
 
 
+def _resolve_list_skill_version(
+    *,
+    ctx,
+    skill_name: str,
+    row_version: object | None,
+    workspace_root: Path,
+    workspace_skills_root: Path,
+    registry_meta: dict[str, object] | None,
+) -> str:
+    _source_workdir, source_path, _source_kind = _resolve_workspace_skill_source(
+        ctx,
+        skill_name,
+        workspace_root,
+        workspace_skills_root,
+    )
+    workspace_version = _read_local_artifact_version("skills", source_path)
+    if not workspace_version and isinstance(registry_meta, dict):
+        workspace_version = _clean_version_text(registry_meta.get("version"))
+    return workspace_version or _clean_version_text(row_version) or "unknown"
+
+
 def _resolve_workspace_skill_versions(
     *,
     runtime_state: dict[str, object] | None,
@@ -506,6 +527,20 @@ def list_cmd(
 
     mgr = _mgr()
     rows = mgr.list_installed()  # SkillRecord[]
+    ctx = get_ctx()
+    workspace_root = Path(ctx.paths.workspace_dir())
+    workspace_skills_root = Path(ctx.paths.skills_workspace_dir())
+    workspace_registry_by_name: dict[str, dict[str, object]] = {}
+    try:
+        registry_items = list_workspace_registry_entries(workspace_root, kind="skills", fallback_to_scan=True)
+    except Exception:
+        registry_items = []
+    for item in registry_items:
+        if not isinstance(item, dict):
+            continue
+        item_name = str(item.get("name") or item.get("id") or "").strip()
+        if item_name:
+            workspace_registry_by_name[item_name] = item
 
     if json_output:
         payload = {
@@ -513,7 +548,14 @@ def list_cmd(
                 {
                     "name": r.name,
                     # тестам важен только name, но version полезно оставить
-                    "version": getattr(r, "active_version", None) or "unknown",
+                    "version": _resolve_list_skill_version(
+                        ctx=ctx,
+                        skill_name=r.name,
+                        row_version=getattr(r, "active_version", None),
+                        workspace_root=workspace_root,
+                        workspace_skills_root=workspace_skills_root,
+                        registry_meta=workspace_registry_by_name.get(r.name),
+                    ),
                 }
                 for r in rows
                 # оставляем только действительно установленные (если поле есть)
@@ -529,7 +571,14 @@ def list_cmd(
         for r in rows:
             if not bool(getattr(r, "installed", True)):
                 continue
-            av = getattr(r, "active_version", None) or "unknown"
+            av = _resolve_list_skill_version(
+                ctx=ctx,
+                skill_name=r.name,
+                row_version=getattr(r, "active_version", None),
+                workspace_root=workspace_root,
+                workspace_skills_root=workspace_skills_root,
+                registry_meta=workspace_registry_by_name.get(r.name),
+            )
             typer.echo(_("cli.skill.list.item", name=r.name, version=av))
 
     if show_fs:

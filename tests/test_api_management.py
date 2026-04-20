@@ -186,6 +186,22 @@ def test_skill_api_exposes_management_routes() -> None:
     assert any(call.startswith("push:") for call in skill_mgr.calls)
 
 
+def test_skill_api_list_prefers_workspace_version(monkeypatch) -> None:
+    skill_mgr = _FakeSkillManager()
+    scenario_mgr = _FakeScenarioManager()
+    client = _make_client(skill_mgr, scenario_mgr)
+
+    monkeypatch.setattr(skills, "list_workspace_registry_entries", lambda *args, **kwargs: [{"name": "demo", "version": "2.0.0"}])
+    monkeypatch.setattr(skills, "_resolve_list_skill_version", lambda **kwargs: "2.0.0")
+
+    resp = client.get("/api/skills/list")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["items"][0]["name"] == "demo"
+    assert payload["items"][0]["version"] == "2.0.0"
+
+
 def test_scenario_api_matches_service_surface() -> None:
     skill_mgr = _FakeSkillManager()
     scenario_mgr = _FakeScenarioManager()

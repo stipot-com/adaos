@@ -15,7 +15,7 @@ from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
-from adaos.services.workspace_registry import find_workspace_registry_entry
+from adaos.services.workspace_registry import build_registry_entry, find_workspace_registry_entry, list_workspace_registry_entries
 from adaos.services.yjs.webspace import default_webspace_id
 
 import yaml
@@ -93,6 +93,63 @@ def _read_registry_catalog_version(ctx: AgentContext, *, skill_id: str) -> str |
     return token or None
 
 
+def _clean_version_text(value: object | None) -> str | None:
+    token = str(value or "").strip()
+    return token or None
+
+
+def _repo_workspace_skills_root(ctx: AgentContext) -> Path | None:
+    try:
+        repo_root_attr = getattr(ctx.paths, "repo_root", None)
+        repo_root = repo_root_attr() if callable(repo_root_attr) else repo_root_attr
+        if not repo_root:
+            return None
+        candidate = Path(repo_root).expanduser().resolve() / ".adaos" / "workspace" / "skills"
+        if candidate.exists():
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_workspace_skill_source(ctx: AgentContext, skill_name: str, workspace_root: Path, workspace_skills_root: Path) -> Path:
+    local_path = (workspace_skills_root / skill_name).resolve()
+    if local_path.exists():
+        return local_path
+    repo_root = _repo_workspace_skills_root(ctx)
+    if repo_root is not None:
+        repo_path = (repo_root / skill_name).resolve()
+        if repo_path.exists():
+            return repo_path
+    return local_path
+
+
+def _read_local_artifact_version(kind: str, artifact_dir: Path) -> str | None:
+    try:
+        entry = build_registry_entry(kind, artifact_dir)
+    except Exception:
+        entry = None
+    if not isinstance(entry, dict):
+        return None
+    return _clean_version_text(entry.get("version"))
+
+
+def _resolve_list_skill_version(
+    *,
+    ctx: AgentContext,
+    skill_name: str,
+    row_version: object | None,
+    registry_meta: dict[str, Any] | None,
+) -> str:
+    workspace_root = Path(ctx.paths.workspace_dir())
+    workspace_skills_root = Path(ctx.paths.skills_workspace_dir())
+    source_path = _resolve_workspace_skill_source(ctx, skill_name, workspace_root, workspace_skills_root)
+    workspace_version = _read_local_artifact_version("skills", source_path)
+    if not workspace_version and isinstance(registry_meta, dict):
+        workspace_version = _clean_version_text(registry_meta.get("version"))
+    return workspace_version or _clean_version_text(row_version) or "unknown"
+
+
 class InstallReq(BaseModel):
     name: str
     pin: Optional[str] = None
@@ -135,9 +192,38 @@ class RuntimeSetupReq(BaseModel):
 
 
 @router.get("/list")
-async def list_skills(fs: bool = False, mgr: SkillManager = Depends(_get_manager)):
+async def list_skills(
+    fs: bool = False,
+    mgr: SkillManager = Depends(_get_manager),
+    ctx: AgentContext = Depends(get_ctx),
+):
     rows = mgr.list_installed()
-    items = [_to_mapping(r) for r in (rows or []) if bool(getattr(r, "installed", True))]
+    workspace_registry_by_name: dict[str, dict[str, Any]] = {}
+    try:
+        registry_items = list_workspace_registry_entries(Path(ctx.paths.workspace_dir()), kind="skills", fallback_to_scan=True)
+    except Exception:
+        registry_items = []
+    for item in registry_items:
+        if not isinstance(item, dict):
+            continue
+        item_name = str(item.get("name") or item.get("id") or "").strip()
+        if item_name:
+            workspace_registry_by_name[item_name] = item
+
+    items = []
+    for row in (rows or []):
+        if not bool(getattr(row, "installed", True)):
+            continue
+        item = _to_mapping(row)
+        name = str(item.get("name") or item.get("id") or item.get("repr") or "").strip()
+        if name:
+            item["version"] = _resolve_list_skill_version(
+                ctx=ctx,
+                skill_name=name,
+                row_version=item.get("active_version") or item.get("version"),
+                registry_meta=workspace_registry_by_name.get(name),
+            )
+        items.append(item)
     result: Dict[str, Any] = {"items": items}
     if fs:
         present = {m.id.value for m in mgr.list_present()}
