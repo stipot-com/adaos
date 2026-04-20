@@ -106,18 +106,17 @@ def _serialize_event(topic: str, payload: Dict[str, Any], kwargs: Dict[str, Any]
 def _rotate_if_needed(path: Path):
     try:
         if path.exists() and path.stat().st_size >= _MAX_BYTES:
-            for i in range(_KEEP, 0, -1):
-                src = path.with_suffix(path.suffix + ("" if i == 1 else f".{i-1}.gz"))
-                dst = path.with_suffix(path.suffix + f".{i}.gz")
-                if i == 1:
-                    if path.exists():
-                        data = path.read_bytes()
-                        with gzip.open(path.with_suffix(path.suffix + ".1.gz"), "wb") as gz:
-                            gz.write(data)
-                        path.unlink(missing_ok=True)
-                else:
-                    if src.exists():
-                        src.rename(dst)
+            oldest = path.with_suffix(path.suffix + f".{_KEEP}.gz")
+            oldest.unlink(missing_ok=True)
+            for i in range(_KEEP - 1, 0, -1):
+                src = path.with_suffix(path.suffix + f".{i}.gz")
+                dst = path.with_suffix(path.suffix + f".{i + 1}.gz")
+                if src.exists():
+                    src.rename(dst)
+            data = path.read_bytes()
+            with gzip.open(path.with_suffix(path.suffix + ".1.gz"), "wb") as gz:
+                gz.write(data)
+            path.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -126,6 +125,7 @@ def _write_local(e: Dict[str, Any]) -> None:
     global _LOG_FILE
     if _LOG_FILE is None:
         _LOG_FILE = _log_path()
+    _rotate_if_needed(_LOG_FILE)
     with _LOG_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
