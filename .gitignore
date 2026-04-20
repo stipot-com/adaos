@@ -20,3 +20,4 @@ ystore.db-journal
 .adaos/diagnostics
 site
 .pytest-tmp
+artifacts/test_tmp/
