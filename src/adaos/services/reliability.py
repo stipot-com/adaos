@@ -4300,6 +4300,7 @@ def yjs_sync_runtime_snapshot(
     role_norm = str(role or "").strip().lower()
     selected_webspace_id = str(webspace_id or "").strip()
     action_overrides: dict[str, Any] = {}
+    ownership_boundaries: dict[str, Any] = {}
     recovery_playbook: dict[str, Any] = {}
     recovery_guidance: dict[str, Any] = {}
     selected_webspace: dict[str, Any] = {}
@@ -4314,6 +4315,7 @@ def yjs_sync_runtime_snapshot(
                 "reason": "local Yjs store runtime is observed on the hub only",
             },
             "transport": {},
+            "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
             "recovery_guidance": recovery_guidance,
@@ -4341,6 +4343,7 @@ def yjs_sync_runtime_snapshot(
                 "reason": f"failed to load Yjs store runtime: {exc}",
             },
             "transport": {},
+            "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
             "recovery_playbook": recovery_playbook,
             "recovery_guidance": recovery_guidance,
@@ -4460,6 +4463,18 @@ def yjs_sync_runtime_snapshot(
         recovery_guidance,
     ) = _build_yjs_recovery_policy(selected_entry, selected_webspace)
     webspace_guidance = _build_yjs_webspace_guidance(selected_webspace, action_overrides)
+    ownership_boundaries = _build_yjs_ownership_boundaries(
+        selected_webspace_id=selected_webspace_id,
+        selected_webspace=selected_webspace,
+        transport={
+            "owner": yws_ownership.get("current_owner") or "runtime",
+            "lifecycle_manager": yws_ownership.get("lifecycle_manager"),
+            "planned_owner": yws_ownership.get("planned_owner"),
+            "migration_phase": yws_ownership.get("migration_phase"),
+            "handoff_ready": bool(yws_ownership.get("handoff_ready")),
+            "handoff_blockers": list(yws_ownership.get("handoff_blockers") or []),
+        },
+    )
 
     return {
         "available": True,
@@ -4524,6 +4539,7 @@ def yjs_sync_runtime_snapshot(
             "webrtc_open_yjs_channels": int(webrtc.get("open_yjs_channels") or 0),
             "webrtc_pruned_stale_peers": int(webrtc.get("pruned_stale_peers") or 0),
         },
+        "ownership_boundaries": ownership_boundaries,
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
         "recovery_guidance": recovery_guidance,
@@ -4554,6 +4570,140 @@ def yjs_sync_runtime_snapshot(
         "state_vector_fast_path_total": state_vector_fast_path_total,
         "state_vector_compute_total": state_vector_compute_total,
         "webspaces": webspaces,
+    }
+
+
+def _build_yjs_ownership_boundaries(
+    *,
+    selected_webspace_id: str | None,
+    selected_webspace: dict[str, Any] | None,
+    transport: dict[str, Any] | None,
+) -> dict[str, Any]:
+    selected = selected_webspace if isinstance(selected_webspace, dict) else {}
+    rebuild = selected.get("rebuild") if isinstance(selected.get("rebuild"), dict) else {}
+    materialization = (
+        rebuild.get("materialization")
+        if isinstance(rebuild.get("materialization"), dict)
+        else {}
+    )
+    has_materialization = bool(materialization)
+    compatibility = (
+        materialization.get("compatibility_caches")
+        if isinstance(materialization.get("compatibility_caches"), dict)
+        else {}
+    )
+    current_scenario = (
+        str(materialization.get("current_scenario") or compatibility.get("current_scenario") or "").strip()
+        or None
+    )
+    home_scenario = str(selected.get("home_scenario") or "").strip() or None
+    missing_effective = {
+        str(path or "").strip()
+        for path in list(materialization.get("missing_branches") or [])
+        if str(path or "").strip()
+    }
+    effective_specs = (
+        ("ui.application", "desktop_application_projection", "semantic_rebuild"),
+        ("data.catalog", "scenario_catalog_projection", "semantic_rebuild"),
+        ("data.installed", "desktop_installed_overlay", "semantic_rebuild"),
+        ("data.desktop", "desktop_surface_projection", "semantic_rebuild"),
+        ("data.routing", "route_projection", "semantic_rebuild"),
+        ("registry.merged", "registry_projection", "semantic_rebuild"),
+    )
+    effective_branches = [
+        {
+            "path": path,
+            "role": role,
+            "owner": "runtime",
+            "source_of_truth": source_of_truth,
+            "status": "tracked" if not has_materialization else ("missing" if path in missing_effective else "ready"),
+        }
+        for path, role, source_of_truth in effective_specs
+    ]
+    required_compatibility = [
+        str(path or "").strip()
+        for path in list(compatibility.get("required_branches") or [])
+        if str(path or "").strip()
+    ]
+    present_compatibility = {
+        str(path or "").strip()
+        for path in list(compatibility.get("present_branches") or [])
+        if str(path or "").strip()
+    }
+    compatibility_branches = [
+        {
+            "path": path,
+            "role": "scenario_compatibility_cache",
+            "owner": "runtime",
+            "source_of_truth": "compatibility_cache",
+            "status": "present" if path in present_compatibility else "missing",
+        }
+        for path in required_compatibility
+    ]
+    compatibility_mode = "not_applicable"
+    if required_compatibility:
+        compatibility_mode = "legacy_fallback_active" if bool(compatibility.get("legacy_fallback_active")) else "fallback_cache"
+    transport_state = transport if isinstance(transport, dict) else {}
+    transport_owner = str(transport_state.get("owner") or "").strip() or "runtime"
+    planned_owner = str(transport_state.get("planned_owner") or "").strip() or None
+    selector_status = "ready" if current_scenario else "unset"
+    summary = (
+        "ui.current_scenario stays shared, effective desktop/state branches are runtime-materialized, "
+        f"compatibility caches run as {compatibility_mode}, and yws transport stays {transport_owner}-owned"
+    )
+    if planned_owner and planned_owner != transport_owner:
+        summary += f" until {planned_owner} handoff is complete"
+    return {
+        "state": "explicit",
+        "summary": summary,
+        "selected_webspace_id": str(selected_webspace_id or "").strip() or None,
+        "selector": {
+            "path": "ui.current_scenario",
+            "owner": "shared",
+            "authority": "scenario_selection",
+            "source_of_truth": "live_yjs_selector",
+            "status": selector_status,
+            "current_scenario": current_scenario,
+            "home_scenario": home_scenario,
+        },
+        "effective_projection": {
+            "owner": "runtime",
+            "authority": "semantic_rebuild",
+            "source_of_truth": "scenario_projection_plus_overlays",
+            "ready": bool(materialization.get("ready")),
+            "readiness_state": str(materialization.get("readiness_state") or "").strip() or None,
+            "missing_branches": sorted(missing_effective),
+            "branch_total": len(effective_branches),
+            "branches": effective_branches,
+        },
+        "compatibility_caches": {
+            "owner": "runtime",
+            "mode": compatibility_mode,
+            "legacy_fallback_active": bool(compatibility.get("legacy_fallback_active")),
+            "runtime_removal_ready": bool(compatibility.get("runtime_removal_ready")),
+            "runtime_removal_blockers": list(compatibility.get("runtime_removal_blockers") or []),
+            "present_count": int(compatibility.get("present_count") or 0),
+            "required_count": int(compatibility.get("required_count") or 0),
+            "branch_total": len(compatibility_branches),
+            "branches": compatibility_branches,
+        },
+        "runtime_meta": {
+            "path": "registry.runtime_meta.effective_branch_fingerprints",
+            "owner": "runtime",
+            "source_of_truth": "semantic_rebuild",
+            "status": "tracked",
+            "purpose": "effective_branch_fingerprints",
+        },
+        "transport_session": {
+            "path": "yws.transport_session",
+            "owner": transport_owner,
+            "planned_owner": planned_owner,
+            "lifecycle_manager": transport_state.get("lifecycle_manager"),
+            "migration_phase": transport_state.get("migration_phase"),
+            "ownership_boundary": "transport_only",
+            "handoff_ready": bool(transport_state.get("handoff_ready")),
+            "handoff_blockers": list(transport_state.get("handoff_blockers") or []),
+        },
     }
 
 
@@ -4980,6 +5130,7 @@ def reliability_snapshot(
             "scope": "hub_local_only",
             "selected_webspace_id": str(webspace_id or "").strip() or None,
             "transport": {},
+            "ownership_boundaries": {},
             "action_overrides": {},
             "recovery_playbook": {},
             "recovery_guidance": {},

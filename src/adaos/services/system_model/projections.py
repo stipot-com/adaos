@@ -819,6 +819,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "scope": payload.get("scope"),
                 "assessment": assessment,
                 "transport": payload.get("transport"),
+                "ownership_boundaries": payload.get("ownership_boundaries"),
                 "update_guard": payload.get("update_guard"),
                 "recovery_guidance": payload.get("recovery_guidance"),
                 "recovery_playbook": payload.get("recovery_playbook"),
@@ -830,6 +831,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "selected_webspace_id": selected_webspace_id,
                 "selected_webspace": selected_webspace,
                 "transport_ownership": coerce_mapping(payload.get("transport")),
+                "ownership_boundaries": coerce_mapping(payload.get("ownership_boundaries")),
             }
         ),
         actions=_actions_from_yjs_overrides(coerce_mapping(payload.get("action_overrides")), webspace_id=selected_webspace_id),

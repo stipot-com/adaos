@@ -803,6 +803,7 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
 
     snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
     transport = snapshot["transport"]
+    ownership = snapshot["ownership_boundaries"]
 
     assert snapshot["available"] is True
     assert transport["owner"] == "runtime"
@@ -823,6 +824,16 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert snapshot["compaction_eligible_webspace_total"] == 1
     assert snapshot["replay_window_byte_total"] == 512
     assert snapshot["backup_fast_path_total"] == 1
+    assert ownership["state"] == "explicit"
+    assert ownership["selector"]["owner"] == "shared"
+    assert ownership["selector"]["status"] == "unset"
+    assert ownership["effective_projection"]["owner"] == "runtime"
+    assert ownership["effective_projection"]["ready"] is False
+    assert ownership["effective_projection"]["branch_total"] == 6
+    assert ownership["effective_projection"]["branches"][0]["status"] == "tracked"
+    assert ownership["compatibility_caches"]["mode"] == "not_applicable"
+    assert ownership["transport_session"]["owner"] == "runtime"
+    assert ownership["transport_session"]["planned_owner"] == "sidecar"
     assert snapshot["selected_webspace"]["command_trace"]["last_reload"]["fingerprint"] == "abc123def456"
     assert snapshot["selected_webspace"]["command_trace"]["last_reset"]["fingerprint"] == "rst123def456"
 
@@ -1209,6 +1220,27 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "last_reset_duplicate_recent": False,
                             "last_reset_fingerprint": "rst123def456",
                         },
+                        "ownership_boundaries": {
+                            "state": "explicit",
+                            "selector": {
+                                "owner": "shared",
+                                "current_scenario": "web_desktop",
+                                "home_scenario": "web_desktop",
+                            },
+                            "effective_projection": {
+                                "owner": "runtime",
+                                "ready": True,
+                                "readiness_state": "ready",
+                            },
+                            "compatibility_caches": {
+                                "owner": "runtime",
+                                "mode": "fallback_cache",
+                            },
+                            "transport_session": {
+                                "owner": "runtime",
+                                "planned_owner": "sidecar",
+                            },
+                        },
                     },
                     "media_runtime": {
                         "assessment": {"state": "nominal"},
@@ -1258,6 +1290,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "reloads=4/5 dup=3 resets=2/4 rdup=1" in result.output
     assert "sync_runtime.reload_last: client=http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301" in result.output
     assert "sync_runtime.reset_last: client=events_ws:127.0.0.1:54421" in result.output
+    assert "sync_runtime.boundaries: selector=shared:web_desktop effective=runtime:ready compat=runtime:fallback_cache transport=runtime->sidecar" in result.output
     assert "rooms=1 opens=2/3 single=2 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
     assert "media.update_guard: live=yes" in result.output

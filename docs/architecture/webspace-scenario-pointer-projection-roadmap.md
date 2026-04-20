@@ -20,6 +20,10 @@ phase-aware materialization.
 - Target implementation: `pointer + resolved projection`
 - Migration mode: phased, compatibility-first, with explicit readiness
   diagnostics for partially hydrated UI
+- Event Model dependency note: for `Operational Event Model Roadmap` Phase 0,
+  this track is materially aligned on webspace rebuild/materialization
+  ownership; the remaining blockers sit in Realtime Reliability rather than in
+  pointer/projection ownership
 
 ## Implementation Anchors
 
