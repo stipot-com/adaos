@@ -79,7 +79,7 @@ The intended order across all workstreams is:
 
 - [x] `phase0.comm_order_locked`: treat communication hardening as a prerequisite for this roadmap
 - [ ] `phase0.node_browser_ready`: in progress; Realtime Reliability now treats browser/member semantic channels and `Yjs as SyncChannel` as complete for the current scope, with explicit sync-contract plus selector/effective-branch diagnostics in runtime surfaces, but `/yws` transport ownership migration is still incomplete
-- [ ] `phase0.runtime_comm_ready`: in progress; Realtime Reliability still reports hub-root delivery guarantees, sidecar ownership expansion, and browser-safe supervisor/warm-switch hardening as unfinished communication work, so the runtime communication prerequisite is not fully closed yet
+- [ ] `phase0.runtime_comm_ready`: in progress; hub-root Class A hardening is now explicit and consumed in browser/page runtime diagnostics, but sidecar ownership expansion and browser-safe supervisor/warm-switch hardening still keep the runtime communication prerequisite open
 - [x] `phase0.webspace_runtime_baseline`: webspace rebuild/materialization ownership is aligned with the pointer/projection roadmap, and the browser runtime now consumes that baseline through lightweight diagnostics plus shared page-runtime adapters instead of bespoke component-only reads
 
 Current checkpoint as of 2026-04-20:
@@ -87,9 +87,11 @@ Current checkpoint as of 2026-04-20:
 - communication-first ordering is now explicitly locked in this roadmap and the companion projection roadmap
 - browser runtime consumers now treat `infrastate`, `infrascope`, and `subnet_env` as one operational-overlay class, observing root `data` updates consistently instead of drifting per branch
 - page runtime now exposes `runtime.sync`, `runtime.channels`, `runtime.materialization`, and `runtime.phase0.baseline` transforms so declarative surfaces can consume local communication/materialization prerequisites directly
+- page runtime now also exposes `runtime.reliability`, `runtime.supervisor`, and `runtime.phase0.communication` transforms, so declarative browser surfaces can consume hub-root hardening, sidecar handoff, and browser-safe supervisor state without re-implementing component-local probes
 - focused client tests cover the Phase 0 baseline for operational-overlay reads, observer placement, semantic communication snapshots, and runtime prerequisite snapshots
 - browser and hub runtime now expose an explicit SyncChannel contract for Yjs, so `phase0.node_browser_ready` is blocked only by `/yws` transport ownership migration rather than by missing sync semantics
 - Realtime Reliability runtime now exposes explicit Yjs ownership boundaries for `ui.current_scenario`, effective `ui/data/registry` branches, compatibility caches, and `yws` transport/session lifecycle, so Phase 0 blockers are no longer hidden behind implicit subtree semantics
+- browser header semantic diagnostics now surface `hub_root` Class A coverage, sidecar continuity, and current browser `/yws` handoff blocker, so remaining Phase 0 communication debt is visible in the same runtime surface that already carries sync-contract and transport-state evidence
 - webspace pointer/projection ownership is materially aligned, but the remaining Phase 0 blockers now sit in the subordinate Realtime Reliability track rather than in webspace runtime ownership
 - dependency reading rule for this roadmap: subordinate status wins over local convenience adapters, so Event Model Phase 0 stays open until Realtime Reliability closes the remaining communication work it still marks as in progress
 

@@ -22,6 +22,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - architecture documents for channel semantics, authority, hub-root protocol, and transport ownership are in place
 - runtime reliability model is represented in code and exposed through `GET /api/node/reliability`
 - `adaos node reliability` surfaces readiness, degraded matrix, and channel diagnostics
+- browser/page runtime now consumes read-only communication diagnostics through shared `runtime.reliability`, `runtime.supervisor`, and `runtime.phase0.communication` transforms instead of keeping sidecar/supervisor visibility inside one header-only component path
 - Infra State shows realtime summary and transport diagnostics through Yjs-backed UI
 - runtime now exposes canonical channel overview entries for `hub_root`, `hub_root_browser`, and `browser_hub_sync`
 - runtime now exposes `hub_root_transport_strategy` with current transport, candidate list, recent attempts, reconnect/failure history, and active hypothesis parameters
@@ -35,7 +36,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 
 ### In progress
 
-- hub-root readiness is observable, but delivery guarantees are not yet enforced by an explicit Class A protocol layer
+- hub-root delivery guarantees are explicit for the current `hub_root.*` flow inventory, but the broader communication track remains open because sidecar ownership expansion and browser-safe continuity hardening are still incomplete
 - route and root-control incident classes still need clearer separation
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar owns the current `hub_root` transport boundary and is supervisor-managed in managed deployments, but `/ws`, `/yws`, Yjs, and media transport are still outside sidecar scope
@@ -53,6 +54,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 - `browser/member semantic channels`: materially ready for current scope
 - `Yjs ownership boundaries`: now explicit in runtime diagnostics for selector, effective branches, compatibility caches, and transport/session lifecycle
 - `Yjs as SyncChannel`: complete for the current sync-channel scope; remaining browser-facing work now sits in `/yws` transport ownership migration rather than in the sync contract itself
+- `hub_root` Class A coverage: explicit in runtime diagnostics and now consumed by browser/page runtime communication snapshots instead of being visible only in CLI/control-plane tooling
 - `local supervisor browser-safe continuity`: materially improved, but still in progress
 - `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned
 
