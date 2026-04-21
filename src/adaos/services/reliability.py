@@ -4089,6 +4089,7 @@ def reliability_model_snapshot() -> dict[str, Any]:
 
 def sidecar_runtime_snapshot(
     *,
+    role: str | None = None,
     readiness_tree: dict[str, Any] | None = None,
     hub_root_protocol: dict[str, Any] | None = None,
     transport_strategy: dict[str, Any] | None = None,
@@ -4105,7 +4106,10 @@ def sidecar_runtime_snapshot(
     realtime_sidecar_local_url = _realtime_sidecar_mod.realtime_sidecar_local_url
     route_tunnel_contract_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_route_tunnel_contract", None)
 
-    enabled = bool(realtime_sidecar_enabled())
+    try:
+        enabled = bool(realtime_sidecar_enabled(role=role))
+    except TypeError:
+        enabled = bool(realtime_sidecar_enabled())
     diag_path = realtime_sidecar_diag_path()
     record = _read_last_jsonl_record(diag_path)
     now_ts = time.time()
@@ -4118,11 +4122,13 @@ def sidecar_runtime_snapshot(
         "must_not_own": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("must_not_own") or []),
     }
     lifecycle_manager = _sidecar_lifecycle_manager()
-    route_tunnel_contract = (
-        route_tunnel_contract_fn()
-        if callable(route_tunnel_contract_fn)
-        else {}
-    )
+    if callable(route_tunnel_contract_fn):
+        try:
+            route_tunnel_contract = route_tunnel_contract_fn(role=role)
+        except TypeError:
+            route_tunnel_contract = route_tunnel_contract_fn()
+    else:
+        route_tunnel_contract = {}
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -4142,7 +4148,10 @@ def sidecar_runtime_snapshot(
         "selected_server": transport_strategy.get("selected_server"),
         "last_transport_event": transport_strategy.get("last_event"),
     }
-    process_snapshot = realtime_sidecar_listener_snapshot()
+    try:
+        process_snapshot = realtime_sidecar_listener_snapshot(role=role)
+    except TypeError:
+        process_snapshot = realtime_sidecar_listener_snapshot()
     if not route_tunnel_contract and isinstance(process_snapshot.get("route_tunnel_contract"), dict):
         route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
     if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
@@ -5705,6 +5714,7 @@ def reliability_snapshot(
         },
     )
     sidecar_runtime = sidecar_runtime_snapshot(
+        role=role,
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,

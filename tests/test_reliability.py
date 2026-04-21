@@ -553,7 +553,7 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
         "adaos.services.realtime_sidecar",
         SimpleNamespace(
             realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
-            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_enabled=lambda **kwargs: True,
             realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 42},
             realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
             realtime_sidecar_route_tunnel_contract=lambda: {
@@ -579,6 +579,7 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     )
 
     snapshot = sidecar_runtime_snapshot(
+        role="hub",
         readiness_tree={},
         hub_root_protocol={},
         transport_strategy={},
@@ -626,7 +627,7 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
         "adaos.services.realtime_sidecar",
         SimpleNamespace(
             realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
-            realtime_sidecar_enabled=lambda: True,
+            realtime_sidecar_enabled=lambda **kwargs: True,
             realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 77},
             realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
             realtime_sidecar_route_tunnel_contract=lambda: {
@@ -654,6 +655,7 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
     )
 
     snapshot = sidecar_runtime_snapshot(
+        role="hub",
         readiness_tree={},
         hub_root_protocol={},
         transport_strategy={},

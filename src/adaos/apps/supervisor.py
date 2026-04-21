@@ -1424,7 +1424,7 @@ class SupervisorManager:
         return {
             "enabled": bool(realtime_sidecar_enabled(role=role)),
             "role": role,
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=role),
         }
 
     def _runtime_request_json(
@@ -2770,7 +2770,7 @@ class SupervisorManager:
         return {
             "ok": True,
             "runtime": self._runtime_sidecar_runtime_payload(),
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role()),
         }
 
     async def restart_sidecar(self, *, reconnect_hub_root: bool = False) -> dict[str, Any]:
@@ -2797,7 +2797,7 @@ class SupervisorManager:
             "restart": restart_result,
             "reconnect": reconnect_result,
             "runtime": self._runtime_sidecar_runtime_payload(),
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc),
+            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role()),
         }
 
     async def start_candidate_runtime(
@@ -2974,7 +2974,10 @@ class SupervisorManager:
                 self._sidecar_proc = None
                 self._persist_runtime_state()
             if realtime_sidecar_enabled(role=self._sidecar_role()) and not self._stopping:
-                sidecar_snapshot = realtime_sidecar_listener_snapshot(self._sidecar_proc)
+                sidecar_snapshot = realtime_sidecar_listener_snapshot(
+                    self._sidecar_proc,
+                    role=self._sidecar_role(),
+                )
                 if self._sidecar_proc is None and not bool(sidecar_snapshot.get("listener_running")):
                     try:
                         async with self._lock:

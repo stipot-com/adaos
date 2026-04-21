@@ -15,7 +15,7 @@ Fix AdaOS reliability from the top down:
 This ordering is deliberate.
 The project must not start with sidecar or transport adapters as if they alone solved reliability.
 
-## Current status: 2026-04-20
+## Current status: 2026-04-21
 
 ### Done
 
@@ -30,6 +30,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - runtime now exposes canonical channel overview entries for `hub_root`, `hub_root_browser`, and `browser_hub_sync`
 - runtime now exposes `hub_root_transport_strategy` with current transport, candidate list, recent attempts, reconnect/failure history, and active hypothesis parameters
 - CLI and Infra State now surface the current hub-root transport strategy instead of only the last readiness bit
+- hub runtimes now default to `hub_root` sidecar transport unless explicitly opted out, so sidecar adoption is the normal path for current transport scope rather than an opt-in experiment
 - detailed channel trace is no longer a default console behavior; summary/incident output remains visible while deep console trace is explicit opt-in
 - channel stability is now assessed from incidents and transport churn, not only from the last connected snapshot
 - Yjs runtime diagnostics now expose explicit ownership boundaries for `ui.current_scenario`, effective `ui/data/registry` branches, compatibility caches, and `yws` transport/session lifecycle

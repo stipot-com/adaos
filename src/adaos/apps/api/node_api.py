@@ -902,9 +902,13 @@ async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]
 async def sidecar_status(request: Request) -> dict[str, Any]:
     if _supervisor_enabled():
         return await _proxy_supervisor_json(method="GET", path="/api/supervisor/sidecar/status", timeout=3.0)
+    conf = load_config()
     reliability = current_reliability_payload()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
-    process = realtime_sidecar_listener_snapshot(getattr(request.app.state, "realtime_sidecar_proc", None))
+    process = realtime_sidecar_listener_snapshot(
+        getattr(request.app.state, "realtime_sidecar_proc", None),
+        role=conf.role,
+    )
     return {
         "ok": True,
         "runtime": runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {},
@@ -935,7 +939,7 @@ async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> d
         "restart": restart_result,
         "reconnect": reconnect_result,
         "runtime": runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {},
-        "process": realtime_sidecar_listener_snapshot(new_proc),
+        "process": realtime_sidecar_listener_snapshot(new_proc, role=conf.role),
     }
 
 

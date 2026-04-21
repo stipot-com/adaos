@@ -69,12 +69,13 @@ class _FakeTransport:
         return None
 
 
-def test_realtime_sidecar_enabled_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_realtime_sidecar_enabled_defaults_to_hub_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_ENABLE", raising=False)
     monkeypatch.delenv("HUB_REALTIME_ENABLE", raising=False)
 
-    assert realtime_sidecar_enabled(role="hub", os_name="nt") is False
-    assert realtime_sidecar_enabled(role="hub", os_name="posix") is False
+    assert realtime_sidecar_enabled(role="hub", os_name="nt") is True
+    assert realtime_sidecar_enabled(role="hub", os_name="posix") is True
+    assert realtime_sidecar_enabled(role="member", os_name="nt") is False
     assert realtime_sidecar_enabled(role="root", os_name="nt") is False
 
 
@@ -82,6 +83,12 @@ def test_realtime_sidecar_enabled_respects_explicit_env(monkeypatch: pytest.Monk
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
 
     assert realtime_sidecar_enabled(role="hub", os_name="nt") is True
+
+
+def test_realtime_sidecar_enabled_allows_explicit_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+
+    assert realtime_sidecar_enabled(role="hub", os_name="nt") is False
 
 
 def test_realtime_sidecar_local_url_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
