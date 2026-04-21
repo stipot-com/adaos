@@ -332,6 +332,67 @@ def test_handle_rtc_offer_replaces_disconnected_peer(monkeypatch) -> None:
     assert new_peer.emitted_reasons == ["offer.accepted"]
 
 
+def test_handle_rtc_offer_continues_when_existing_close_hangs(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+    monkeypatch.setattr(peer_mod, "_REPLACE_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    class HangingPeer:
+        def __init__(self) -> None:
+            self.pc = SimpleNamespace(connectionState="failed")
+            self.close_called = False
+
+        async def close(self) -> None:
+            self.close_called = True
+            await asyncio.sleep(3600)
+
+        def _connection_state(self) -> str:
+            return "failed"
+
+        def is_reusable_for_offer(self) -> bool:
+            return False
+
+    class NewPeer:
+        def __init__(self, device_id: str, webspace_id: str, send_ice_cb) -> None:
+            self.device_id = device_id
+            self.webspace_id = webspace_id
+            self._send_ice = send_ice_cb
+            self.pc = SimpleNamespace(connectionState="new")
+            self.handled_offers: list[tuple[str, str]] = []
+            self.emitted_reasons: list[str] = []
+
+        async def handle_offer(self, sdp: str, type: str = "offer") -> dict[str, str]:
+            self.handled_offers.append((sdp, type))
+            return {"sdp": "fresh-answer", "type": "answer"}
+
+        def _emit_state_event(self, *, reason: str) -> None:
+            self.emitted_reasons.append(reason)
+
+    monkeypatch.setattr(peer_mod, "HubPeer", NewPeer)
+    hanging = HangingPeer()
+    peer_mod._peers.clear()
+    peer_mod._peers["browser-timeout"] = hanging
+
+    async def send_ice_cb(candidate: dict[str, object]) -> None:
+        return None
+
+    answer = asyncio.run(
+        peer_mod.handle_rtc_offer(
+            offer_sdp="offer-sdp",
+            offer_type="offer",
+            device_id="browser-timeout",
+            webspace_id="desk",
+            send_ice_cb=send_ice_cb,
+        )
+    )
+
+    new_peer = peer_mod._peers["browser-timeout"]
+    assert hanging.close_called is True
+    assert isinstance(new_peer, NewPeer)
+    assert answer == {"sdp": "fresh-answer", "type": "answer"}
+    assert new_peer.handled_offers == [("offer-sdp", "offer")]
+    assert new_peer.emitted_reasons == ["offer.accepted"]
+
+
 def test_close_peers_for_webspace_closes_matching_peers(monkeypatch) -> None:
     peer_mod = _load_peer_module(monkeypatch)
 
