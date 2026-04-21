@@ -447,6 +447,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"enabled={bool(sidecar.get('enabled'))} "
             f"enablement={enablement_label} "
             f"status={sidecar.get('status') or 'unknown'} "
+            f"session={sidecar.get('session_state') or '-'} "
             f"owner={sidecar.get('transport_owner') or '-'} "
             f"manager={sidecar.get('lifecycle_manager') or '-'} "
             f"transport={sidecar.get('local_listener_state') or ('ready' if sidecar.get('transport_ready') else 'down')}/"
@@ -465,6 +466,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"rev={(str(code.get('active_fingerprint') or '-')[:12])} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if sidecar.get("status_reason"):
+            typer.echo(f"sidecar.reason: {sidecar.get('status_reason')}")
         if process.get("last_restart_reason"):
             typer.echo(f"sidecar.restart_reason: {process.get('last_restart_reason')}")
         sync = process.get("sync") if isinstance(process.get("sync"), dict) else {}

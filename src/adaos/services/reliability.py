@@ -4155,6 +4155,11 @@ def sidecar_runtime_snapshot(
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
+    session_state = "disabled"
+    status_reason = str(enablement.get("reason") or "").strip() or summary
+    diag_fresh = False
+    last_connect_error_class = None
+    last_connect_error_message = None
     diag_age_s = None
     local_listener_state = "disabled" if not enabled else "unknown"
     remote_session_state = "disabled" if not enabled else "unknown"
@@ -4208,36 +4213,61 @@ def sidecar_runtime_snapshot(
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
+        session_state = "starting"
+        if bool(process_snapshot.get("listener_running")) or bool(process_snapshot.get("managed_alive")):
+            status_reason = "sidecar process is running but has not emitted diagnostics yet"
+        else:
+            status_reason = "sidecar is enabled but has not started emitting diagnostics yet"
     if isinstance(record, dict):
         last_error = str(record.get("last_error") or "").strip()
+        last_connect_error_message = str(record.get("last_remote_connect_error") or last_error or "").strip() or None
+        if last_connect_error_message:
+            last_connect_error_class = last_connect_error_message.split(":", 1)[0].strip() or None
         remote_connected_ago_s = record.get("remote_connected_ago_s")
         local_connected_ago_s = record.get("local_connected_ago_s")
         ts = record.get("ts")
         if isinstance(ts, (int, float)):
             diag_age_s = round(max(0.0, now_ts - float(ts)), 3)
-        fresh_diag = not isinstance(diag_age_s, (int, float)) or float(diag_age_s) <= 10.0
-        local_listener_state = "ready" if fresh_diag else "stale"
-        if isinstance(remote_connected_ago_s, (int, float)) and fresh_diag and not last_error:
+        diag_fresh = not isinstance(diag_age_s, (int, float)) or float(diag_age_s) <= 10.0
+        local_listener_state = "ready" if diag_fresh else "stale"
+        if isinstance(remote_connected_ago_s, (int, float)) and diag_fresh and not last_error:
             remote_session_state = "ready"
-        elif isinstance(remote_connected_ago_s, (int, float)) and not fresh_diag:
+        elif isinstance(remote_connected_ago_s, (int, float)) and not diag_fresh:
             remote_session_state = "stale"
         else:
             remote_session_state = "down"
         if last_error:
             status = "degraded"
             summary = f"sidecar reports transport error: {last_error}"
-        elif not fresh_diag:
+            session_state = "remote_connect_failed"
+            status_reason = last_error
+        elif not diag_fresh:
             status = "degraded"
             summary = "sidecar diagnostics are stale"
+            session_state = "stale_diag"
+            status_reason = "sidecar diagnostics are stale"
         elif isinstance(remote_connected_ago_s, (int, float)):
             status = "ready"
             summary = "sidecar remote session is connected"
+            session_state = "remote_ready"
+            status_reason = "remote session is connected"
         elif isinstance(local_connected_ago_s, (int, float)):
             status = "degraded"
             summary = "sidecar local listener is active but remote session is not connected"
+            session_state = "local_only"
+            status_reason = "local listener is active but remote session is not connected"
         else:
             status = "unknown" if enabled else "disabled"
             summary = "sidecar diagnostics do not show an active session"
+            if int(record.get("remote_connect_fail_total") or 0) > 0 and last_connect_error_message:
+                session_state = "remote_connect_failed"
+                status_reason = last_connect_error_message
+            elif bool(record.get("active_session")) or int(record.get("session_open_total") or 0) > int(record.get("session_close_total") or 0):
+                session_state = "remote_connecting"
+                status_reason = "sidecar session is opening but no remote readiness has been observed yet"
+            else:
+                session_state = "starting"
+                status_reason = "sidecar diagnostics do not show an active session yet"
         transport_ready = bool(status == "ready")
         control_authority = hub_root_protocol.get("control_authority") if isinstance(hub_root_protocol.get("control_authority"), dict) else {}
         control_authority_state = str(control_authority.get("state") or "").strip().lower()
@@ -4266,6 +4296,8 @@ def sidecar_runtime_snapshot(
                 "last_remote_connect_error": record.get("last_remote_connect_error"),
                 "last_remote_connect_error_ago_s": record.get("last_remote_connect_error_ago_s"),
                 "last_remote_disconnect_ago_s": record.get("last_remote_disconnect_ago_s"),
+                "last_connect_error_class": last_connect_error_class,
+                "last_connect_error_message": last_connect_error_message,
             }
         )
         return {
@@ -4283,9 +4315,12 @@ def sidecar_runtime_snapshot(
             "route_tunnel_contract": route_tunnel_contract,
             "status": status,
             "summary": summary,
+            "session_state": session_state,
+            "status_reason": status_reason,
             "local_url": realtime_sidecar_local_url(),
             "diag_path": str(diag_path),
             "diag_age_s": diag_age_s,
+            "diag_fresh": diag_fresh,
             "local_listener_state": local_listener_state,
             "remote_session_state": remote_session_state,
             "transport_ready": transport_ready,
@@ -4313,9 +4348,12 @@ def sidecar_runtime_snapshot(
         "route_tunnel_contract": route_tunnel_contract,
         "status": status,
         "summary": summary,
+        "session_state": session_state,
+        "status_reason": status_reason,
         "local_url": realtime_sidecar_local_url(),
         "diag_path": str(diag_path),
         "diag_age_s": None,
+        "diag_fresh": diag_fresh,
         "local_listener_state": local_listener_state,
         "remote_session_state": remote_session_state,
         "transport_ready": transport_ready,

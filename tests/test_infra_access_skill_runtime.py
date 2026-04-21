@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import time
 import sys
 import types
 
@@ -177,6 +178,38 @@ def test_infra_access_skill_issue_codex_connection(monkeypatch) -> None:
     assert payload["mcp_http_url"] == "https://root.test/v1/root/mcp"
     assert "--apply-codex" in payload["codex_prepare_command"]
     assert module._LAST_ISSUED["payload"]["access_token"] == "secret-token"
+
+
+def test_infra_access_skill_cached_snapshot_keeps_fresh_issued_connection(monkeypatch) -> None:
+    module = _load_module()
+
+    module._CACHE["ts"] = time.time()
+    module._CACHE["snapshot"] = {
+        "ok": True,
+        "generated_at": "2026-04-21T12:42:00+00:00",
+        "target_id": "hub:test-subnet",
+        "root_url": "https://root.test",
+        "summary_items": [],
+        "events": [],
+    }
+    module._LAST_ISSUED.clear()
+    module._LAST_ISSUED["payload"] = {
+        "session_id": "sess-new",
+        "access_token": "secret-token",
+        "expires_at": "2026-04-21T20:42:00+00:00",
+        "capability_profile": "ProfileOpsRead",
+        "issued_at": "2026-04-21T12:42:30+00:00",
+        "target_id": "hub:test-subnet",
+        "root_url": "https://root.test",
+        "mcp_http_url": "https://root.test/v1/root/mcp",
+    }
+    monkeypatch.setattr(module, "_project", lambda snapshot, webspace_id=None: None)
+
+    snapshot = module.get_snapshot(webspace_id="default")
+
+    assert snapshot["issued_connection"]["session_id"] == "sess-new"
+    assert snapshot["issued_connection"]["access_token"] == "secret-token"
+    assert snapshot["events"][0]["id"] == "issued:sess-new"
 
 
 def test_infra_access_skill_projects_fallback_snapshot(monkeypatch) -> None:
