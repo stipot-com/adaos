@@ -789,6 +789,19 @@ def _iter_initial_ws_event_messages(topics: set[str]) -> list[dict[str, Any]]:
             )
         except Exception:
             _ylog.debug("failed to snapshot core.update.status for ws subscriber", exc_info=True)
+    if any(_ws_event_topic_matches(topic, "supervisor.update.status.raw") for topic in topics):
+        try:
+            from adaos.services.core_update import read_public_update_status as _read_public_update_status
+
+            messages.append(
+                _build_ws_event_message(
+                    "supervisor.update.status.raw",
+                    _read_public_update_status(),
+                    source="supervisor.update.status.raw",
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to snapshot supervisor.update.status.raw for ws subscriber", exc_info=True)
     return messages
 
 

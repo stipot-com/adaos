@@ -234,6 +234,7 @@ Current MVP coverage now includes slot-first validation, explicit root-promotion
 That MVP now also includes a first live-media continuity gate: supervisor consults runtime reliability before restart/update, defers transitions that would violate the declared continuity contract, and keeps that reason visible through planned update state.
 The shared reliability/runtime surfaces now also carry that transition state directly through `supervisor_runtime`, and the routed-browser `/ws` path now surfaces supervisor-aware active-runtime base selection through the same checkpoint family, so default browser, routed browser, CLI, and canonical control-plane consumers no longer need separate heuristics to see transition mode, candidate runtime, or routed continuity evidence.
 The remaining supervisor gap is no longer the existence or visibility of fast cutover itself but the last-mile hardening around it: smoother root/browser signaling during warm-switch authority handoff so the shell is not reduced to generic reconnect churn, plus more soak/recovery coverage for dual-runtime registration, candidate cleanup, and constrained-memory fallback.
+Browser delivery now also separates the supervisor-owned raw transition surface from the wider semantic control-plane event: `supervisor.update.status.raw` carries the browser-safe `status/attempt/runtime` payload, while `core.update.status` remains the normalized compatibility event for the rest of the control plane.
 
 ### Focus
 

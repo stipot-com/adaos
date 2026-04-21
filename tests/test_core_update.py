@@ -104,8 +104,10 @@ def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr("adaos.services.core_update.get_ctx", lambda: _Ctx())
     write_status({"state": "countdown", "message": "scheduled"})
-    assert published
-    assert getattr(published[0], "type", "") == "core.update.status"
+    assert [getattr(evt, "type", "") for evt in published] == [
+        "core.update.status",
+        "supervisor.update.status.raw",
+    ]
 
 
 def test_execute_pending_update_activates_target_slot(monkeypatch, tmp_path) -> None:

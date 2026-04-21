@@ -170,6 +170,19 @@ def _iter_initial_event_channel_messages(topics: set[str]) -> list[dict[str, Any
             )
         except Exception:
             _log.debug("failed to snapshot core.update.status for WebRTC event subscriber", exc_info=True)
+    if any(_ws_event_topic_matches(topic, "supervisor.update.status.raw") for topic in topics):
+        try:
+            from adaos.services.core_update import read_public_update_status as _read_public_update_status
+
+            messages.append(
+                _build_event_channel_message(
+                    "supervisor.update.status.raw",
+                    _read_public_update_status(),
+                    source="supervisor.update.status.raw",
+                )
+            )
+        except Exception:
+            _log.debug("failed to snapshot supervisor.update.status.raw for WebRTC event subscriber", exc_info=True)
     return messages
 
 
