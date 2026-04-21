@@ -110,6 +110,18 @@ def test_reconcile_update_status_completes_attempt_on_terminal_status(monkeypatc
     assert attempt["last_status"]["state"] == "succeeded"
 
 
+def test_sidecar_role_falls_back_to_load_config_when_ctx_config_is_missing(monkeypatch) -> None:
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token=None)
+
+    class _Ctx:
+        config = None
+
+    monkeypatch.setattr(supervisor, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(supervisor, "load_config", lambda ctx=None: type("Conf", (), {"role": "hub"})())
+
+    assert manager._sidecar_role() == "hub"
+
+
 def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)

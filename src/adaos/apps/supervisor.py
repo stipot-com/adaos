@@ -1751,9 +1751,27 @@ class SupervisorManager:
 
     def _sidecar_role(self) -> str | None:
         try:
-            return str(get_ctx().config.role or "").strip().lower() or None
+            ctx = get_ctx()
         except Exception:
-            return None
+            ctx = None
+        if ctx is not None:
+            with contextlib.suppress(Exception):
+                role = str(getattr(ctx, "config", None).role or "").strip().lower()
+                if role:
+                    return role
+            with contextlib.suppress(Exception):
+                conf = load_config(ctx=ctx)
+                role = str(getattr(conf, "role", "") or "").strip().lower()
+                if role:
+                    return role
+        try:
+            conf = load_config()
+            role = str(getattr(conf, "role", "") or "").strip().lower()
+            if role:
+                return role
+        except Exception:
+            pass
+        return None
 
     def _sidecar_status_payload(self) -> dict[str, Any]:
         role = self._sidecar_role()
