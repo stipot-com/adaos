@@ -1366,3 +1366,49 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
     assert "runtime_restarting_under_supervisor: yes" in result.output
     assert "supervisor.attempt: awaiting_root_restart" in result.output
     assert "supervisor.memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output
+
+
+def test_node_reliability_cli_falls_back_to_supervisor_runtime_candidate(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+    monkeypatch.setattr(node_cli, "_resolve_node_control_base_url", lambda explicit=None: "http://127.0.0.1:8778")
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_get_json(**kwargs):
+        control = str(kwargs.get("control") or "")
+        path = str(kwargs.get("path") or "")
+        calls.append((control, path))
+        if path == "/api/supervisor/public/update-status":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "runtime": {
+                        "runtime_url": "http://127.0.0.1:8777",
+                        "candidate_runtime_url": "http://127.0.0.1:8778",
+                    },
+                },
+            )
+        if path == "/api/node/reliability" and control == "http://127.0.0.1:8778":
+            return None, {"error": "connection_error", "detail": "connection refused"}
+        if path == "/api/node/reliability" and control == "http://127.0.0.1:8777":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "node": {"node_id": "node-1", "role": "hub", "ready": True, "node_state": "ready"},
+                    "runtime": {},
+                },
+            )
+        return 404, {"detail": "unexpected"}
+
+    monkeypatch.setattr(node_cli, "_control_get_json", _fake_get_json)
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert ("http://127.0.0.1:8778", "/api/node/reliability") in calls
+    assert ("http://127.0.0.1:8776", "/api/supervisor/public/update-status") in calls
+    assert ("http://127.0.0.1:8777", "/api/node/reliability") in calls
+    assert "reliability.control: requested=http://127.0.0.1:8778 selected=http://127.0.0.1:8777 reason=supervisor_runtime_fallback" in result.output
