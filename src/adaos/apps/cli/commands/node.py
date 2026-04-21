@@ -465,6 +465,14 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"rev={(str(code.get('active_fingerprint') or '-')[:12])} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if process.get("last_restart_reason"):
+            typer.echo(f"sidecar.restart_reason: {process.get('last_restart_reason')}")
+        sync = process.get("sync") if isinstance(process.get("sync"), dict) else {}
+        if sync.get("last_sync_changed_paths"):
+            typer.echo(
+                "sidecar.sync: "
+                + ",".join(str(item) for item in (sync.get("last_sync_changed_paths") or []) if item)
+            )
         if progress:
             typer.echo(
                 "sidecar.progress: "

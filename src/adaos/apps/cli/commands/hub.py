@@ -1014,10 +1014,18 @@ def hub_root_sidecar_status(
         f"/{health.get('consecutive_failures') if health.get('consecutive_failures') is not None else '-'} "
         f"rev={(str(code.get('active_fingerprint') or '-')[:12])}"
     )
+    if process.get("last_restart_reason"):
+        typer.echo(f"restart_reason={process.get('last_restart_reason')}")
     if process.get("launch_cwd"):
         typer.echo(f"launch_cwd={process.get('launch_cwd')}")
     if health.get("last_probe_error"):
         typer.echo(f"health_error={health.get('last_probe_error')}")
+    sync = process.get("sync") if isinstance(process.get("sync"), dict) else {}
+    if sync.get("last_sync_changed_paths"):
+        typer.echo(
+            "sync_changed_paths="
+            + ",".join(str(item) for item in (sync.get("last_sync_changed_paths") or []) if item)
+        )
     if progress:
         typer.echo(
             f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "

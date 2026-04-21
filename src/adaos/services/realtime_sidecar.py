@@ -653,7 +653,11 @@ async def wait_realtime_sidecar_ready(*, host: str, port: int, timeout_s: float 
     return False
 
 
-async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subprocess.Popen[Any] | None:
+async def start_realtime_sidecar_subprocess(
+    *,
+    role: str | None = None,
+    repo_root: str | Path | None = None,
+) -> subprocess.Popen[Any] | None:
     if not realtime_sidecar_enabled(role=role):
         return None
     if not resolve_realtime_remote_candidates():
@@ -673,10 +677,18 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     env.setdefault("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "1"
     env.setdefault("ADAOS_REALTIME_WIN_LOOP", "proactor")
-    repo_root = _realtime_sidecar_repo_root()
-    launch_cwd = repo_root if isinstance(repo_root, Path) and repo_root.exists() else Path(os.getcwd()).resolve()
-    if repo_root is not None:
-        env["ADAOS_ROOT_REPO_ROOT"] = str(repo_root)
+    resolved_repo_root = (
+        Path(repo_root).expanduser().resolve()
+        if str(repo_root or "").strip()
+        else _realtime_sidecar_repo_root()
+    )
+    launch_cwd = (
+        resolved_repo_root
+        if isinstance(resolved_repo_root, Path) and resolved_repo_root.exists()
+        else Path(os.getcwd()).resolve()
+    )
+    if resolved_repo_root is not None:
+        env["ADAOS_ROOT_REPO_ROOT"] = str(resolved_repo_root)
     log_path = realtime_sidecar_log_path()
     stdout_handle = log_path.open("ab")
     args = [
@@ -784,6 +796,7 @@ async def restart_realtime_sidecar_subprocess(
     *,
     proc: subprocess.Popen[Any] | None,
     role: str | None = None,
+    repo_root: str | Path | None = None,
 ) -> tuple[subprocess.Popen[Any] | None, dict[str, Any]]:
     before = realtime_sidecar_listener_snapshot(proc, role=role)
     if not realtime_sidecar_enabled(role=role):
@@ -796,7 +809,7 @@ async def restart_realtime_sidecar_subprocess(
             "after": before,
         }
     await stop_realtime_sidecar_subprocess(proc)
-    new_proc = await start_realtime_sidecar_subprocess(role=role)
+    new_proc = await start_realtime_sidecar_subprocess(role=role, repo_root=repo_root)
     after = realtime_sidecar_listener_snapshot(new_proc, role=role)
     return new_proc, {
         "ok": True,
