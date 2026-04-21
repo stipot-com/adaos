@@ -562,6 +562,11 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                                 },
                                 "browser_safe_supervisor_continuity": {
                                     "state": "in_progress",
+                                    "routed_browser_proxy": {
+                                        "state": "ready",
+                                        "source": "supervisor_public_status",
+                                        "selected_ws_base": "ws://127.0.0.1:8777",
+                                    },
                                 },
                             },
                         },
@@ -736,6 +741,10 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert (
         projection["subject"]["runtime"]["event_model_phase0_communication"]["tasks"]["phase0.runtime_comm_ready"]["status"]
         == "in_progress"
+    )
+    assert (
+        projection["subject"]["runtime"]["event_model_phase0_communication"]["tasks"]["phase0.runtime_comm_ready"]["evidence"]["browser_safe_supervisor_continuity"]["routed_browser_proxy"]["state"]
+        == "ready"
     )
 
     objects = {item["id"]: item for item in projection["objects"]}

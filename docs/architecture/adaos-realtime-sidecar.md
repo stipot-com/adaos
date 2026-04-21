@@ -145,7 +145,9 @@ Success criteria:
 
 ## Operational Notes
 
-- Sidecar mode is disabled by default and is enabled explicitly with `ADAOS_REALTIME_ENABLE=1` or `HUB_REALTIME_ENABLE=1`.
+- Hub runtimes now default to `sidecar on` for the current `hub_root` transport scope.
+- `ADAOS_REALTIME_ENABLE=0` or `HUB_REALTIME_ENABLE=0` explicitly opts out and keeps direct runtime-owned hub-root transport.
+- Non-hub roles still stay `sidecar off` by default unless enabled explicitly.
 - Local endpoint defaults to `nats://127.0.0.1:7422`.
 - Remote candidate selection still uses existing node/root NATS configuration.
 - Managed process topology prefers `systemd -> adaos-supervisor -> {adaos-runtime, adaos-realtime}`.

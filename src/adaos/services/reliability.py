@@ -4089,6 +4089,7 @@ def reliability_model_snapshot() -> dict[str, Any]:
 
 def sidecar_runtime_snapshot(
     *,
+    role: str | None = None,
     readiness_tree: dict[str, Any] | None = None,
     hub_root_protocol: dict[str, Any] | None = None,
     transport_strategy: dict[str, Any] | None = None,
@@ -4105,7 +4106,10 @@ def sidecar_runtime_snapshot(
     realtime_sidecar_local_url = _realtime_sidecar_mod.realtime_sidecar_local_url
     route_tunnel_contract_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_route_tunnel_contract", None)
 
-    enabled = bool(realtime_sidecar_enabled())
+    try:
+        enabled = bool(realtime_sidecar_enabled(role=role))
+    except TypeError:
+        enabled = bool(realtime_sidecar_enabled())
     diag_path = realtime_sidecar_diag_path()
     record = _read_last_jsonl_record(diag_path)
     now_ts = time.time()
@@ -4118,11 +4122,13 @@ def sidecar_runtime_snapshot(
         "must_not_own": list((AUTHORITY_BOUNDARIES.get("sidecar") or {}).get("must_not_own") or []),
     }
     lifecycle_manager = _sidecar_lifecycle_manager()
-    route_tunnel_contract = (
-        route_tunnel_contract_fn()
-        if callable(route_tunnel_contract_fn)
-        else {}
-    )
+    if callable(route_tunnel_contract_fn):
+        try:
+            route_tunnel_contract = route_tunnel_contract_fn(role=role)
+        except TypeError:
+            route_tunnel_contract = route_tunnel_contract_fn()
+    else:
+        route_tunnel_contract = {}
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
@@ -4142,7 +4148,10 @@ def sidecar_runtime_snapshot(
         "selected_server": transport_strategy.get("selected_server"),
         "last_transport_event": transport_strategy.get("last_event"),
     }
-    process_snapshot = realtime_sidecar_listener_snapshot()
+    try:
+        process_snapshot = realtime_sidecar_listener_snapshot(role=role)
+    except TypeError:
+        process_snapshot = realtime_sidecar_listener_snapshot()
     if not route_tunnel_contract and isinstance(process_snapshot.get("route_tunnel_contract"), dict):
         route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
     if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
@@ -4832,6 +4841,83 @@ def _supervisor_browser_safe_surface(*, payload: dict[str, Any] | None) -> dict[
     }
 
 
+def _ws_base_from_http_base(value: str | None) -> str | None:
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return None
+    if raw.startswith("https://"):
+        return "wss://" + raw[len("https://"):]
+    if raw.startswith("http://"):
+        return "ws://" + raw[len("http://"):]
+    return raw
+
+
+def _routed_browser_supervisor_surface(
+    *,
+    protocol_payload: dict[str, Any] | None,
+    supervisor_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    protocol = protocol_payload if isinstance(protocol_payload, dict) else {}
+    supervisor = supervisor_payload if isinstance(supervisor_payload, dict) else {}
+    route_runtime = (
+        protocol.get("route_runtime")
+        if isinstance(protocol.get("route_runtime"), dict)
+        else {}
+    )
+    runtime = (
+        supervisor.get("runtime")
+        if isinstance(supervisor.get("runtime"), dict)
+        else {}
+    )
+    source = str(route_runtime.get("local_base_last_source") or "").strip() or None
+    selected_http_base = str(route_runtime.get("local_base_last_value") or "").strip().rstrip("/") or None
+    runtime_url = str(runtime.get("runtime_url") or "").strip().rstrip("/") or None
+    if not selected_http_base and runtime_url and _is_local_http_base(runtime_url):
+        selected_http_base = runtime_url
+        if not source:
+            source = "supervisor_runtime"
+    selected_ws_base = _ws_base_from_http_base(selected_http_base)
+    discovery_total = int(route_runtime.get("local_base_discovery_total") or 0)
+    cache_hit_total = int(route_runtime.get("local_base_cache_hit_total") or 0)
+    runtime_port_shortcut_total = int(route_runtime.get("local_base_runtime_port_shortcut_total") or 0)
+    error_total = int(route_runtime.get("local_base_error_total") or 0)
+    last_error = str(route_runtime.get("local_base_last_error") or "").strip() or None
+    last_open_base_total = int(route_runtime.get("last_open_base_total") or 0)
+    ready = bool(selected_http_base)
+    blockers: list[str] = []
+    if not ready:
+        blockers.append("route_runtime.active_runtime_base.unresolved")
+        if last_error:
+            blockers.append(last_error)
+    if source in {"supervisor_public_status", "cache", "supervisor_runtime"}:
+        selection_mode = "supervisor_active_runtime"
+    elif source == "runtime_port_env":
+        selection_mode = "runtime_port_env"
+    else:
+        selection_mode = None
+    return {
+        "state": "ready" if ready else "in_progress",
+        "ready": ready,
+        "summary": (
+            "root-routed browser proxy can resolve the active runtime base during supervisor-managed transitions"
+            if ready
+            else "root-routed browser proxy has not observed an active runtime base for supervisor-managed transitions yet"
+        ),
+        "source": source,
+        "selection_mode": selection_mode,
+        "selected_http_base": selected_http_base,
+        "selected_ws_base": selected_ws_base,
+        "active_runtime_visible": bool(runtime_url and _is_local_http_base(runtime_url)),
+        "discovery_total": discovery_total,
+        "cache_hit_total": cache_hit_total,
+        "runtime_port_shortcut_total": runtime_port_shortcut_total,
+        "error_total": error_total,
+        "last_error": last_error,
+        "last_open_base_total": last_open_base_total,
+        "blockers": blockers,
+    }
+
+
 def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 0.35) -> dict[str, Any]:
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         payload = {
@@ -4955,6 +5041,10 @@ def _event_model_phase0_communication_checkpoint(
         if isinstance(supervisor_payload.get("browser_safe_surface"), dict)
         else {}
     )
+    routed_browser_surface = _routed_browser_supervisor_surface(
+        protocol_payload=protocol_payload,
+        supervisor_payload=supervisor_payload,
+    )
     sidecar_enabled = bool(sidecar_payload.get("enabled"))
     ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
     yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
@@ -5044,7 +5134,11 @@ def _event_model_phase0_communication_checkpoint(
     runtime_summary = (
         "hub-root Class A coverage, sidecar ownership expansion, and browser-safe supervisor continuity are ready"
         if runtime_status == "done"
-        else "hub-root Class A hardening is explicit, and browser-safe supervisor state now rides through shared runtime surfaces, but sidecar ownership expansion still keeps runtime communication prerequisites open"
+        else (
+            "hub-root Class A hardening is explicit, browser-safe supervisor state now rides through shared runtime surfaces, and routed browser proxy can follow the active runtime base, but sidecar ownership expansion still keeps runtime communication prerequisites open"
+            if bool(routed_browser_surface.get("ready"))
+            else "hub-root Class A hardening is explicit, and browser-safe supervisor state now rides through shared runtime surfaces, but sidecar ownership expansion still keeps runtime communication prerequisites open"
+        )
     )
 
     tasks = {
@@ -5104,7 +5198,7 @@ def _event_model_phase0_communication_checkpoint(
                 "browser_safe_supervisor_continuity": {
                     "state": str(supervisor_surface.get("state") or "").strip().lower() or ("ready" if supervisor_ready else "in_progress"),
                     "summary": (
-                        "browser-safe supervisor transition state is carried through the shared reliability runtime surface"
+                        "browser-safe supervisor transition state is carried through the shared reliability runtime surface, and routed browser proxy can resolve the active runtime base during warm-switch handoff"
                         if supervisor_ready
                         else "browser-safe supervisor and warm-switch continuity hardening still remains open across browser topologies"
                     ),
@@ -5116,6 +5210,7 @@ def _event_model_phase0_communication_checkpoint(
                     "transition_mode_visible": bool(supervisor_surface.get("transition_mode_visible")),
                     "candidate_runtime_visible": bool(supervisor_surface.get("candidate_runtime_visible")),
                     "warm_switch_visible": bool(supervisor_surface.get("warm_switch_visible")),
+                    "routed_browser_proxy": routed_browser_surface,
                     "blockers": list(supervisor_surface.get("blockers") or []),
                 },
                 "sidecar_progress": {
@@ -5619,6 +5714,7 @@ def reliability_snapshot(
         },
     )
     sidecar_runtime = sidecar_runtime_snapshot(
+        role=role,
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,

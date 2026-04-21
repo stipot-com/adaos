@@ -15,7 +15,7 @@ Fix AdaOS reliability from the top down:
 This ordering is deliberate.
 The project must not start with sidecar or transport adapters as if they alone solved reliability.
 
-## Current status: 2026-04-20
+## Current status: 2026-04-21
 
 ### Done
 
@@ -25,10 +25,12 @@ The project must not start with sidecar or transport adapters as if they alone s
 - browser/page runtime now consumes read-only communication diagnostics through shared `runtime.reliability`, `runtime.supervisor`, and `runtime.phase0.communication` transforms instead of keeping sidecar/supervisor visibility inside one header-only component path
 - node API, CLI, canonical control-plane reliability projection, and browser/page runtime now share one explicit `event_model_phase0_communication` checkpoint for the two still-open Event Model Phase 0 communication tasks
 - those same reliability surfaces now also share a bounded `supervisor_runtime` snapshot, so browser-safe transition mode, candidate runtime visibility, and warm-switch evidence are carried through one canonical runtime payload instead of being reconstructed separately per surface
+- those same reliability/checkpoint surfaces now also carry routed-browser active-runtime selection for root-routed `/ws`, so supervisor-aware browser continuity is explicit in node API, CLI, canonical control-plane projection, and browser diagnostics instead of living only inside bootstrap route-base selection
 - Infra State shows realtime summary and transport diagnostics through Yjs-backed UI
 - runtime now exposes canonical channel overview entries for `hub_root`, `hub_root_browser`, and `browser_hub_sync`
 - runtime now exposes `hub_root_transport_strategy` with current transport, candidate list, recent attempts, reconnect/failure history, and active hypothesis parameters
 - CLI and Infra State now surface the current hub-root transport strategy instead of only the last readiness bit
+- hub runtimes now default to `hub_root` sidecar transport unless explicitly opted out, so sidecar adoption is the normal path for current transport scope rather than an opt-in experiment
 - detailed channel trace is no longer a default console behavior; summary/incident output remains visible while deep console trace is explicit opt-in
 - channel stability is now assessed from incidents and transport churn, not only from the last connected snapshot
 - Yjs runtime diagnostics now expose explicit ownership boundaries for `ui.current_scenario`, effective `ui/data/registry` branches, compatibility caches, and `yws` transport/session lifecycle
@@ -45,7 +47,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - runtime diagnostics now explicitly report that `/ws` and `/yws` remain runtime-owned with `planned_owner=sidecar`, so partial sidecar adoption is observable instead of implicit
 - media/runtime diagnostics now also expose a planned continuity contract for live member media: member update should defer, while future hub restart behavior is expected to preserve an independent sidecar path
 - supervisor now enforces the first conservative continuity gate on top of that model: live-media-sensitive update transitions are deferred and unsafe manual runtime restart is refused until sidecar continuity becomes a real capability instead of only a declared target
-- local process/update supervision now has a separate supervisor authority in managed deployments, and default browser/runtime surfaces now read one shared supervisor transition snapshot, but broader non-default browser topology coverage and warm-switch recovery hardening are still in progress
+- local process/update supervision now has a separate supervisor authority in managed deployments, and default plus root-routed browser surfaces now read one shared supervisor transition/routed-base story, but warm-switch recovery soak, cleanup, and constrained-topology hardening are still in progress
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
 
 ### Event Model dependency note
@@ -58,7 +60,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 - `Yjs as SyncChannel`: complete for the current sync-channel scope; remaining browser-facing work now sits in `/yws` transport ownership migration rather than in the sync contract itself
 - `hub_root` Class A coverage: explicit in runtime diagnostics and now consumed by browser/page runtime communication snapshots instead of being visible only in CLI/control-plane tooling
 - `event_model_phase0_communication` checkpoint: explicit across node API, CLI, canonical control-plane projection, and browser/page runtime, so Event Model Phase 0 reads the same two open communication tasks everywhere
-- `local supervisor browser-safe continuity`: default browser/runtime surfaces now read one shared `supervisor_runtime` snapshot, so this is no longer a visibility gap; the remaining work is broader topology hardening and warm-switch soak/recovery
+- `local supervisor browser-safe continuity`: default browser/runtime surfaces now read one shared `supervisor_runtime` snapshot, and routed-browser `/ws` continuity now exposes supervisor-aware active-runtime selection explicitly; the remaining work is warm-switch soak/recovery and final hardening, not visibility
 - `sidecar continuity`: now only blocks Event Model Phase 0 when the current runtime/media contract actually marks it as required
 - `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned
 
@@ -228,8 +230,8 @@ This phase introduces a dedicated `adaos-supervisor` that remains available whil
 Production runtime remains slot-only; root promotion becomes a separate post-validation step for bootstrap-managed code.
 Current MVP coverage now includes slot-first validation, explicit root-promotion states, an explicit `root restart in progress` attempt stage after root promotion, forced shutdown recovery for hung runtime restarts, one queued subsequent transition after an in-flight transition, minimum-interval scheduling for normal update requests, operator-driven defer for planned/countdown updates, a browser-shell transition badge, pushed browser-safe supervisor transition delivery over the control `/ws` channel with `/hubs/<id>/api/supervisor/public/update-status` fallback polling when that control path is unavailable, a canonical supervisor runtime object in the control-plane model so Infrascope/overview surfaces can project transition state as an operator runtime instead of only a transport outage, browser-safe and canonical operator surfaces that both carry the current transition `action` plus passive-candidate prewarm stage, formal safe supervisor actions in that canonical object for `cancel`, `defer`, and `promote_root` where the transition state allows them, routed root-facing subnet snapshots that retain transition action/scheduling/passive-candidate metadata for non-default browser topologies, a slot-bound runtime-port model with an explicit supervisor-side warm-switch admission decision (`warm_switch` vs `stop_and_switch`) based on reserved A/B ports and local memory headroom, per-runtime identity (`runtime_instance_id`, `transition_role`) threaded into supervisor/root-facing reports so parallel runtimes no longer collapse into one opaque `hub_id`, runtime self-identification/guardrails so candidate runtimes are skipped by local fallback control discovery and reject mutating local update commands until cutover, early inactive-slot preparation with deferred skill-runtime commit so heavy slot build work moves before shutdown without mutating live skill runtime selection during countdown, and real candidate-runtime fast cutover where supervisor promotes/adopts a prewarmed passive candidate and falls back to stop-and-switch if that authority handoff fails.
 That MVP now also includes a first live-media continuity gate: supervisor consults runtime reliability before restart/update, defers transitions that would violate the declared continuity contract, and keeps that reason visible through planned update state.
-The shared reliability/runtime surfaces now also carry that transition state directly through `supervisor_runtime`, so default browser, CLI, and canonical control-plane consumers no longer need separate heuristics to see transition mode, candidate runtime, or warm-switch evidence.
-The remaining supervisor gap is no longer the existence of fast cutover itself but the last-mile hardening around it: broader browser-safe transition visibility across all browser entry topologies, smoother root/browser signaling during warm-switch authority handoff so the shell is not reduced to generic reconnect churn, and more soak/recovery coverage for dual-runtime registration, candidate cleanup, and constrained-memory fallback.
+The shared reliability/runtime surfaces now also carry that transition state directly through `supervisor_runtime`, and the routed-browser `/ws` path now surfaces supervisor-aware active-runtime base selection through the same checkpoint family, so default browser, routed browser, CLI, and canonical control-plane consumers no longer need separate heuristics to see transition mode, candidate runtime, or routed continuity evidence.
+The remaining supervisor gap is no longer the existence or visibility of fast cutover itself but the last-mile hardening around it: smoother root/browser signaling during warm-switch authority handoff so the shell is not reduced to generic reconnect churn, plus more soak/recovery coverage for dual-runtime registration, candidate cleanup, and constrained-memory fallback.
 
 ### Focus
 

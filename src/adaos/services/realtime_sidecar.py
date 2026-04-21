@@ -113,12 +113,32 @@ def _available_realtime_remote_candidates() -> list[str]:
     return [candidate for _until, _index, candidate in quarantined] or candidates
 
 
+def _default_realtime_sidecar_role(role: str | None = None) -> str | None:
+    role_norm = str(role or "").strip().lower() or None
+    if role_norm:
+        return role_norm
+    try:
+        from adaos.services.agent_context import get_ctx
+
+        ctx = get_ctx()
+        cfg = getattr(ctx, "config", None)
+        role_norm = str(getattr(cfg, "role", "") or "").strip().lower() or None
+        if role_norm:
+            return role_norm
+    except Exception:
+        pass
+    return None
+
+
 def realtime_sidecar_enabled(*, role: str | None = None, os_name: str | None = None) -> bool:
     raw = os.getenv("ADAOS_REALTIME_ENABLE")
     if raw is None:
         raw = os.getenv("HUB_REALTIME_ENABLE")
     if raw is not None:
         return _truthy(raw, default=False)
+    role_norm = _default_realtime_sidecar_role(role)
+    if role_norm:
+        return role_norm == "hub"
     return False
 
 
@@ -145,8 +165,8 @@ def _realtime_sidecar_lifecycle_manager() -> str:
     return "supervisor" if _truthy(os.getenv("ADAOS_SUPERVISOR_ENABLED"), default=False) else "runtime"
 
 
-def realtime_sidecar_route_tunnel_contract() -> dict[str, Any]:
-    enabled = bool(realtime_sidecar_enabled())
+def realtime_sidecar_route_tunnel_contract(*, role: str | None = None) -> dict[str, Any]:
+    enabled = bool(realtime_sidecar_enabled(role=role))
     lifecycle_manager = _realtime_sidecar_lifecycle_manager()
     current_support = "planned" if enabled else "disabled"
     common_blockers = [
@@ -642,7 +662,11 @@ async def stop_realtime_sidecar_subprocess(proc: subprocess.Popen[Any] | None) -
         proc.kill()
 
 
-def realtime_sidecar_listener_snapshot(proc: subprocess.Popen[Any] | None = None) -> dict[str, Any]:
+def realtime_sidecar_listener_snapshot(
+    proc: subprocess.Popen[Any] | None = None,
+    *,
+    role: str | None = None,
+) -> dict[str, Any]:
     host = realtime_sidecar_host()
     port = realtime_sidecar_port()
     listener_pid = _find_realtime_listener_pid(host, port)
@@ -683,7 +707,7 @@ def realtime_sidecar_listener_snapshot(proc: subprocess.Popen[Any] | None = None
         "listener_running": listener_running,
         "listener_matches_managed": listener_matches_managed,
         "adopted_listener": adopted_listener,
-        "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(),
+        "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(role=role),
     }
 
 
@@ -692,7 +716,7 @@ async def restart_realtime_sidecar_subprocess(
     proc: subprocess.Popen[Any] | None,
     role: str | None = None,
 ) -> tuple[subprocess.Popen[Any] | None, dict[str, Any]]:
-    before = realtime_sidecar_listener_snapshot(proc)
+    before = realtime_sidecar_listener_snapshot(proc, role=role)
     if not realtime_sidecar_enabled(role=role):
         return proc, {
             "ok": True,
@@ -704,7 +728,7 @@ async def restart_realtime_sidecar_subprocess(
         }
     await stop_realtime_sidecar_subprocess(proc)
     new_proc = await start_realtime_sidecar_subprocess(role=role)
-    after = realtime_sidecar_listener_snapshot(new_proc)
+    after = realtime_sidecar_listener_snapshot(new_proc, role=role)
     return new_proc, {
         "ok": True,
         "accepted": True,
