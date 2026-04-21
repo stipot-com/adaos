@@ -361,6 +361,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     sidecar = runtime.get("sidecar_runtime") if isinstance(runtime.get("sidecar_runtime"), dict) else {}
     sync_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
     media_runtime = runtime.get("media_runtime") if isinstance(runtime.get("media_runtime"), dict) else {}
+    supervisor_runtime = runtime.get("supervisor_runtime") if isinstance(runtime.get("supervisor_runtime"), dict) else {}
     strategy_assessment = strategy.get("assessment") if isinstance(strategy.get("assessment"), dict) else {}
     integration = tree.get("integration") if isinstance(tree.get("integration"), dict) else {}
 
@@ -781,6 +782,32 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 typer.echo(
                     f"event_model.phase0.runtime_comm_ready.blockers: {', '.join(runtime_blockers)}"
                 )
+    if supervisor_runtime:
+        status = supervisor_runtime.get("status") if isinstance(supervisor_runtime.get("status"), dict) else {}
+        runtime_state = supervisor_runtime.get("runtime") if isinstance(supervisor_runtime.get("runtime"), dict) else {}
+        surface = (
+            supervisor_runtime.get("browser_safe_surface")
+            if isinstance(supervisor_runtime.get("browser_safe_surface"), dict)
+            else {}
+        )
+        typer.echo(
+            "supervisor_runtime: "
+            f"available={bool(supervisor_runtime.get('available'))} "
+            f"state={status.get('state') or '-'} "
+            f"phase={status.get('phase') or '-'} "
+            f"mode={runtime_state.get('transition_mode') or '-'} "
+            f"candidate={runtime_state.get('candidate_runtime_state') or '-'} "
+            f"warm_switch={runtime_state.get('warm_switch_reason') or '-'} "
+            f"surface={surface.get('state') or '-'} "
+            f"served_by={supervisor_runtime.get('_served_by') or '-'}"
+        )
+        surface_blockers = [
+            str(item).strip()
+            for item in (surface.get("blockers") or [])
+            if str(item).strip()
+        ]
+        if surface_blockers:
+            typer.echo(f"supervisor_runtime.surface_blockers: {', '.join(surface_blockers)}")
     if hub_member:
         assessment = hub_member.get("assessment") if isinstance(hub_member.get("assessment"), dict) else {}
         channels = hub_member.get("channels") if isinstance(hub_member.get("channels"), dict) else {}

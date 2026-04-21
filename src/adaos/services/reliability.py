@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -4746,15 +4747,190 @@ def _event_model_phase0_task(
     }
 
 
+def _is_local_http_base(url: str | None) -> bool:
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _supervisor_public_base_candidates() -> list[str]:
+    bases: list[str] = []
+    explicit = (
+        os.getenv("ADAOS_SUPERVISOR_URL")
+        or os.getenv("ADAOS_SUPERVISOR_BASE")
+        or ""
+    ).strip()
+    if explicit and _is_local_http_base(explicit):
+        bases.append(explicit.rstrip("/"))
+    supervisor_port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "").strip() or "8776"
+    bases.append(f"http://127.0.0.1:{supervisor_port}")
+    bases.append(f"http://localhost:{supervisor_port}")
+    result: list[str] = []
+    seen: set[str] = set()
+    for base in bases:
+        token = str(base or "").strip().rstrip("/")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
+
+
+def _supervisor_browser_safe_surface(*, payload: dict[str, Any] | None) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    available = bool(data.get("available"))
+    status = data.get("status") if isinstance(data.get("status"), dict) else {}
+    runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    blockers: list[str] = []
+    transition_mode_visible = "transition_mode" in runtime
+    candidate_runtime_visible = all(
+        key in runtime
+        for key in (
+            "candidate_slot",
+            "candidate_runtime_url",
+            "candidate_runtime_port",
+            "candidate_runtime_instance_id",
+            "candidate_runtime_state",
+            "candidate_runtime_api_ready",
+            "candidate_transition_role",
+        )
+    )
+    warm_switch_visible = any(
+        key in runtime
+        for key in (
+            "warm_switch_supported",
+            "warm_switch_allowed",
+            "warm_switch_reason",
+        )
+    )
+    if not available:
+        blockers.append("supervisor.public_update_status.unavailable")
+    if not transition_mode_visible:
+        blockers.append("supervisor.transition_mode.hidden")
+    if not candidate_runtime_visible:
+        blockers.append("supervisor.candidate_runtime.hidden")
+    if not warm_switch_visible:
+        blockers.append("supervisor.warm_switch.hidden")
+    ready = not blockers
+    return {
+        "state": "ready" if ready else ("unavailable" if not available else "in_progress"),
+        "ready": ready,
+        "carried_by_reliability": True,
+        "transition_state": str(status.get("state") or "").strip().lower() or None,
+        "transition_phase": str(status.get("phase") or "").strip().lower() or None,
+        "transition_mode_visible": transition_mode_visible,
+        "candidate_runtime_visible": candidate_runtime_visible,
+        "warm_switch_visible": warm_switch_visible,
+        "served_by": str(data.get("_served_by") or "").strip() or None,
+        "blockers": blockers,
+    }
+
+
+def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 0.35) -> dict[str, Any]:
+    if str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        payload = {
+            "available": False,
+            "source": "supervisor.disabled",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+
+    try:
+        import requests  # type: ignore
+    except Exception as exc:
+        payload = {
+            "available": False,
+            "source": "supervisor.requests_unavailable",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+
+    session = requests.Session()
+    try:
+        with contextlib.suppress(Exception):
+            session.trust_env = False
+        last_error = ""
+        for base in _supervisor_public_base_candidates():
+            try:
+                response = session.get(
+                    base + "/api/supervisor/public/update-status",
+                    headers={"Accept": "application/json"},
+                    timeout=max(0.1, float(timeout_sec)),
+                )
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            if int(response.status_code) != 200:
+                last_error = f"status:{response.status_code}"
+                continue
+            try:
+                body = response.json()
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            if not isinstance(body, dict):
+                last_error = "non_dict_payload"
+                continue
+            runtime = body.get("runtime") if isinstance(body.get("runtime"), dict) else {}
+            payload = {
+                "available": True,
+                "source": "supervisor.public_update_status",
+                "supervisor_url": base,
+                "status": dict(body.get("status") or {}) if isinstance(body.get("status"), dict) else {},
+                "attempt": dict(body.get("attempt") or {}) if isinstance(body.get("attempt"), dict) else {},
+                "runtime": {
+                    **dict(runtime),
+                    "supervisor_url": base,
+                },
+                "_served_by": str(body.get("_served_by") or "").strip() or None,
+            }
+            payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+            return payload
+        payload = {
+            "available": False,
+            "source": "supervisor.public_update_status_unavailable",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+            "error": last_error or None,
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+
+
 def _event_model_phase0_communication_checkpoint(
     *,
     sync_runtime: dict[str, Any] | None,
     sidecar_runtime: dict[str, Any] | None,
     hub_root_protocol: dict[str, Any] | None,
+    supervisor_runtime: dict[str, Any] | None,
 ) -> dict[str, Any]:
     sync_payload = sync_runtime if isinstance(sync_runtime, dict) else {}
     sidecar_payload = sidecar_runtime if isinstance(sidecar_runtime, dict) else {}
     protocol_payload = hub_root_protocol if isinstance(hub_root_protocol, dict) else {}
+    supervisor_payload = supervisor_runtime if isinstance(supervisor_runtime, dict) else {}
 
     channel_contract = sync_payload.get("channel_contract") if isinstance(sync_payload.get("channel_contract"), dict) else {}
     transport = sync_payload.get("transport") if isinstance(sync_payload.get("transport"), dict) else {}
@@ -4774,6 +4950,11 @@ def _event_model_phase0_communication_checkpoint(
         if isinstance(protocol_payload.get("hardening_coverage"), dict)
         else {}
     )
+    supervisor_surface = (
+        supervisor_payload.get("browser_safe_surface")
+        if isinstance(supervisor_payload.get("browser_safe_surface"), dict)
+        else {}
+    )
     sidecar_enabled = bool(sidecar_payload.get("enabled"))
     ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
     yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
@@ -4783,8 +4964,10 @@ def _event_model_phase0_communication_checkpoint(
     yws_handoff_ready = yws_handoff_state == "ready"
     yjs_sync_scope_ready = bool(channel_contract.get("completed_for_scope"))
     hub_root_class_a_ready = str(hardening.get("state") or "").strip().lower() == "complete"
+    continuity_required = bool(continuity.get("required"))
     continuity_state = str(continuity.get("current_support") or "").strip().lower() or "unknown"
-    continuity_ready = continuity_state == "ready"
+    continuity_ready = continuity_state == "ready" or not continuity_required
+    supervisor_ready = bool(supervisor_surface.get("ready"))
     ws_blocker = next(
         (str(item).strip() for item in (ws_entry.get("blockers") or []) if str(item).strip()),
         "",
@@ -4845,13 +5028,23 @@ def _event_model_phase0_communication_checkpoint(
     else:
         runtime_pending.append("sidecar_continuity")
         runtime_pending_reasons.append(f"sidecar.continuity.{continuity_state}")
-    runtime_pending.append("browser_safe_supervisor_continuity")
-    runtime_pending_reasons.append("supervisor.browser_safe_continuity.in_progress")
+    if supervisor_ready:
+        runtime_completed.append("browser_safe_supervisor_continuity")
+    else:
+        runtime_pending.append("browser_safe_supervisor_continuity")
+        runtime_pending_reasons.extend(
+            [
+                str(item).strip()
+                for item in list(supervisor_surface.get("blockers") or [])
+                if str(item).strip()
+            ]
+            or ["supervisor.browser_safe_continuity.in_progress"]
+        )
     runtime_status = "done" if not runtime_pending else "in_progress"
     runtime_summary = (
         "hub-root Class A coverage, sidecar ownership expansion, and browser-safe supervisor continuity are ready"
         if runtime_status == "done"
-        else "hub-root Class A hardening is explicit, but sidecar ownership expansion and browser-safe supervisor continuity still keep runtime communication prerequisites open"
+        else "hub-root Class A hardening is explicit, and browser-safe supervisor state now rides through shared runtime surfaces, but sidecar ownership expansion still keeps runtime communication prerequisites open"
     )
 
     tasks = {
@@ -4904,13 +5097,26 @@ def _event_model_phase0_communication_checkpoint(
                 },
                 "sidecar_continuity": {
                     "state": continuity_state,
-                    "required": bool(continuity.get("required")),
+                    "required": continuity_required,
                     "hub_runtime_update": str(continuity.get("hub_runtime_update") or "").strip().lower() or None,
                     "pending_boundaries": list(continuity.get("pending_boundaries") or []),
                 },
                 "browser_safe_supervisor_continuity": {
-                    "state": "in_progress",
-                    "summary": "browser-safe supervisor and warm-switch continuity hardening still remains open across browser topologies",
+                    "state": str(supervisor_surface.get("state") or "").strip().lower() or ("ready" if supervisor_ready else "in_progress"),
+                    "summary": (
+                        "browser-safe supervisor transition state is carried through the shared reliability runtime surface"
+                        if supervisor_ready
+                        else "browser-safe supervisor and warm-switch continuity hardening still remains open across browser topologies"
+                    ),
+                    "source": str(supervisor_payload.get("source") or "").strip() or None,
+                    "served_by": str(supervisor_payload.get("_served_by") or "").strip() or None,
+                    "transition_state": str(supervisor_surface.get("transition_state") or "").strip().lower() or None,
+                    "transition_phase": str(supervisor_surface.get("transition_phase") or "").strip().lower() or None,
+                    "carried_by_reliability": bool(supervisor_surface.get("carried_by_reliability")),
+                    "transition_mode_visible": bool(supervisor_surface.get("transition_mode_visible")),
+                    "candidate_runtime_visible": bool(supervisor_surface.get("candidate_runtime_visible")),
+                    "warm_switch_visible": bool(supervisor_surface.get("warm_switch_visible")),
+                    "blockers": list(supervisor_surface.get("blockers") or []),
                 },
                 "sidecar_progress": {
                     "state": str(progress.get("state") or "").strip().lower() or "unknown",
@@ -5390,6 +5596,28 @@ def reliability_snapshot(
             },
         },
     )
+    supervisor_runtime = _run_bounded_runtime_section(
+        section="supervisor",
+        timeout_sec=section_timeout,
+        fn=lambda: supervisor_transition_runtime_snapshot(
+            timeout_sec=min(0.35, max(0.1, section_timeout / 2.0))
+        ),
+        fallback={
+            "available": False,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "browser_safe_surface": {
+                "state": "unavailable",
+                "ready": False,
+                "carried_by_reliability": True,
+                "transition_mode_visible": False,
+                "candidate_runtime_visible": False,
+                "warm_switch_visible": False,
+                "blockers": ["supervisor.runtime.unavailable"],
+            },
+        },
+    )
     sidecar_runtime = sidecar_runtime_snapshot(
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
@@ -5400,6 +5628,7 @@ def reliability_snapshot(
         sync_runtime=sync_runtime,
         sidecar_runtime=sidecar_runtime,
         hub_root_protocol=hub_root_protocol,
+        supervisor_runtime=supervisor_runtime,
     )
     return {
         "ok": True,
@@ -5434,6 +5663,7 @@ def reliability_snapshot(
             "sidecar_runtime": sidecar_runtime,
             "sync_runtime": sync_runtime,
             "media_runtime": media_runtime,
+            "supervisor_runtime": supervisor_runtime,
             "event_model_phase0_communication": event_model_phase0_communication,
         },
     }

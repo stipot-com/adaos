@@ -79,7 +79,7 @@ The intended order across all workstreams is:
 
 - [x] `phase0.comm_order_locked`: treat communication hardening as a prerequisite for this roadmap
 - [ ] `phase0.node_browser_ready`: in progress; Realtime Reliability now treats browser/member semantic channels and `Yjs as SyncChannel` as complete for the current scope, and the remaining `/yws` ownership blocker is now surfaced through one shared `event_model_phase0_communication` checkpoint in node API, CLI, canonical control-plane projection, and browser/page runtime
-- [ ] `phase0.runtime_comm_ready`: in progress; hub-root Class A hardening is now explicit and shared through the same `event_model_phase0_communication` checkpoint, but sidecar ownership expansion and browser-safe supervisor/warm-switch hardening still keep the runtime communication prerequisite open
+- [ ] `phase0.runtime_comm_ready`: in progress; hub-root Class A hardening and browser-safe supervisor transition state are now explicit through shared reliability runtime surfaces, and optional sidecar continuity no longer blocks the prerequisite by default, but sidecar `/ws` ownership expansion plus broader supervisor/warm-switch hardening still keep the runtime communication prerequisite open
 - [x] `phase0.webspace_runtime_baseline`: webspace rebuild/materialization ownership is aligned with the pointer/projection roadmap, and the browser runtime now consumes that baseline through lightweight diagnostics plus shared page-runtime adapters instead of bespoke component-only reads
 
 Current checkpoint as of 2026-04-20:
@@ -93,6 +93,8 @@ Current checkpoint as of 2026-04-20:
 - Realtime Reliability runtime now exposes explicit Yjs ownership boundaries for `ui.current_scenario`, effective `ui/data/registry` branches, compatibility caches, and `yws` transport/session lifecycle, so Phase 0 blockers are no longer hidden behind implicit subtree semantics
 - browser header semantic diagnostics now surface `hub_root` Class A coverage, sidecar continuity, and current browser `/yws` handoff blocker, so remaining Phase 0 communication debt is visible in the same runtime surface that already carries sync-contract and transport-state evidence
 - `GET /api/node/reliability`, `adaos node reliability`, canonical control-plane reliability projection, and browser/page runtime now share one explicit `event_model_phase0_communication` checkpoint for the two still-open communication prerequisites, so Phase 0 status no longer has to be inferred independently per surface
+- those same shared reliability surfaces now also carry `supervisor_runtime`, so browser-safe transition state, candidate runtime visibility, and warm-switch evidence no longer depend on per-surface local heuristics
+- `event_model_phase0_communication` now treats sidecar continuity as blocking only when the current runtime/media contract actually requires it, so default Phase 0 runtime communication debt is narrowed to real `/ws` ownership migration and remaining supervisor hardening instead of overstating continuity debt
 - webspace pointer/projection ownership is materially aligned, but the remaining Phase 0 blockers now sit in the subordinate Realtime Reliability track rather than in webspace runtime ownership
 - dependency reading rule for this roadmap: subordinate status wins over local convenience adapters, so Event Model Phase 0 stays open until Realtime Reliability closes the remaining communication work it still marks as in progress
 

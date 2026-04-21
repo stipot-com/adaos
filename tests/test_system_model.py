@@ -567,6 +567,37 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                         },
                     },
                 },
+                "supervisor_runtime": {
+                    "available": True,
+                    "supervisor_url": "http://127.0.0.1:8776",
+                    "status": {
+                        "action": "update",
+                        "state": "countdown",
+                        "phase": "scheduled",
+                    },
+                    "attempt": {
+                        "action": "update",
+                        "state": "planned",
+                    },
+                    "runtime": {
+                        "runtime_state": "ready",
+                        "runtime_api_ready": True,
+                        "managed_alive": True,
+                        "active_slot": "A",
+                        "runtime_instance_id": "rt-a-1",
+                        "transition_role": "active",
+                        "transition_mode": "warm_switch",
+                        "candidate_slot": "B",
+                        "candidate_runtime_url": "http://127.0.0.1:8778",
+                        "candidate_runtime_state": "ready",
+                        "candidate_runtime_instance_id": "rt-b-1",
+                        "candidate_transition_role": "candidate",
+                        "candidate_runtime_api_ready": True,
+                        "warm_switch_supported": True,
+                        "warm_switch_allowed": True,
+                        "warm_switch_reason": "warm switch admitted",
+                    },
+                },
                 "sidecar_runtime": {
                     "enabled": True,
                     "status": "ready",
@@ -727,6 +758,10 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["ownership_boundaries"]["transport_session"]["planned_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
     assert objects["runtime:hub:hub-1/media-plane"]["runtime"]["update_guard"]["current_support"] == "not_applicable"
+    assert objects["runtime:node:hub-1/supervisor"]["kind"] == "runtime"
+    assert objects["runtime:node:hub-1/supervisor"]["runtime"]["transition_mode"] == "warm_switch"
+    assert objects["runtime:node:hub-1/supervisor"]["runtime"]["candidate_runtime_state"] == "ready"
+    assert objects["runtime:node:hub-1/supervisor"]["actual_state"]["supervisor_url"] == "http://127.0.0.1:8776"
 
 
 def test_canonical_projection_from_reliability_snapshot_maps_actions_and_incidents() -> None:
