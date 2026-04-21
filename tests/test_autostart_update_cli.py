@@ -341,6 +341,25 @@ def test_autostart_update_start_does_not_fallback_to_runtime_admin(monkeypatch) 
     assert "http://127.0.0.1:8776" in result.output
 
 
+def test_autostart_cli_token_reads_shared_dotenv_when_wrapper_has_no_token(monkeypatch) -> None:
+    monkeypatch.setattr(
+        setup_cmd,
+        "autostart_status",
+        lambda ctx: {
+            "shared_dotenv_path": "/root/adaos/.env",
+            "wrapper_env": {"ADAOS_SUPERVISOR_PORT": "8776"},
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_parse_env_file",
+        lambda path: {"ADAOS_TOKEN": "dotenv-token"},
+    )
+
+    assert setup_cmd._autostart_service_token() == "dotenv-token"
+    assert setup_cmd._autostart_cli_token() == "dotenv-token"
+
+
 def test_autostart_update_promote_root_posts_to_supervisor(monkeypatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}

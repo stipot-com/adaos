@@ -140,6 +140,19 @@ def _default_control_token() -> str | None:
     if raw:
         return raw
     try:
+        shared_dotenv = _shared_dotenv_path(get_ctx())
+    except Exception:
+        shared_dotenv = None
+    if shared_dotenv is not None:
+        try:
+            env_file_vars = _parse_env_file(str(shared_dotenv))
+        except Exception:
+            env_file_vars = {}
+        for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+            raw = str(env_file_vars.get(key) or "").strip()
+            if raw:
+                return raw
+    try:
         conf = load_config()
     except Exception:
         conf = None

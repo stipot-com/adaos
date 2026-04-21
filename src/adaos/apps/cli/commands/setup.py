@@ -41,6 +41,7 @@ from adaos.services.core_update import last_result_path as core_update_last_resu
 from adaos.services.core_update import plan_path as core_update_plan_path
 from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
 from adaos.services.core_update import status_path as core_update_status_path
+from adaos.services.settings import _parse_env_file
 from adaos.services.supervisor_memory import read_memory_runtime_state, read_memory_session_summary
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -430,6 +431,16 @@ def _autostart_service_token() -> str:
         raw = str(wrapper_env.get(key) or "").strip()
         if raw:
             return raw
+    shared_dotenv_path = str(info.get("shared_dotenv_path") or "").strip()
+    if shared_dotenv_path:
+        try:
+            env_file_vars = _parse_env_file(shared_dotenv_path)
+        except Exception:
+            env_file_vars = {}
+        for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+            raw = str(env_file_vars.get(key) or "").strip()
+            if raw:
+                return raw
     return ""
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from adaos.services.settings import _parse_env_file
 
 
 def _is_local_url(url: str | None) -> bool:
@@ -69,6 +70,16 @@ def _autostart_service_token() -> str | None:
             raw = str(wrapper_env.get(key, "") or "").strip()
             if raw:
                 return raw
+        shared_dotenv_path = str(info.get("shared_dotenv_path") or "").strip() if isinstance(info, dict) else ""
+        if shared_dotenv_path:
+            try:
+                env_file_vars = _parse_env_file(shared_dotenv_path)
+            except Exception:
+                env_file_vars = {}
+            for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+                raw = str(env_file_vars.get(key, "") or "").strip()
+                if raw:
+                    return raw
     except Exception:
         pass
     return None

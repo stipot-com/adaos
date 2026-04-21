@@ -127,6 +127,20 @@ def test_windows_status_reports_wrapper_context(monkeypatch, tmp_path: Path) -> 
     assert status["wrapper_env"]["ADAOS_BASE_DIR"] == str(service_base)
 
 
+def test_default_control_token_reads_shared_dotenv(monkeypatch, tmp_path: Path) -> None:
+    shared_dotenv = tmp_path / ".env.shared"
+    shared_dotenv.write_text("ADAOS_TOKEN=dotenv-token\n", encoding="utf-8")
+
+    monkeypatch.delenv("ADAOS_TOKEN", raising=False)
+    monkeypatch.delenv("ADAOS_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+    monkeypatch.setattr(autostart, "_shared_dotenv_path", lambda ctx: shared_dotenv)
+    monkeypatch.setattr(autostart, "get_ctx", lambda: _FakeCtx(tmp_path))
+    monkeypatch.setattr(autostart, "load_config", lambda: None)
+
+    assert autostart._default_control_token() == "dotenv-token"
+
+
 def test_linux_status_root_prefers_system_service_when_user_bus_exists(monkeypatch, tmp_path: Path) -> None:
     user_home = tmp_path / "home"
     user_service = user_home / ".config" / "systemd" / "user" / "adaos.service"
