@@ -13,6 +13,7 @@
     "widgets": { "$ref": "#/$defs/catalogWidgets" },
 
     "registry": { "$ref": "#/$defs/registry" },
+    "webio": { "$ref": "#/$defs/webio" },
     "ydoc_defaults": {
       "description": "Default Yjs values applied once per webspace. Keys are 'root/key' paths (e.g. 'data/voice_chat').",
       "type": "object",
@@ -195,9 +196,59 @@
       "additionalProperties": true,
       "required": ["kind"],
       "properties": {
-        "kind": { "type": "string", "enum": ["y"] },
+        "kind": { "type": "string", "enum": ["y", "stream"] },
         "path": { "type": "string" },
-        "transform": { "type": "string" }
+        "transform": { "type": "string" },
+        "receiver": { "$ref": "#/$defs/id" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "stream" } } },
+          "then": { "required": ["receiver"] }
+        }
+      ]
+    },
+
+    "webio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receivers": {
+          "type": "object",
+          "description": "Transport-independent browser stream receivers resolved by runtime and exposed to widgets via dataSource.kind='stream'.",
+          "additionalProperties": { "$ref": "#/$defs/webioReceiver" }
+        }
+      }
+    },
+
+    "webioReceiver": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["replace", "append"],
+          "description": "How incoming stream payloads update local client state."
+        },
+        "collectionKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "For append mode, the array field that accumulates incoming items."
+        },
+        "dedupeBy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional item field used to replace an existing item instead of appending a duplicate."
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional local ring-buffer limit for append mode."
+        },
+        "initialState": {
+          "description": "Optional initial client-side receiver state before the first stream event arrives."
+        }
       }
     },
 

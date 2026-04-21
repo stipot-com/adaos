@@ -8,18 +8,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__all__ = ["chat_append", "say", "media_route", "stt_listen", "tts_speak"]
+__all__ = ["chat_append", "say", "media_route", "stream_publish", "stt_listen", "tts_speak"]
 
 if TYPE_CHECKING:
-    from .out import chat_append, say, media_route
+    from .out import chat_append, say, media_route, stream_publish
     from .voice import stt_listen, tts_speak
 
 
 def __getattr__(name: str) -> Any:  # pragma: no cover
-    if name in ("chat_append", "say", "media_route"):
-        from .out import chat_append, say, media_route
+    if name in ("chat_append", "say", "media_route", "stream_publish"):
+        from .out import chat_append, say, media_route, stream_publish
 
-        return {"chat_append": chat_append, "say": say, "media_route": media_route}[name]
+        return {
+            "chat_append": chat_append,
+            "say": say,
+            "media_route": media_route,
+            "stream_publish": stream_publish,
+        }[name]
     if name in ("stt_listen", "tts_speak"):
         from .voice import stt_listen, tts_speak
 

@@ -17,6 +17,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
+import threading
 import time
 from typing import Any, Awaitable, Callable
 from pathlib import Path
@@ -57,6 +58,151 @@ STUN_CONFIG = RTCConfiguration(
 
 # Active peers keyed by device_id.
 _peers: dict[str, HubPeer] = {}
+_EVENT_CHANNEL_SUBSCRIPTIONS_LOCK = threading.RLock()
+_EVENT_CHANNEL_SUBSCRIBERS: dict[int, dict[str, Any]] = {}
+_EVENT_CHANNEL_FORWARDER_INSTALLED = False
+
+
+def _ws_event_topic_matches(subscription: str, event_type: str) -> bool:
+    topic = str(subscription or "").strip()
+    event = str(event_type or "").strip()
+    if not topic or not event:
+        return False
+    if topic in {"*", ""}:
+        return True
+    if topic.endswith("*"):
+        return event.startswith(topic[:-1])
+    return event == topic
+
+
+def _build_event_channel_message(
+    event_type: str,
+    payload: Any,
+    *,
+    source: str = "webrtc.events",
+    ts: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "ch": "events",
+        "t": "evt",
+        "kind": str(event_type or "").strip(),
+        "payload": payload if isinstance(payload, dict) else {"value": payload},
+        "source": str(source or "webrtc.events").strip() or "webrtc.events",
+        "ts": float(ts or time.time()),
+    }
+
+
+def _ensure_event_channel_forwarder() -> None:
+    global _EVENT_CHANNEL_FORWARDER_INSTALLED
+    with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
+        if _EVENT_CHANNEL_FORWARDER_INSTALLED:
+            return
+        get_ctx().bus.subscribe("*", _forward_event_channel_bus_event)
+        _EVENT_CHANNEL_FORWARDER_INSTALLED = True
+
+
+def _register_event_channel_subscriptions(
+    peer: "HubPeer",
+    loop: asyncio.AbstractEventLoop,
+    raw_topics: Any,
+) -> set[str]:
+    if not isinstance(raw_topics, list):
+        return set()
+    topics = {
+        topic
+        for topic in (str(raw or "").strip() for raw in raw_topics)
+        if topic
+    }
+    if not topics:
+        return set()
+    _ensure_event_channel_forwarder()
+    with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
+        entry = _EVENT_CHANNEL_SUBSCRIBERS.setdefault(
+            id(peer),
+            {
+                "peer": peer,
+                "loop": loop,
+                "topics": set(),
+            },
+        )
+        entry["loop"] = loop
+        tracked = entry.setdefault("topics", set())
+        added = set(topics) - set(tracked)
+        tracked.update(topics)
+    return added
+
+
+def _unregister_event_channel_subscriptions(peer: "HubPeer") -> None:
+    with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
+        _EVENT_CHANNEL_SUBSCRIBERS.pop(id(peer), None)
+
+
+def _iter_initial_event_channel_messages(topics: set[str]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if any(_ws_event_topic_matches(topic, "node.status") for topic in topics):
+        try:
+            from adaos.services.bootstrap import load_config as _load_config
+            from adaos.services.system_model.service import (
+                current_node_status_push_payload as _current_node_status_push_payload,
+            )
+
+            conf = _load_config()
+            if str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+                messages.append(
+                    _build_event_channel_message(
+                        "node.status",
+                        _current_node_status_push_payload(),
+                        source="node.status",
+                    )
+                )
+        except Exception:
+            _log.debug("failed to snapshot node.status for WebRTC event subscriber", exc_info=True)
+    if any(_ws_event_topic_matches(topic, "core.update.status") for topic in topics):
+        try:
+            from adaos.services.core_update import read_status as _read_core_update_status
+
+            messages.append(
+                _build_event_channel_message(
+                    "core.update.status",
+                    _read_core_update_status() or {},
+                    source="core.update.status",
+                )
+            )
+        except Exception:
+            _log.debug("failed to snapshot core.update.status for WebRTC event subscriber", exc_info=True)
+    return messages
+
+
+def _forward_event_channel_bus_event(ev: Any) -> None:
+    event_type = str(getattr(ev, "type", "") or "").strip()
+    if not event_type:
+        return
+    with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
+        subscribers = [
+            dict(entry)
+            for entry in _EVENT_CHANNEL_SUBSCRIBERS.values()
+            if any(_ws_event_topic_matches(topic, event_type) for topic in entry.get("topics", set()))
+        ]
+    if not subscribers:
+        return
+    message = _build_event_channel_message(
+        event_type,
+        getattr(ev, "payload", {}) or {},
+        source=str(getattr(ev, "source", "") or "webrtc.events"),
+        ts=float(getattr(ev, "ts", 0.0) or time.time()),
+    )
+    for entry in subscribers:
+        peer = entry.get("peer")
+        loop = entry.get("loop")
+        if peer is None or not isinstance(loop, asyncio.AbstractEventLoop):
+            continue
+        try:
+            asyncio.run_coroutine_threadsafe(
+                peer._send_event_channel_message(message),
+                loop,
+            )
+        except Exception:
+            _unregister_event_channel_subscriptions(peer)
 
 
 class HubPeer:
@@ -343,10 +489,7 @@ class HubPeer:
         self._emit_state_event(reason="events_channel:open")
 
         async def _send(msg: dict[str, Any]) -> None:
-            try:
-                channel.send(json.dumps(msg))
-            except Exception:
-                _log.warning("events dc send failed device=%s", self.device_id, exc_info=True)
+            await self._send_event_channel_message(msg)
 
         @channel.on("message")
         def on_message(data: str | bytes) -> None:
@@ -355,6 +498,21 @@ class HubPeer:
             try:
                 msg = json.loads(text)
             except Exception:
+                return
+            if msg.get("type") == "subscribe":
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is None:
+                    return
+                added = _register_event_channel_subscriptions(self, loop, msg.get("topics"))
+                if added:
+                    async def _send_initial() -> None:
+                        for item in _iter_initial_event_channel_messages(added):
+                            await self._send_event_channel_message(item)
+
+                    asyncio.ensure_future(_send_initial())
                 return
             ch = msg.get("ch")
             t = msg.get("t")
@@ -384,9 +542,21 @@ class HubPeer:
         @channel.on("close")
         def on_close() -> None:  # type: ignore[no-untyped-def]
             self._touch()
+            _unregister_event_channel_subscriptions(self)
             self._events_channel = None
             self._emit_state_event(reason="events_channel:closed")
             self._schedule_close_if_orphaned(reason="events_channel:closed")
+
+    async def _send_event_channel_message(self, msg: dict[str, Any]) -> None:
+        channel = self._events_channel
+        if channel is None or str(getattr(channel, "readyState", "") or "").strip().lower() != "open":
+            _unregister_event_channel_subscriptions(self)
+            return
+        try:
+            channel.send(json.dumps(msg))
+        except Exception:
+            _unregister_event_channel_subscriptions(self)
+            _log.warning("events dc send failed device=%s", self.device_id, exc_info=True)
 
     def _setup_yjs_channel(self, channel) -> None:  # type: ignore[no-untyped-def]
         """Bridge *yjs* DataChannel to ``ypy-websocket``."""

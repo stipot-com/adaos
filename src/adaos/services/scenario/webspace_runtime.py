@@ -47,6 +47,7 @@ _EFFECTIVE_BRANCH_PATHS = (
     "data.catalog",
     "data.installed",
     "data.desktop",
+    "data.webio",
     "data.routing",
     "registry.merged",
 )
@@ -198,6 +199,7 @@ class WebspaceResolverOutputs:
     registry: Dict[str, List[str]] = field(default_factory=lambda: {"modals": [], "widgets": []})
     installed: Dict[str, List[str]] = field(default_factory=lambda: {"apps": [], "widgets": []})
     desktop: Dict[str, Any] = field(default_factory=dict)
+    webio: Dict[str, Any] = field(default_factory=dict)
     routing: Dict[str, Any] = field(default_factory=dict)
     skill_decls: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -515,9 +517,55 @@ def _resolved_output_branch_fingerprints(resolved: "WebspaceResolverOutputs") ->
         "data.catalog": _fingerprint_json_like(resolved.catalog),
         "data.installed": _fingerprint_json_like(resolved.installed),
         "data.desktop": _fingerprint_json_like(resolved.desktop),
+        "data.webio": _fingerprint_json_like(resolved.webio),
         "data.routing": _fingerprint_json_like(resolved.routing),
         "registry.merged": _fingerprint_json_like(resolved.registry),
     }
+
+
+def _normalize_webio_receiver(node: Any) -> Dict[str, Any]:
+    item = _coerce_dict(node)
+    if not item:
+        return {}
+    out: Dict[str, Any] = {}
+    mode = str(item.get("mode") or "").strip().lower()
+    if mode in {"replace", "append"}:
+        out["mode"] = mode
+    collection_key = str(item.get("collectionKey") or "").strip()
+    if collection_key:
+        out["collectionKey"] = collection_key
+    dedupe_by = str(item.get("dedupeBy") or "").strip()
+    if dedupe_by:
+        out["dedupeBy"] = dedupe_by
+    max_items = item.get("maxItems")
+    try:
+        if max_items is not None and int(max_items) > 0:
+            out["maxItems"] = int(max_items)
+    except Exception:
+        pass
+    if "initialState" in item:
+        out["initialState"] = _clone_json_like(item.get("initialState"))
+    return out
+
+
+def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    receivers: Dict[str, Any] = {}
+    for decl in skill_decls:
+        skill_name = str(decl.get("skill") or "").strip()
+        webio = decl.get("webio") if isinstance(decl.get("webio"), Mapping) else {}
+        raw_receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
+        for key, value in raw_receivers.items():
+            receiver_id = str(key or "").strip()
+            if not receiver_id or receiver_id in receivers:
+                continue
+            normalized = _normalize_webio_receiver(value)
+            if not normalized:
+                continue
+            normalized["id"] = receiver_id
+            if skill_name:
+                normalized["origin"] = f"skill:{skill_name}"
+            receivers[receiver_id] = normalized
+    return {"receivers": receivers}
 
 
 def _read_effective_branch_fingerprints(registry_map: Any) -> Dict[str, str]:
@@ -600,6 +648,7 @@ def _resolved_outputs_to_cache_payload(resolved: WebspaceResolverOutputs) -> Dic
         "registry": _clone_json_like(resolved.registry),
         "installed": _clone_json_like(resolved.installed),
         "desktop": _clone_json_like(resolved.desktop),
+        "webio": _clone_json_like(resolved.webio),
         "routing": _clone_json_like(resolved.routing),
         "skill_decls": _clone_json_like(resolved.skill_decls),
     }
@@ -615,6 +664,7 @@ def _resolved_outputs_from_cache_payload(payload: Mapping[str, Any]) -> Webspace
         registry=_coerce_dict(payload.get("registry") or {}),
         installed=_coerce_dict(payload.get("installed") or {}),
         desktop=_coerce_dict(payload.get("desktop") or {}),
+        webio=_coerce_dict(payload.get("webio") or {}),
         routing=_coerce_dict(payload.get("routing") or {}),
         skill_decls=[
             dict(item)
@@ -1368,6 +1418,7 @@ class WebspaceScenarioRuntime:
       - data.catalog,
       - data.installed,
       - data.desktop,
+      - data.webio,
       - registry.merged.
     """
 
@@ -1474,6 +1525,8 @@ class WebspaceScenarioRuntime:
         ydoc_defaults = raw.get("ydoc_defaults") or {}
         raw_contrib = raw.get("contributions") or []
         contributions = [c for c in raw_contrib if isinstance(c, dict)]
+        webio_raw = raw.get("webio") or {}
+        webio_receivers_raw = webio_raw.get("receivers") if isinstance(webio_raw, dict) else {}
 
         payload = {
             "skill": skill_name,
@@ -1494,6 +1547,13 @@ class WebspaceScenarioRuntime:
             },
             "ydoc_defaults": ydoc_defaults if isinstance(ydoc_defaults, dict) else {},
             "contributions": contributions,
+            "webio": {
+                "receivers": (
+                    {str(k): _normalize_webio_receiver(v) for k, v in webio_receivers_raw.items() if str(k).strip()}
+                    if isinstance(webio_receivers_raw, dict)
+                    else {}
+                ),
+            },
         }
         if stamp is not None:
             _WEBUI_DECL_CACHE[cache_key] = (stamp, payload)
@@ -1884,6 +1944,8 @@ class WebspaceScenarioRuntime:
         desktop_next["pageSchema"] = _coerce_dict(desktop_config.get("pageSchema") or {})
         desktop_next["pinnedWidgets"] = list(desktop_config.get("pinnedWidgets") or [])
 
+        webio_dict = _merge_webio_receivers(skill_decls)
+
         routing_dict = _coerce_dict((inputs.live_state or {}).get("routing") or {})
         routes = routing_dict.get("routes")
         routing_dict = {**routing_dict, "routes": _coerce_dict(routes)}
@@ -1906,6 +1968,7 @@ class WebspaceScenarioRuntime:
                 "widgets": list(installed_with_auto.get("widgets") or []),
             },
             desktop=desktop_next,
+            webio=webio_dict,
             routing=routing_dict,
             skill_decls=skill_decls,
         )
@@ -2112,6 +2175,7 @@ class WebspaceScenarioRuntime:
                 ("data.catalog", data_map, "catalog", resolved.catalog, False),
                 ("data.installed", data_map, "installed", resolved.installed, False),
                 ("data.desktop", data_map, "desktop", resolved.desktop, True),
+                ("data.webio", data_map, "webio", resolved.webio, True),
                 ("data.routing", data_map, "routing", resolved.routing, True),
             ),
             flush_fingerprints=True,

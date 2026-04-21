@@ -182,6 +182,53 @@ def test_describe_webspace_projection_state_detects_space_mismatch(monkeypatch) 
     assert result["active_matches_target"] is False
 
 
+def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime()
+
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="default",
+            scenario_id="web_desktop",
+            source_mode="workspace",
+            scenario_application={"desktop": {"pageSchema": {"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main"}]}, "widgets": []}}},
+            scenario_catalog={"apps": [], "widgets": []},
+            scenario_registry={"modals": [], "widgets": []},
+            overlay_snapshot={},
+            live_state={},
+            skill_decls=[
+                {
+                    "skill": "telemetry_skill",
+                    "space": "default",
+                    "webio": {
+                        "receivers": {
+                            "telemetry_feed": {
+                                "mode": "append",
+                                "collectionKey": "items",
+                                "maxItems": 50,
+                                "initialState": {"items": []},
+                            }
+                        }
+                    },
+                }
+            ],
+            desktop_scenarios=[],
+        )
+    )
+
+    assert resolved.webio == {
+        "receivers": {
+            "telemetry_feed": {
+                "id": "telemetry_feed",
+                "mode": "append",
+                "collectionKey": "items",
+                "maxItems": 50,
+                "initialState": {"items": []},
+                "origin": "skill:telemetry_skill",
+            }
+        }
+    }
+
+
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:
     fake_state = state or {"ui": _FakeMap(), "registry": _FakeMap(), "data": _FakeMap()}
     fake_ctx = get_ctx()
@@ -2109,7 +2156,7 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
     runtime._apply_resolved_state_in_doc(fake_doc, "phase5-apply-summary", resolved)
     second_summary = dict(runtime._last_apply_summary or {})
 
-    assert first_summary["changed_branches"] == 6
+    assert first_summary["changed_branches"] == 7
     assert first_summary["unchanged_branches"] == 0
     assert first_summary["changed_paths"] == [
         "ui.application",
@@ -2117,6 +2164,7 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
         "data.catalog",
         "data.installed",
         "data.desktop",
+        "data.webio",
         "data.routing",
     ]
     assert first_summary["phases"]["structure"]["changed_paths"] == [
@@ -2127,20 +2175,21 @@ def test_phase5_apply_summary_reports_changed_and_unchanged_top_level_branches()
         "data.catalog",
         "data.installed",
         "data.desktop",
+        "data.webio",
         "data.routing",
     ]
     assert second_summary["changed_branches"] == 0
-    assert second_summary["unchanged_branches"] == 6
+    assert second_summary["unchanged_branches"] == 7
     assert second_summary["failed_branches"] == 0
     assert second_summary["transaction_total"] == 2
     assert second_summary["changed_paths"] == []
     assert second_summary["phases"]["structure"]["unchanged_branches"] == 2
-    assert second_summary["phases"]["interactive"]["unchanged_branches"] == 4
+    assert second_summary["phases"]["interactive"]["unchanged_branches"] == 5
     assert runtime._last_apply_phase_timings_ms is not None
     assert "apply_structure" in runtime._last_apply_phase_timings_ms
     assert "apply_interactive" in runtime._last_apply_phase_timings_ms
     assert fake_state["ui"].set_count == 1
-    assert fake_state["data"].set_count == 4
+    assert fake_state["data"].set_count == 5
     assert fake_state["registry"].set_count == 2
     assert fake_doc.transaction_count == 4
     assert "runtime_meta" in fake_state["registry"]

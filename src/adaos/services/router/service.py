@@ -541,6 +541,27 @@ class RouterService:
                 with ydoc.begin_transaction() as txn:
                     data_map.set(txn, "tts", {"queue": queue})
 
+        def _publish_webio_stream_event(
+            webspace_id: str,
+            receiver: str,
+            payload: dict[str, Any],
+            *,
+            source: str,
+            ts: float,
+        ) -> None:
+            ws = str(webspace_id or "").strip() or "default"
+            receiver_id = str(receiver or "").strip()
+            if not receiver_id:
+                return
+            self.bus.publish(
+                Event(
+                    type=f"webio.stream.{ws}.{receiver_id}",
+                    source=source,
+                    ts=ts,
+                    payload=payload,
+                )
+            )
+
         def _coerce_bool(value: Any) -> bool:
             if isinstance(value, bool):
                 return value
@@ -1118,6 +1139,34 @@ class RouterService:
                 await _ensure_media_state(ws)
                 await _set_media_route_state(ws, route_state)
 
+        async def _on_io_out_stream_publish(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            receiver = str(payload.get("receiver") or "").strip()
+            if not receiver:
+                return
+            event_ts = float(payload.get("ts") or ev.ts or time.time())
+            data = payload.get("data")
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            targets = await _resolve_webspace_ids(payload)
+            for ws in targets:
+                event_payload = {
+                    "receiver": receiver,
+                    "webspace_id": ws,
+                    "data": data,
+                    "ts": event_ts,
+                }
+                if meta:
+                    event_payload["_meta"] = {**meta, "webspace_id": ws}
+                _publish_webio_stream_event(
+                    ws,
+                    receiver,
+                    event_payload,
+                    source=str(ev.source or "router"),
+                    ts=event_ts,
+                )
+
         async def _on_browser_session_changed(ev: Event) -> None:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
@@ -1357,6 +1406,7 @@ class RouterService:
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
         self.bus.subscribe("io.out.media.route", _on_io_out_media_route)
+        self.bus.subscribe("io.out.stream.publish", _on_io_out_stream_publish)
         self.bus.subscribe("browser.session.changed", _on_browser_session_changed)
         self.bus.subscribe("subnet.member.snapshot.changed", _on_member_media_inventory_changed)
         self.bus.subscribe("subnet.member.link.up", _on_member_media_inventory_changed)

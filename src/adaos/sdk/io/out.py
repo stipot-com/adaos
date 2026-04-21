@@ -15,7 +15,7 @@ from adaos.sdk.io.context import get_current_meta
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as _emit
 
-__all__ = ["chat_append", "say", "media_route"]
+__all__ = ["chat_append", "say", "media_route", "stream_publish"]
 
 
 def _publish(topic: str, payload: dict, *, source: str) -> None:
@@ -169,4 +169,38 @@ def media_route(
         payload["_meta"] = meta
 
     _publish("io.out.media.route", payload, source="sdk.io.out")
+    return {"ok": True}
+
+
+@tool(
+    "io.out.stream.publish",
+    summary="Publish transport-independent browser stream data for a declarative webui receiver.",
+    stability="experimental",
+    examples=[
+        "io.out.stream.publish('telemetry', {'value': 42}, _meta={'webspace_id':'default'})",
+    ],
+)
+def stream_publish(
+    receiver: str | None,
+    data: Any = None,
+    *,
+    ts: float | None = None,
+    _meta: Mapping[str, Any] | None = None,
+) -> Mapping[str, bool]:
+    receiver_id = str(receiver or "").strip()
+    if not receiver_id:
+        return {"ok": False}
+
+    payload: dict[str, Any] = {
+        "receiver": receiver_id,
+        "data": data,
+        "ts": float(ts) if ts is not None else time.time(),
+    }
+    meta = get_current_meta()
+    if _meta:
+        meta.update(dict(_meta))
+    if meta:
+        payload["_meta"] = meta
+
+    _publish("io.out.stream.publish", payload, source="sdk.io.out")
     return {"ok": True}
