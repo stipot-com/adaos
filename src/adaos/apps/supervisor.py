@@ -900,6 +900,41 @@ def _runtime_shutdown_request_timeout(*, drain_timeout_sec: float, signal_delay_
     return max(5.0, float(drain_timeout_sec) + float(signal_delay_sec) + 2.0)
 
 
+def _runtime_profile_graceful_shutdown_timeout_sec(profile_mode: str) -> tuple[float, float, float, float]:
+    normalized = str(profile_mode or "normal").strip().lower()
+    if normalized == "normal":
+        return 5.0, 0.25, 8.0, 5.0
+    try:
+        drain_timeout = max(
+            5.0,
+            float(str(os.getenv("ADAOS_SUPERVISOR_PROFILE_DRAIN_TIMEOUT_SEC") or "20").strip()),
+        )
+    except Exception:
+        drain_timeout = 20.0
+    try:
+        signal_delay = max(
+            0.25,
+            float(str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SIGNAL_DELAY_SEC") or "1").strip()),
+        )
+    except Exception:
+        signal_delay = 1.0
+    try:
+        graceful_wait = max(
+            8.0,
+            float(str(os.getenv("ADAOS_SUPERVISOR_PROFILE_GRACEFUL_WAIT_SEC") or "25").strip()),
+        )
+    except Exception:
+        graceful_wait = 25.0
+    try:
+        terminate_wait = max(
+            5.0,
+            float(str(os.getenv("ADAOS_SUPERVISOR_PROFILE_TERMINATE_WAIT_SEC") or "10").strip()),
+        )
+    except Exception:
+        terminate_wait = 10.0
+    return drain_timeout, signal_delay, graceful_wait, terminate_wait
+
+
 def _proc_details(proc: subprocess.Popen[Any] | None, *, cwd_hint: str | None = None) -> dict[str, Any]:
     managed_pid = None
     managed_alive = False
@@ -3099,6 +3134,10 @@ class SupervisorManager:
             return
         if proc.poll() is not None:
             return
+        profile_mode = self._memory_profile_mode if proc is self._proc else "normal"
+        drain_timeout_sec, signal_delay_sec, graceful_wait_sec, terminate_wait_sec = _runtime_profile_graceful_shutdown_timeout_sec(
+            profile_mode
+        )
         if graceful:
             try:
                 headers = {"Content-Type": "application/json"}
@@ -3107,19 +3146,26 @@ class SupervisorManager:
                 requests.post(
                     str(base_url or self.runtime_base_url) + "/api/admin/shutdown",
                     headers=headers,
-                    json={"reason": reason, "drain_timeout_sec": 5.0, "signal_delay_sec": 0.25},
-                    timeout=3.0,
+                    json={
+                        "reason": reason,
+                        "drain_timeout_sec": float(drain_timeout_sec),
+                        "signal_delay_sec": float(signal_delay_sec),
+                    },
+                    timeout=_runtime_shutdown_request_timeout(
+                        drain_timeout_sec=drain_timeout_sec,
+                        signal_delay_sec=signal_delay_sec,
+                    ),
                 )
             except Exception:
                 pass
-            deadline = time.time() + 8.0
+            deadline = time.time() + float(graceful_wait_sec)
             while time.time() < deadline:
                 if proc.poll() is not None:
                     return
                 await asyncio.sleep(0.2)
         with contextlib.suppress(Exception):
             proc.terminate()
-        deadline = time.time() + 5.0
+        deadline = time.time() + float(terminate_wait_sec)
         while time.time() < deadline:
             if proc.poll() is not None:
                 return

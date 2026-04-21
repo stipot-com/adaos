@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import types
 from pathlib import Path
 
@@ -184,6 +185,38 @@ def test_runtime_trace_profile_session_writes_trace_artifacts(monkeypatch, tmp_p
     trace_payload = json.loads((artifacts_dir / "tracemalloc-trace-final.json").read_text(encoding="utf-8"))
     assert trace_payload["trace_frames"] == 25
     assert trace_payload["top_tracebacks"][0]["traceback"][0] == "app.py:10"
+
+
+def test_runtime_profile_signal_handler_finishes_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    installed: dict[int, object] = {}
+    restored: dict[int, object] = {}
+
+    monkeypatch.setattr(autostart_runner.signal, "getsignal", lambda sig: f"previous-{sig}")
+    monkeypatch.setattr(
+        autostart_runner.signal,
+        "signal",
+        lambda sig, handler: installed.setdefault(int(sig), handler) if callable(handler) else restored.setdefault(int(sig), handler),
+    )
+
+    calls: list[str] = []
+
+    class _Session:
+        def finish(self) -> None:
+            calls.append("finish")
+
+    restore = autostart_runner._install_runtime_profile_signal_handlers(_Session())  # type: ignore[arg-type]
+
+    assert int(signal.SIGTERM) in installed
+    handler = installed[int(signal.SIGTERM)]
+    try:
+        handler(signal.SIGTERM, None)  # type: ignore[misc]
+    except SystemExit as exc:
+        assert exc.code == 128 + int(signal.SIGTERM)
+
+    assert calls == ["finish"]
+    restore()
+    assert restored[int(signal.SIGTERM)] == f"previous-{int(signal.SIGTERM)}"
 
 
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:

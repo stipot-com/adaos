@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -12,7 +14,7 @@ import traceback
 from http import HTTPStatus
 from pathlib import Path
 from string import Formatter
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 import requests
@@ -323,6 +325,35 @@ class _RuntimeMemoryProfileSession:
         tracemalloc.stop()
         self.started = False
         self._start_snapshot = None
+
+
+def _install_runtime_profile_signal_handlers(
+    runtime_memory_profile: _RuntimeMemoryProfileSession,
+) -> Callable[[], None]:
+    previous_handlers: dict[int, Any] = {}
+    registered: list[int] = []
+
+    def _handler(signum: int, _frame: Any) -> None:
+        runtime_memory_profile.finish()
+        raise SystemExit(128 + int(signum))
+
+    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if sig is None:
+            continue
+        try:
+            previous_handlers[int(sig)] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+            registered.append(int(sig))
+        except Exception:
+            continue
+
+    def _restore() -> None:
+        for sig in registered:
+            previous = previous_handlers.get(sig, signal.SIG_DFL)
+            with contextlib.suppress(Exception):
+                signal.signal(sig, previous)
+
+    return _restore
 
 
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
@@ -1169,6 +1200,7 @@ def main() -> None:
 
         runtime_memory_profile = _RuntimeMemoryProfileSession()
         runtime_memory_profile.start()
+        restore_profile_signal_handlers = _install_runtime_profile_signal_handlers(runtime_memory_profile)
 
         phase = "uvicorn.run"
         try:
@@ -1182,6 +1214,7 @@ def main() -> None:
                 access_log=False,
             )
         finally:
+            restore_profile_signal_handlers()
             runtime_memory_profile.finish()
             if pidfile is not None:
                 _cleanup_pidfile(pidfile)

@@ -570,6 +570,59 @@ def test_supervisor_marks_profile_session_failed_when_profiled_runtime_exits(mon
     assert session["operations"][-1]["details"]["action"] == "profile_failed"
 
 
+def test_supervisor_profile_mode_shutdown_uses_extended_grace(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._memory_profile_mode = "sampled_profile"
+
+    class _Proc:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def kill():
+            return None
+
+    captured: dict[str, object] = {}
+    sleeps: list[float] = []
+
+    def _post(url, *, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = dict(json or {})
+        captured["timeout"] = timeout
+        raise RuntimeError("shutdown-api-unavailable")
+
+    times = iter([0.0, 0.0, 10.0, 20.0, 26.0, 26.0, 31.0, 37.0])
+
+    monkeypatch.setattr(supervisor.requests, "post", _post)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _sleep)
+
+    proc = _Proc()
+    manager._proc = proc
+
+    asyncio.run(manager._terminate_proc_locked(graceful=True, reason="supervisor.runtime.listener_lost"))
+
+    assert captured["json"] == {
+        "reason": "supervisor.runtime.listener_lost",
+        "drain_timeout_sec": 20.0,
+        "signal_delay_sec": 1.0,
+    }
+    assert captured["timeout"] == 23.0
+    assert sleeps
+
+
 def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
