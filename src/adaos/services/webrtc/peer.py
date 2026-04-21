@@ -46,6 +46,7 @@ _REUSABLE_CONNECTION_STATES = {"new", "connecting", "connected"}
 _TERMINAL_CONNECTION_STATES = {"failed", "closed", "disconnected"}
 _LIVE_CHANNEL_STATES = {"connecting", "open"}
 _STUCK_PEER_GRACE_SECONDS = 5.0
+_REPLACE_CLOSE_TIMEOUT_SECONDS = 1.5
 
 STUN_CONFIG = RTCConfiguration(
     iceServers=[
@@ -820,7 +821,21 @@ async def handle_rtc_offer(
             device_id,
             state or "unknown",
         )
-        await existing.close()
+        try:
+            await asyncio.wait_for(existing.close(), timeout=_REPLACE_CLOSE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            _log.warning(
+                "timed out closing stale peer for device=%s state=%s; continuing replacement",
+                device_id,
+                state or "unknown",
+            )
+        except Exception:
+            _log.warning(
+                "failed closing stale peer for device=%s state=%s; continuing replacement",
+                device_id,
+                state or "unknown",
+                exc_info=True,
+            )
 
     peer = HubPeer(device_id, webspace_id, send_ice_cb)
     _peers[device_id] = peer
