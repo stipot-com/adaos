@@ -2523,6 +2523,7 @@ def _sidecar_route_tunnel_state(*, enabled: bool, entry: dict[str, Any] | None) 
     current_owner = str(payload.get("current_owner") or "").strip().lower()
     planned_owner = str(payload.get("planned_owner") or "").strip().lower()
     current_support = str(payload.get("current_support") or "").strip().lower()
+    delegation_mode = str(payload.get("delegation_mode") or "").strip().lower()
     listener_ready = bool(payload.get("listener_ready"))
     handoff_ready = bool(payload.get("handoff_ready"))
 
@@ -2533,8 +2534,12 @@ def _sidecar_route_tunnel_state(*, enabled: bool, entry: dict[str, Any] | None) 
             return "starting"
         return "degraded" if enabled else "disabled"
     if planned_owner == "sidecar":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+            return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "planned"
         return "disabled" if not enabled or current_support == "disabled" else "planned"
     if current_owner == "runtime":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+            return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "not_owned"
         return "not_owned"
     return "unknown"
 
@@ -2767,7 +2772,11 @@ def _sidecar_progress_snapshot(
             "summary": (
                 "handoff is complete"
                 if status == "completed"
-                else blocker or "ownership handoff is not complete yet"
+                else (
+                    "sidecar local proxy listener is ready, but public ownership cutover is still pending"
+                    if listener_ready
+                    else blocker or "ownership handoff is not complete yet"
+                )
             ),
         }
 

@@ -15,6 +15,12 @@ from adaos.services.realtime_sidecar import (
 )
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 class _FakeRemoteWS:
     def __init__(self) -> None:
         self.sent: list[bytes] = []
@@ -130,6 +136,9 @@ def test_realtime_sidecar_route_tunnel_contract_reflects_enabled_supervisor_mode
 ) -> None:
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
     monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(_free_port()))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(_free_port()))
 
     contract = realtime_sidecar_mod.realtime_sidecar_route_tunnel_contract()
 
@@ -138,9 +147,11 @@ def test_realtime_sidecar_route_tunnel_contract_reflects_enabled_supervisor_mode
     assert contract["ownership_boundary"] == "transport_only"
     assert contract["ws"]["current_owner"] == "runtime"
     assert contract["ws"]["planned_owner"] == "sidecar"
-    assert contract["ws"]["delegation_mode"] == "not_implemented"
+    assert contract["ws"]["delegation_mode"] == "local_tcp_proxy"
+    assert contract["ws"]["listener"]["url"].endswith("/ws")
     assert contract["yws"]["planned_owner"] == "sidecar"
     assert contract["yws"]["handoff_ready"] is False
+    assert contract["yws"]["listener"]["url"].endswith("/yws")
 
 
 def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
@@ -148,6 +159,9 @@ def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
 ) -> None:
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
     monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(_free_port()))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(_free_port()))
     monkeypatch.setattr(realtime_sidecar_mod, "_find_realtime_listener_pid", lambda host, port: 7422)
 
     snapshot = realtime_sidecar_mod.realtime_sidecar_listener_snapshot()
@@ -158,7 +172,78 @@ def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
     assert snapshot["enablement_policy"]["source"] == "env_override"
     assert snapshot["route_tunnel_contract"]["current_support"] == "planned"
     assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
-    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"
+    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "local_tcp_proxy"
+
+
+def test_realtime_sidecar_route_tunnel_contract_marks_local_proxy_listeners_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(_free_port()))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(_free_port()))
+
+    async def _run() -> None:
+        server = RealtimeSidecarServer(host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            contract = realtime_sidecar_mod.realtime_sidecar_route_tunnel_contract()
+
+            assert contract["current_support"] == "proxy_ready"
+            assert contract["ws"]["listener_ready"] is True
+            assert contract["yws"]["listener_ready"] is True
+            assert contract["ws"]["current_owner"] == "runtime"
+            assert contract["ws"]["handoff_ready"] is False
+            assert contract["ws"]["listener"]["url"].endswith("/ws")
+            assert contract["yws"]["listener"]["url"].endswith("/yws")
+        finally:
+            await server.close()
+
+    asyncio.run(_run())
+
+
+def test_realtime_sidecar_route_proxy_relays_local_tcp_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_port = _free_port()
+    ws_proxy_port = _free_port()
+    yws_proxy_port = _free_port()
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", str(runtime_port))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(ws_proxy_port))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(yws_proxy_port))
+
+    async def _echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    break
+                writer.write(chunk)
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _run() -> None:
+        upstream = await asyncio.start_server(_echo, "127.0.0.1", runtime_port)
+        server = RealtimeSidecarServer(host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", ws_proxy_port)
+            writer.write(b"hello-through-sidecar")
+            await writer.drain()
+            echoed = await asyncio.wait_for(reader.readexactly(len(b"hello-through-sidecar")), timeout=1.0)
+            assert echoed == b"hello-through-sidecar"
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.close()
+            upstream.close()
+            await upstream.wait_closed()
+
+    asyncio.run(_run())
 
 
 def test_realtime_sidecar_loop_defaults_to_proactor(monkeypatch: pytest.MonkeyPatch) -> None:

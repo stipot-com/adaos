@@ -45,7 +45,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - route and root-control incident classes still need clearer separation
 - transport strategy is now visible, but automatic policy-driven transport switching is not yet the default runtime behavior
 - sidecar owns the current `hub_root` transport boundary and is supervisor-managed in managed deployments, but `/ws`, `/yws`, Yjs, and media transport are still outside sidecar scope
-- runtime diagnostics now explicitly report that `/ws` and `/yws` remain runtime-owned with `planned_owner=sidecar`, so partial sidecar adoption is observable instead of implicit
+- runtime diagnostics now explicitly report that `/ws` and `/yws` remain runtime-owned with `planned_owner=sidecar`; `adaos-realtime` now also boots dedicated local proxy listeners for both paths and surfaces them as `proxy_ready`, but browser/root ingress still is not cut over to those listeners
 - media/runtime diagnostics now also expose a planned continuity contract for live member media: member update should defer, while future hub restart behavior is expected to preserve an independent sidecar path
 - supervisor now enforces the first conservative continuity gate on top of that model: live-media-sensitive update transitions are deferred and unsafe manual runtime restart is refused until sidecar continuity becomes a real capability instead of only a declared target
 - local process/update supervision now has a separate supervisor authority in managed deployments, and default plus root-routed browser surfaces now read one shared supervisor transition/routed-base story, but warm-switch recovery soak, cleanup, and constrained-topology hardening are still in progress
@@ -64,7 +64,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 - sidecar rollout policy: explicit across runtime diagnostics and browser/runtime summaries, so hub default-on transport adoption can be audited separately from the still-open `/ws` and `/yws` ownership debt
 - `local supervisor browser-safe continuity`: default browser/runtime surfaces now read one shared `supervisor_runtime` snapshot, and routed-browser `/ws` continuity now exposes supervisor-aware active-runtime selection explicitly; the remaining work is warm-switch soak/recovery and final hardening, not visibility
 - `sidecar continuity`: now only blocks Event Model Phase 0 when the current runtime/media contract actually marks it as required
-- `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned
+- `/ws` and `/yws` ownership migration: still explicitly incomplete and runtime-owned, but the intermediate local sidecar proxy listeners are now real and visible as `proxy_ready`; the remaining gap is ingress cutover and final ownership transfer, not missing sidecar listener scaffolding
 
 That means Realtime Reliability is already strong enough to support Event Model
 baseline alignment work, but it should not yet be treated as a fully closed

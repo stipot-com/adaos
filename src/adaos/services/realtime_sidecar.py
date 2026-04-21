@@ -33,6 +33,26 @@ from adaos.services.runtime_dotenv import merged_runtime_dotenv_env
 NATS_PING = b"PING\r\n"
 NATS_PONG = b"PONG\r\n"
 _realtime_remote_quarantine_until: dict[str, float] = {}
+_ROUTE_TUNNEL_RUNTIME_STATE: dict[str, dict[str, Any]] = {
+    "ws": {
+        "listener_ready": False,
+        "listener_host": None,
+        "listener_port": None,
+        "listener_url": None,
+        "upstream_host": None,
+        "upstream_port": None,
+        "upstream_url": None,
+    },
+    "yws": {
+        "listener_ready": False,
+        "listener_host": None,
+        "listener_port": None,
+        "listener_url": None,
+        "upstream_host": None,
+        "upstream_port": None,
+        "upstream_url": None,
+    },
+}
 
 
 def _truthy(value: Any, *, default: bool = False) -> bool:
@@ -213,56 +233,214 @@ def _realtime_sidecar_lifecycle_manager() -> str:
     return "supervisor" if _truthy(os.getenv("ADAOS_SUPERVISOR_ENABLED"), default=False) else "runtime"
 
 
+def _route_tunnel_runtime_paths() -> dict[str, str]:
+    return {
+        "ws": "/ws",
+        "yws": "/yws",
+    }
+
+
+def _route_tunnel_listener_host() -> str:
+    raw = str(os.getenv("ADAOS_REALTIME_ROUTE_PROXY_HOST") or "").strip()
+    return raw or realtime_sidecar_host()
+
+
+def _route_tunnel_listener_port(kind: str) -> int:
+    key = str(kind or "").strip().lower()
+    env_map = {
+        "ws": "ADAOS_REALTIME_ROUTE_WS_PORT",
+        "yws": "ADAOS_REALTIME_ROUTE_YWS_PORT",
+    }
+    default_offsets = {
+        "ws": 1,
+        "yws": 2,
+    }
+    raw = os.getenv(env_map.get(key, ""))
+    default_port = int(realtime_sidecar_port()) + int(default_offsets.get(key, 0) or 0)
+    try:
+        port = int(str(raw or default_port).strip() or str(default_port))
+    except Exception:
+        port = default_port
+    if port <= 0:
+        port = default_port
+    return port
+
+
+def _route_tunnel_proxy_enabled(*, role: str | None = None) -> bool:
+    raw = os.getenv("ADAOS_REALTIME_ROUTE_PROXY_ENABLE")
+    if raw is not None:
+        return _truthy(raw, default=False)
+    return bool(realtime_sidecar_enabled(role=role))
+
+
+def _route_tunnel_upstream_host() -> str:
+    raw = str(os.getenv("ADAOS_RUNTIME_HOST") or "").strip()
+    if raw:
+        return raw
+    return "127.0.0.1"
+
+
+def _route_tunnel_upstream_port() -> int:
+    raw = os.getenv("ADAOS_RUNTIME_PORT")
+    try:
+        port = int(str(raw or "8777").strip() or "8777")
+    except Exception:
+        port = 8777
+    if port <= 0:
+        port = 8777
+    return port
+
+
+def _route_tunnel_listener_url(*, host: str, port: int, path: str) -> str:
+    return f"ws://{str(host or '').strip() or '127.0.0.1'}:{int(port)}{path}"
+
+
+def _route_tunnel_upstream_url(*, host: str, port: int, path: str) -> str:
+    return f"ws://{str(host or '').strip() or '127.0.0.1'}:{int(port)}{path}"
+
+
+def _reset_route_tunnel_runtime_state() -> None:
+    paths = _route_tunnel_runtime_paths()
+    upstream_host = _route_tunnel_upstream_host()
+    upstream_port = _route_tunnel_upstream_port()
+    listener_host = _route_tunnel_listener_host()
+    for kind, path in paths.items():
+        listener_port = _route_tunnel_listener_port(kind)
+        entry = _ROUTE_TUNNEL_RUNTIME_STATE.setdefault(kind, {})
+        entry.clear()
+        entry.update(
+            {
+                "listener_ready": False,
+                "listener_host": listener_host,
+                "listener_port": listener_port,
+                "listener_url": _route_tunnel_listener_url(host=listener_host, port=listener_port, path=path),
+                "upstream_host": upstream_host,
+                "upstream_port": upstream_port,
+                "upstream_url": _route_tunnel_upstream_url(host=upstream_host, port=upstream_port, path=path),
+            }
+        )
+
+
+def _set_route_tunnel_runtime_state(kind: str, **values: Any) -> None:
+    key = str(kind or "").strip().lower()
+    if key not in _ROUTE_TUNNEL_RUNTIME_STATE:
+        return
+    entry = _ROUTE_TUNNEL_RUNTIME_STATE.setdefault(key, {})
+    entry.update(values)
+
+
+def _route_tunnel_runtime_state(kind: str) -> dict[str, Any]:
+    key = str(kind or "").strip().lower()
+    payload = _ROUTE_TUNNEL_RUNTIME_STATE.get(key)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def realtime_sidecar_route_tunnel_listeners(*, role: str | None = None) -> dict[str, Any]:
+    enabled = bool(_route_tunnel_proxy_enabled(role=role))
+    lifecycle_manager = _realtime_sidecar_lifecycle_manager()
+    upstream_host = _route_tunnel_upstream_host()
+    upstream_port = _route_tunnel_upstream_port()
+    listener_host = _route_tunnel_listener_host()
+    paths = _route_tunnel_runtime_paths()
+    listeners: dict[str, Any] = {}
+    for kind, path in paths.items():
+        port = _route_tunnel_listener_port(kind)
+        runtime_state = _route_tunnel_runtime_state(kind)
+        listener_ready = bool(runtime_state.get("listener_ready"))
+        listener_url = str(runtime_state.get("listener_url") or "").strip() or _route_tunnel_listener_url(
+            host=listener_host,
+            port=port,
+            path=path,
+        )
+        listeners[kind] = {
+            "enabled": enabled,
+            "listener_host": str(runtime_state.get("listener_host") or listener_host).strip() or listener_host,
+            "listener_port": int(runtime_state.get("listener_port") or port),
+            "listener_url": listener_url,
+            "listener_ready": listener_ready,
+            "upstream_host": str(runtime_state.get("upstream_host") or upstream_host).strip() or upstream_host,
+            "upstream_port": int(runtime_state.get("upstream_port") or upstream_port),
+            "upstream_url": str(runtime_state.get("upstream_url") or "").strip()
+            or _route_tunnel_upstream_url(host=upstream_host, port=upstream_port, path=path),
+            "upstream_path": path,
+            "upstream_configured": int(runtime_state.get("upstream_port") or upstream_port) > 0,
+            "lifecycle_manager": lifecycle_manager,
+        }
+    return listeners
+
+
 def realtime_sidecar_route_tunnel_contract(*, role: str | None = None) -> dict[str, Any]:
     enabled = bool(realtime_sidecar_enabled(role=role))
     lifecycle_manager = _realtime_sidecar_lifecycle_manager()
-    current_support = "planned" if enabled else "disabled"
-    common_blockers = [
-        "route tunnel browser websocket handoff is not implemented in adaos-realtime yet",
-    ]
-    if not enabled:
-        common_blockers = [
-            "realtime sidecar is disabled",
-            *common_blockers,
-        ]
+    listeners = realtime_sidecar_route_tunnel_listeners(role=role)
+
+    def _entry(kind: str, *, logical_channels: list[str], ownership_blocker: str) -> dict[str, Any]:
+        listener = listeners.get(kind) if isinstance(listeners.get(kind), dict) else {}
+        listener_ready = bool(listener.get("listener_ready"))
+        listener_enabled = bool(listener.get("enabled"))
+        upstream_configured = bool(listener.get("upstream_configured"))
+        blockers = [ownership_blocker]
+        if not enabled:
+            blockers.append("realtime sidecar is disabled")
+        elif not listener_enabled:
+            blockers.append("sidecar local route proxy listeners are disabled")
+        elif not upstream_configured:
+            blockers.append("local runtime websocket proxy target is not configured")
+        elif listener_ready:
+            blockers.append("browser/root ingress is not cut over to the sidecar local proxy listener yet")
+        else:
+            blockers.append("sidecar local route proxy listener is not running yet")
+        current_support = "disabled" if not enabled else ("proxy_ready" if listener_ready else "planned")
+        return {
+            "current_owner": "runtime",
+            "planned_owner": "sidecar",
+            "migration_phase": "phase_2_route_tunnel_ownership",
+            "logical_channels": logical_channels,
+            "current_support": current_support,
+            "delegation_mode": "local_tcp_proxy",
+            "listener_ready": listener_ready,
+            "handoff_ready": False,
+            "listener": {
+                "host": listener.get("listener_host"),
+                "port": listener.get("listener_port"),
+                "url": listener.get("listener_url"),
+            },
+            "upstream": {
+                "host": listener.get("upstream_host"),
+                "port": listener.get("upstream_port"),
+                "url": listener.get("upstream_url"),
+            },
+            "blockers": blockers,
+        }
+
+    ws_entry = _entry(
+        "ws",
+        logical_channels=[
+            "hub_member.command",
+            "hub_member.event",
+            "hub_member.presence",
+        ],
+        ownership_blocker="browser route websocket still terminates in the runtime FastAPI app",
+    )
+    yws_entry = _entry(
+        "yws",
+        logical_channels=[
+            "hub_member.sync",
+        ],
+        ownership_blocker="Yjs websocket/session ownership still lives in the runtime gateway",
+    )
+    ready_total = sum(
+        1
+        for item in (ws_entry, yws_entry)
+        if isinstance(item, dict) and bool(item.get("listener_ready"))
+    )
+    current_support = "disabled" if not enabled else ("proxy_ready" if ready_total >= 2 else "planned")
     return {
         "current_support": current_support,
         "lifecycle_manager": lifecycle_manager,
         "ownership_boundary": "transport_only",
-        "ws": {
-            "current_owner": "runtime",
-            "planned_owner": "sidecar",
-            "migration_phase": "phase_2_route_tunnel_ownership",
-            "logical_channels": [
-                "hub_member.command",
-                "hub_member.event",
-                "hub_member.presence",
-            ],
-            "current_support": current_support,
-            "delegation_mode": "not_implemented",
-            "listener_ready": False,
-            "handoff_ready": False,
-            "blockers": [
-                "browser route websocket still terminates in the runtime FastAPI app",
-                *common_blockers,
-            ],
-        },
-        "yws": {
-            "current_owner": "runtime",
-            "planned_owner": "sidecar",
-            "migration_phase": "phase_2_route_tunnel_ownership",
-            "logical_channels": [
-                "hub_member.sync",
-            ],
-            "current_support": current_support,
-            "delegation_mode": "not_implemented",
-            "listener_ready": False,
-            "handoff_ready": False,
-            "blockers": [
-                "Yjs websocket/session ownership still lives in the runtime gateway",
-                *common_blockers,
-            ],
-        },
+        "ws": ws_entry,
+        "yws": yws_entry,
     }
 
 
@@ -834,11 +1012,13 @@ class RealtimeSidecarServer:
         self._host = str(host or "127.0.0.1")
         self._port = int(port)
         self._server: asyncio.AbstractServer | None = None
+        self._route_servers: dict[str, asyncio.AbstractServer] = {}
         self._active_task: asyncio.Task[Any] | None = None
         self._diag_task: asyncio.Task[Any] | None = None
         self._stopped = asyncio.Event()
         self._stats = _RelayStats()
         self._pending_ping_sources: deque[str] = deque()
+        _reset_route_tunnel_runtime_state()
 
     def _begin_session_stats(self, *, session_id: str) -> None:
         previous = self._stats
@@ -955,6 +1135,7 @@ class RealtimeSidecarServer:
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self._host, self._port)
+        await self._start_route_tunnel_listeners()
         self._diag_task = asyncio.create_task(self._diag_loop(), name="adaos-realtime-diag")
         self._log(
             f"serve start listen=nats://{self.listen_host}:{self.listen_port} remote_candidates={resolve_realtime_remote_candidates()} "
@@ -974,6 +1155,13 @@ class RealtimeSidecarServer:
             self._active_task.cancel()
             with contextlib.suppress(BaseException):
                 await self._active_task
+        for server in list(self._route_servers.values()):
+            server.close()
+        for server in list(self._route_servers.values()):
+            with contextlib.suppress(BaseException):
+                await server.wait_closed()
+        self._route_servers.clear()
+        _reset_route_tunnel_runtime_state()
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(BaseException):
@@ -982,6 +1170,108 @@ class RealtimeSidecarServer:
             self._diag_task.cancel()
             with contextlib.suppress(BaseException):
                 await self._diag_task
+
+    async def _start_route_tunnel_listeners(self) -> None:
+        listeners = realtime_sidecar_route_tunnel_listeners()
+        for kind, listener in listeners.items():
+            if not isinstance(listener, dict):
+                continue
+            if not bool(listener.get("enabled")):
+                continue
+            if not bool(listener.get("upstream_configured")):
+                self._log(f"{kind} proxy skipped because runtime upstream is not configured")
+                continue
+            host = str(listener.get("listener_host") or "127.0.0.1").strip() or "127.0.0.1"
+            port = int(listener.get("listener_port") or 0)
+            if port <= 0:
+                continue
+            try:
+                server = await asyncio.start_server(
+                    lambda reader, writer, proxy_kind=kind: self._handle_route_tunnel_client(proxy_kind, reader, writer),
+                    host,
+                    port,
+                )
+            except Exception as exc:
+                self._log(f"{kind} proxy bind failed listen={host}:{port} err={type(exc).__name__}: {exc}")
+                continue
+            self._route_servers[kind] = server
+            _set_route_tunnel_runtime_state(
+                kind,
+                listener_ready=True,
+                listener_host=host,
+                listener_port=port,
+            )
+            self._log(
+                f"{kind} proxy ready listen={listener.get('listener_url')} upstream={listener.get('upstream_url')}"
+            )
+
+    async def _handle_route_tunnel_client(
+        self,
+        kind: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        listeners = realtime_sidecar_route_tunnel_listeners()
+        listener = listeners.get(str(kind or "").strip().lower())
+        if not isinstance(listener, dict):
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        target_host = str(listener.get("upstream_host") or "").strip() or "127.0.0.1"
+        target_port = int(listener.get("upstream_port") or 0)
+        if target_port <= 0:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        try:
+            upstream_reader, upstream_writer = await asyncio.open_connection(target_host, target_port)
+        except Exception as exc:
+            self._log(
+                f"{kind} proxy upstream connect failed target={target_host}:{target_port} err={type(exc).__name__}: {exc}"
+            )
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+
+        async def _pipe(
+            source_reader: asyncio.StreamReader,
+            dest_writer: asyncio.StreamWriter,
+        ) -> None:
+            try:
+                while True:
+                    chunk = await source_reader.read(65536)
+                    if not chunk:
+                        break
+                    dest_writer.write(chunk)
+                    await dest_writer.drain()
+            finally:
+                with contextlib.suppress(Exception):
+                    dest_writer.close()
+
+        tasks = [
+            asyncio.create_task(_pipe(reader, upstream_writer), name=f"adaos-realtime-{kind}-proxy-upstream"),
+            asyncio.create_task(_pipe(upstream_reader, writer), name=f"adaos-realtime-{kind}-proxy-downstream"),
+        ]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(BaseException):
+                await task
+        for task in done:
+            with contextlib.suppress(BaseException):
+                await task
+        with contextlib.suppress(Exception):
+            upstream_writer.close()
+        with contextlib.suppress(Exception):
+            writer.close()
+        with contextlib.suppress(Exception):
+            await upstream_writer.wait_closed()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
 
     def _tagged_remote_url(self, url: str, *, session_id: str) -> str:
         if not _truthy(os.getenv("ADAOS_REALTIME_CONNECT_TAG_QUERY", "1"), default=True):

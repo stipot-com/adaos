@@ -112,6 +112,31 @@ def _compact_phase0_checkpoint(value: Any) -> dict[str, Any] | None:
     }
 
 
+def _compact_route_tunnel_state(value: Any) -> str:
+    payload = _coerce_dict(value)
+    current_owner = str(payload.get("current_owner") or "").strip().lower()
+    planned_owner = str(payload.get("planned_owner") or "").strip().lower()
+    current_support = str(payload.get("current_support") or "").strip().lower()
+    delegation_mode = str(payload.get("delegation_mode") or "").strip().lower()
+    listener_ready = bool(payload.get("listener_ready"))
+    handoff_ready = bool(payload.get("handoff_ready"))
+    if current_owner == "sidecar":
+        if handoff_ready:
+            return "ready"
+        if listener_ready:
+            return "starting"
+        return "degraded"
+    if planned_owner == "sidecar":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+            return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "planned"
+        return "disabled" if current_support == "disabled" else "planned"
+    if current_owner == "runtime":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+            return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "not_owned"
+        return "not_owned"
+    return "unknown"
+
+
 def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id: str | None = None) -> dict[str, Any]:
     runtime = _coerce_dict(payload.get("runtime"))
     hub_root_protocol = _coerce_dict(runtime.get("hub_root_protocol"))
@@ -176,8 +201,8 @@ def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id
         },
         "browserWsHandoffReady": str(ws.get("current_owner") or "").strip().lower() == "sidecar" and bool(ws.get("handoff_ready")),
         "browserYwsHandoffReady": str(yws.get("current_owner") or "").strip().lower() == "sidecar" and bool(yws.get("handoff_ready")),
-        "browserWsHandoffState": str(ws.get("delegation_mode") or ws.get("planned_owner") or ws.get("current_owner") or "unknown").strip() or "unknown",
-        "browserYwsHandoffState": str(yws.get("delegation_mode") or yws.get("planned_owner") or yws.get("current_owner") or "unknown").strip() or "unknown",
+        "browserWsHandoffState": _compact_route_tunnel_state(ws),
+        "browserYwsHandoffState": _compact_route_tunnel_state(yws),
         "browserWsHandoffBlocker": (str((_coerce_list(ws.get("blockers"))[:1] or [""])[0]).strip() or None),
         "browserYwsHandoffBlocker": (str((_coerce_list(yws.get("blockers"))[:1] or [""])[0]).strip() or None),
         "supervisorRuntime": supervisor_runtime,
