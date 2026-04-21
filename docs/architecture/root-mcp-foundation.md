@@ -145,6 +145,9 @@ The preferred target-state split is:
   - domain-specific capability profiles
   - client-facing surface evolution
 
+For managed-target execution, planes should prefer skill-mediated publication over kernel-specific endpoint growth.
+The node kernel should remain stable and transport-oriented, while domain-specific operational behavior should be expressed through installed skills that publish governed capability surfaces for that target.
+
 This keeps the root-hosted governance boundary stable while allowing multiple MCP surfaces to evolve independently.
 
 Candidate planes include:
@@ -673,6 +676,15 @@ The operational routing flow should be:
 6. the adapter performs bounded work and returns a normalized result
 7. `root` records the operational event and returns a normalized MCP response linked to the audit trace
 
+The key distinction is:
+
+- the client always enters through the zonal `root` MCP endpoint
+- `root` resolves bearer-backed session context such as `subnet_id`, `zone`, `target_id`, and capability profile
+- only after that resolution does `root` decide whether the request is answered directly on root or delegated to a managed target
+
+This means external MCP clients should never need to know target routing parameters beyond the issued bearer.
+Routing context belongs to the root-side `MCP Session Lease`, not to the client transport contract.
+
 This path is intentionally evolutionary: the first implementation should reuse existing root-hub transports and node control paths where possible, while wrapping them in typed contracts and policy checks.
 
 For `ProfileOps`, routing should be explicitly split by evidence source:
@@ -691,6 +703,14 @@ More generally, Root MCP routing should distinguish three classes:
 - `descriptive cached reads`
 - `operational live reads`
 - `operational bounded writes`
+
+For `hub`-side operational execution, the preferred target-state is:
+
+- `root` remains the single external MCP entrypoint
+- `hub` exposes task-specific operational behavior through installed skills and their published capability surfaces
+- the kernel supplies stable transport, identity, runtime, and policy hooks rather than accumulating feature-specific MCP projections
+
+This keeps node-core responsibilities stable while allowing new operational surfaces to evolve as skills and planes.
 
 These classes should not be collapsed into one undifferentiated request path, because they have different freshness, authority, and caching semantics.
 

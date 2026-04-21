@@ -13,6 +13,7 @@ This roadmap tracks how that foundation should evolve into descriptive and opera
    Cached descriptors and live target operations have different freshness and authority requirements.
 3. Plane evolution should not force kernel churn.
    New MCP surfaces should land primarily as planes over the foundation.
+   Hub-side task execution should prefer skill-published capability surfaces over kernel-specific MCP special cases.
 4. External-client constraints should be solved with root-issued session context.
    Do not weaken routing semantics just because a client cannot provide session parameters.
 5. CI/CD should become the freshness engine for descriptive context.
