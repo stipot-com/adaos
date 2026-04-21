@@ -894,7 +894,16 @@ def test_event_model_phase0_communication_checkpoint_tracks_remaining_runtime_ga
                 "state": "complete",
                 "covered_flows": 6,
                 "total_flows": 6,
-            }
+            },
+            "route_runtime": {
+                "local_base_last_source": "supervisor_public_status",
+                "local_base_last_value": "http://127.0.0.1:8777",
+                "local_base_discovery_total": 2,
+                "local_base_cache_hit_total": 1,
+                "local_base_runtime_port_shortcut_total": 0,
+                "local_base_error_total": 0,
+                "last_open_base_total": 2,
+            },
         },
         supervisor_runtime={
             "available": True,
@@ -944,6 +953,18 @@ def test_event_model_phase0_communication_checkpoint_tracks_remaining_runtime_ga
     assert runtime_comm["evidence"]["sidecar_continuity"]["hub_runtime_update"] == "preserve_sidecar"
     assert runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["state"] == "ready"
     assert runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["carried_by_reliability"] is True
+    assert (
+        runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["routed_browser_proxy"]["state"]
+        == "ready"
+    )
+    assert (
+        runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["routed_browser_proxy"]["source"]
+        == "supervisor_public_status"
+    )
+    assert (
+        runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["routed_browser_proxy"]["selected_ws_base"]
+        == "ws://127.0.0.1:8777"
+    )
 
 
 def test_supervisor_transition_runtime_snapshot_surfaces_browser_safe_transition_contract(monkeypatch) -> None:
@@ -1050,7 +1071,12 @@ def test_event_model_phase0_communication_checkpoint_keeps_supervisor_and_option
                 "state": "complete",
                 "covered_flows": 6,
                 "total_flows": 6,
-            }
+            },
+            "route_runtime": {
+                "local_base_last_source": "runtime_port_env",
+                "local_base_last_value": "http://127.0.0.1:8777",
+                "local_base_runtime_port_shortcut_total": 1,
+            },
         },
         supervisor_runtime={
             "available": True,
@@ -1077,6 +1103,10 @@ def test_event_model_phase0_communication_checkpoint_keeps_supervisor_and_option
     ]
     assert "sidecar_continuity" not in runtime_comm["pending_criteria"]
     assert "browser_safe_supervisor_continuity" not in runtime_comm["pending_criteria"]
+    assert (
+        runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["routed_browser_proxy"]["selection_mode"]
+        == "runtime_port_env"
+    )
 
 
 def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:
@@ -1577,6 +1607,10 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                                     },
                                     "browser_safe_supervisor_continuity": {
                                         "state": "ready",
+                                        "routed_browser_proxy": {
+                                            "state": "ready",
+                                            "source": "supervisor_public_status",
+                                        },
                                     },
                                 },
                             },
@@ -1636,7 +1670,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "owner=runtime->sidecar" in result.output
     assert "event_model.phase0.communication: state=in_progress done=1/2 open=phase0.runtime_comm_ready" in result.output
     assert "event_model.phase0.node_browser_ready: status=done yjs=yes yws=ready owner=sidecar->sidecar" in result.output
-    assert "event_model.phase0.runtime_comm_ready: status=in_progress class_a=complete:6/6 ws=planned yws=ready continuity=planned supervisor=ready" in result.output
+    assert "event_model.phase0.runtime_comm_ready: status=in_progress class_a=complete:6/6 ws=planned yws=ready continuity=planned supervisor=ready route-supervisor=ready:supervisor_public_status" in result.output
     assert "event_model.phase0.runtime_comm_ready.blockers: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "supervisor_runtime: available=True state=countdown phase=scheduled mode=warm_switch candidate=ready warm_switch=warm switch admitted surface=ready served_by=supervisor_fallback" in result.output
     assert "media.update_guard: live=yes" in result.output

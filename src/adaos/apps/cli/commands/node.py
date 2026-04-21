@@ -745,6 +745,11 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             if isinstance(runtime_evidence.get("browser_safe_supervisor_continuity"), dict)
             else {}
         )
+        runtime_supervisor_route = (
+            runtime_supervisor.get("routed_browser_proxy")
+            if isinstance(runtime_supervisor.get("routed_browser_proxy"), dict)
+            else {}
+        )
         typer.echo(
             "event_model.phase0.communication: "
             f"state={phase0_comm.get('state') or '-'} "
@@ -771,7 +776,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
                 f"ws={runtime_ws.get('state') or '-'} "
                 f"yws={runtime_yws.get('state') or '-'} "
                 f"continuity={runtime_continuity.get('state') or '-'} "
-                f"supervisor={runtime_supervisor.get('state') or '-'}"
+                f"supervisor={runtime_supervisor.get('state') or '-'} "
+                f"route-supervisor={runtime_supervisor_route.get('state') or '-'}:{runtime_supervisor_route.get('source') or '-'}"
             )
             runtime_blockers = [
                 str(item).strip()
