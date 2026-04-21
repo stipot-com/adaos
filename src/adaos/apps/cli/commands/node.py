@@ -430,6 +430,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     if sidecar:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
+        health = process.get("health") if isinstance(process.get("health"), dict) else {}
+        code = process.get("code") if isinstance(process.get("code"), dict) else {}
         scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
         continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
         progress = sidecar.get("progress") if isinstance(sidecar.get("progress"), dict) else {}
@@ -458,6 +460,9 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"local={sidecar.get('local_url') or '-'} "
             f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
             f"next={planned_next or '-'} "
+            f"probe={'ok' if health.get('last_probe_ok') else ('fail' if health.get('last_probe_ok') is False else '-')}"
+            f"/{health.get('consecutive_failures') if health.get('consecutive_failures') is not None else '-'} "
+            f"rev={(str(code.get('active_fingerprint') or '-')[:12])} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
         if progress:

@@ -274,6 +274,42 @@ def _runtime_port_local_http_base() -> str | None:
     return None
 
 
+def _runtime_port_probe_candidates() -> list[str]:
+    bases: list[str] = []
+    runtime_port_base = _runtime_port_local_http_base()
+    if runtime_port_base:
+        bases.append(runtime_port_base)
+    bases.extend(
+        [
+            "http://127.0.0.1:8778",
+            "http://localhost:8778",
+            "http://127.0.0.1:8777",
+            "http://localhost:8777",
+        ]
+    )
+    seen: set[str] = set()
+    return [b for b in bases if (b not in seen and not seen.add(b))]
+
+
+def _probe_runtime_http_base(sess: Any, *, base: str, timeout_s: float) -> bool:
+    try:
+        response = sess.get(
+            str(base).rstrip("/") + "/api/ping",
+            headers={"Accept": "application/json"},
+            timeout=max(0.1, float(timeout_s)),
+        )
+        if int(response.status_code) != 200:
+            return False
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return False
+        if not bool(payload.get("ok")):
+            return False
+        return str(payload.get("service") or "").strip() == "adaos-runtime"
+    except Exception:
+        return False
+
+
 def _observe_route_local_base_diag(**details: Any) -> None:
     with _ROUTE_LOCAL_BASE_LOCK:
         _ROUTE_LOCAL_BASE_DIAG.update(details)
@@ -326,6 +362,7 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
 
     started = time.monotonic()
     result: str | None = None
+    result_source = ""
     last_error = ""
     sess = requests.Session()
     try:
@@ -349,10 +386,19 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
                 runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
                 if runtime_url and _is_local_http_base(runtime_url):
                     result = runtime_url
+                    result_source = "supervisor_public_status"
                     break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
+        if not result:
+            probe_timeout_s = max(0.1, min(float(timeout_s), 0.35))
+            for runtime_base in _runtime_port_probe_candidates():
+                if _probe_runtime_http_base(sess, base=runtime_base, timeout_s=probe_timeout_s):
+                    result = runtime_base.rstrip("/")
+                    result_source = "runtime_port_probe"
+                    last_error = ""
+                    break
     finally:
         try:
             sess.close()
@@ -365,7 +411,11 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
             _ROUTE_LOCAL_BASE_DIAG.get("local_base_discovery_total") or 0
         ) + 1
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_latency_ms"] = latency_ms
-        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = "supervisor_public_status" if result else "supervisor_public_status_failed"
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = (
+            str(result_source or "").strip()
+            if result
+            else "supervisor_public_status_failed"
+        )
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = str(result or "").strip()
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_discovered_at"] = time.time()
         if result:

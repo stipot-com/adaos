@@ -4920,7 +4920,7 @@ def _routed_browser_supervisor_surface(
             blockers.append(last_error)
     if source in {"supervisor_public_status", "cache", "supervisor_runtime"}:
         selection_mode = "supervisor_active_runtime"
-    elif source == "runtime_port_env":
+    elif source in {"runtime_port_env", "runtime_port_probe"}:
         selection_mode = "runtime_port_env"
     else:
         selection_mode = None
@@ -4947,7 +4947,7 @@ def _routed_browser_supervisor_surface(
     }
 
 
-def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 0.35) -> dict[str, Any]:
+def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 1.0) -> dict[str, Any]:
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         payload = {
             "available": False,

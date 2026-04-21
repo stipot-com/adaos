@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ from adaos.services.core_update import write_plan as write_core_update_plan
 from adaos.services.core_update import write_status as write_core_update_status
 from adaos.services.node_config import load_config
 from adaos.services.realtime_sidecar import (
+    probe_realtime_sidecar_ready,
     realtime_sidecar_enabled,
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
@@ -65,7 +67,7 @@ from adaos.services.root.memory_profile_sync import (
     memory_profile_artifact_source_api_path,
     report_hub_memory_profile,
 )
-from adaos.services.runtime_paths import current_base_dir
+from adaos.services.runtime_paths import current_base_dir, current_repo_root
 from adaos.services.supervisor_memory import (
     DEFAULT_PROFILER_ADAPTER,
     IMPLEMENTED_PROFILE_CONTROL_ACTIONS,
@@ -936,6 +938,94 @@ class SupervisorManager:
         self._memory_last_growth_bytes_per_min: float | None = None
         self._memory_last_available_bytes: int | None = None
         self._memory_last_telemetry_at: float | None = None
+        self._sidecar_launch_cwd: str | None = None
+        self._sidecar_last_start_reason: str | None = None
+        self._sidecar_last_restart_reason: str | None = None
+        self._sidecar_last_probe_at: float | None = None
+        self._sidecar_last_probe_ok: bool | None = None
+        self._sidecar_last_probe_error: str | None = None
+        self._sidecar_consecutive_probe_failures = 0
+        self._sidecar_code_fingerprint: str | None = None
+        self._sidecar_code_fingerprint_updated_at: float | None = None
+
+    def _sidecar_repo_root(self) -> Path | None:
+        try:
+            ctx = get_ctx()
+            repo_root = ctx.paths.repo_root()
+            raw = repo_root() if callable(repo_root) else repo_root
+            if raw:
+                return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+        return current_repo_root()
+
+    def _sidecar_tracked_paths(self) -> list[Path]:
+        repo_root = self._sidecar_repo_root()
+        if repo_root is None:
+            return []
+        candidates = [
+            repo_root / "src" / "adaos" / "services" / "realtime_sidecar.py",
+            repo_root / "src" / "adaos" / "services" / "nats_config.py",
+            repo_root / "src" / "adaos" / "services" / "nats_ws_transport.py",
+        ]
+        return [path.resolve() for path in candidates if path.exists()]
+
+    def _sidecar_code_state(self) -> dict[str, Any]:
+        repo_root = self._sidecar_repo_root()
+        tracked_paths = self._sidecar_tracked_paths()
+        digest = hashlib.sha256()
+        tracked_text: list[str] = []
+        for path in tracked_paths:
+            try:
+                stat = path.stat()
+                tracked_text.append(str(path))
+                digest.update(str(path).encode("utf-8", errors="ignore"))
+                digest.update(str(int(stat.st_mtime_ns)).encode("ascii"))
+                digest.update(str(int(stat.st_size)).encode("ascii"))
+            except Exception:
+                continue
+        fingerprint = digest.hexdigest() if tracked_text else None
+        return {
+            "repo_root": str(repo_root) if repo_root is not None else None,
+            "launch_cwd": self._sidecar_launch_cwd,
+            "fingerprint": fingerprint,
+            "updated_at": time.time() if fingerprint else None,
+            "tracked_paths": tracked_text,
+        }
+
+    async def _probe_sidecar_health(self, *, force: bool = False) -> bool | None:
+        snapshot = realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role())
+        if not bool(snapshot.get("listener_running")):
+            self._sidecar_last_probe_at = time.time()
+            self._sidecar_last_probe_ok = False
+            self._sidecar_last_probe_error = "listener_not_running"
+            self._sidecar_consecutive_probe_failures += 1
+            return False
+        now = time.time()
+        if (
+            not force
+            and self._sidecar_last_probe_at is not None
+            and now - self._sidecar_last_probe_at < 5.0
+        ):
+            return self._sidecar_last_probe_ok
+        try:
+            ready = await probe_realtime_sidecar_ready(
+                host=str(snapshot.get("host") or "127.0.0.1"),
+                port=int(snapshot.get("port") or 0),
+                timeout_s=1.5,
+            )
+        except Exception as exc:
+            ready = False
+            self._sidecar_last_probe_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self._sidecar_last_probe_error = None if ready else "probe_not_ready"
+        self._sidecar_last_probe_at = now
+        self._sidecar_last_probe_ok = bool(ready)
+        if ready:
+            self._sidecar_consecutive_probe_failures = 0
+        else:
+            self._sidecar_consecutive_probe_failures += 1
+        return ready
 
     def _desired_memory_profile_mode(self) -> str:
         mode = str(self._memory_requested_profile_mode or "").strip().lower() or "normal"
@@ -1421,10 +1511,35 @@ class SupervisorManager:
 
     def _sidecar_status_payload(self) -> dict[str, Any]:
         role = self._sidecar_role()
+        process = realtime_sidecar_listener_snapshot(self._sidecar_proc, role=role)
+        code_state = self._sidecar_code_state()
+        process.update(
+            {
+                "health": {
+                    "last_probe_at": self._sidecar_last_probe_at,
+                    "last_probe_ok": self._sidecar_last_probe_ok,
+                    "last_probe_error": self._sidecar_last_probe_error,
+                    "consecutive_failures": int(self._sidecar_consecutive_probe_failures),
+                },
+                "code": {
+                    **code_state,
+                    "active_fingerprint": self._sidecar_code_fingerprint,
+                    "active_updated_at": self._sidecar_code_fingerprint_updated_at,
+                },
+                "launch_cwd": self._sidecar_launch_cwd,
+                "last_start_reason": self._sidecar_last_start_reason,
+                "last_restart_reason": self._sidecar_last_restart_reason,
+            }
+        )
         return {
             "enabled": bool(realtime_sidecar_enabled(role=role)),
             "role": role,
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=role),
+            "process": process,
+            "code": process["code"],
+            "health": process["health"],
+            "launch_cwd": self._sidecar_launch_cwd,
+            "last_start_reason": self._sidecar_last_start_reason,
+            "last_restart_reason": self._sidecar_last_restart_reason,
         }
 
     def _runtime_request_json(
@@ -2621,11 +2736,20 @@ class SupervisorManager:
             self._mark_active_memory_session_running(runtime_instance_id=runtime_instance_id, transition_role=transition_role)
         self._persist_runtime_state()
 
-    async def _spawn_sidecar_locked(self) -> None:
+    async def _spawn_sidecar_locked(self, *, reason: str = "supervisor.sidecar.start") -> None:
         proc = self._sidecar_proc
         if proc is not None and proc.poll() is None:
             return
         self._sidecar_proc = await start_realtime_sidecar_subprocess(role=self._sidecar_role())
+        code_state = self._sidecar_code_state()
+        self._sidecar_launch_cwd = str(code_state.get("repo_root") or code_state.get("launch_cwd") or "") or None
+        self._sidecar_code_fingerprint = str(code_state.get("fingerprint") or "").strip() or None
+        self._sidecar_code_fingerprint_updated_at = time.time() if self._sidecar_code_fingerprint else None
+        self._sidecar_last_start_reason = str(reason or "supervisor.sidecar.start")
+        self._sidecar_last_probe_at = None
+        self._sidecar_last_probe_ok = None
+        self._sidecar_last_probe_error = None
+        self._sidecar_consecutive_probe_failures = 0
         self._persist_runtime_state()
 
     async def _spawn_candidate_runtime_locked(self, *, slot: str, reason: str = "supervisor.candidate.start") -> None:
@@ -2763,18 +2887,19 @@ class SupervisorManager:
             self._persist_runtime_state()
 
     async def stop_sidecar(self, *, reason: str = "supervisor.sidecar.stop") -> dict[str, Any]:
-        del reason
         async with self._lock:
             await stop_realtime_sidecar_subprocess(self._sidecar_proc)
             self._sidecar_proc = None
+            self._sidecar_last_restart_reason = str(reason or "supervisor.sidecar.stop")
             self._persist_runtime_state()
             return self._sidecar_status_payload()
 
     def sidecar_status(self) -> dict[str, Any]:
+        payload = self._sidecar_status_payload()
         return {
             "ok": True,
             "runtime": self._runtime_sidecar_runtime_payload(),
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role()),
+            "process": payload.get("process"),
         }
 
     async def restart_sidecar(self, *, reconnect_hub_root: bool = False) -> dict[str, Any]:
@@ -2784,6 +2909,16 @@ class SupervisorManager:
                 role=self._sidecar_role(),
             )
             self._sidecar_proc = new_proc
+            code_state = self._sidecar_code_state()
+            self._sidecar_launch_cwd = str(code_state.get("repo_root") or code_state.get("launch_cwd") or "") or None
+            self._sidecar_code_fingerprint = str(code_state.get("fingerprint") or "").strip() or None
+            self._sidecar_code_fingerprint_updated_at = time.time() if self._sidecar_code_fingerprint else None
+            self._sidecar_last_start_reason = "supervisor.sidecar.restart"
+            self._sidecar_last_restart_reason = str(restart_result.get("reason") or "restarted")
+            self._sidecar_last_probe_at = None
+            self._sidecar_last_probe_ok = None
+            self._sidecar_last_probe_error = None
+            self._sidecar_consecutive_probe_failures = 0
             self._persist_runtime_state()
         reconnect_result: dict[str, Any] | None = None
         if reconnect_hub_root and str(self._sidecar_role() or "").strip().lower() == "hub":
@@ -2801,7 +2936,7 @@ class SupervisorManager:
             "restart": restart_result,
             "reconnect": reconnect_result,
             "runtime": self._runtime_sidecar_runtime_payload(),
-            "process": realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role()),
+            "process": self._sidecar_status_payload().get("process"),
         }
 
     async def start_candidate_runtime(
@@ -2975,18 +3110,55 @@ class SupervisorManager:
             await asyncio.sleep(1.0)
             sidecar_proc = self._sidecar_proc
             if sidecar_proc is not None and sidecar_proc.poll() is not None:
+                self._sidecar_last_restart_reason = "supervisor.sidecar.exited"
                 self._sidecar_proc = None
                 self._persist_runtime_state()
             if realtime_sidecar_enabled(role=self._sidecar_role()) and not self._stopping:
-                sidecar_snapshot = realtime_sidecar_listener_snapshot(
-                    self._sidecar_proc,
-                    role=self._sidecar_role(),
+                sidecar_snapshot = realtime_sidecar_listener_snapshot(self._sidecar_proc, role=self._sidecar_role())
+                code_state = self._sidecar_code_state()
+                current_fingerprint = str(code_state.get("fingerprint") or "").strip() or None
+                code_changed = bool(
+                    current_fingerprint
+                    and self._sidecar_code_fingerprint
+                    and current_fingerprint != self._sidecar_code_fingerprint
                 )
+                sidecar_ready = await self._probe_sidecar_health()
+                should_restart_sidecar = False
+                restart_reason = None
                 if self._sidecar_proc is None and not bool(sidecar_snapshot.get("listener_running")):
+                    should_restart_sidecar = True
+                    restart_reason = "supervisor.sidecar.missing"
+                elif code_changed:
+                    should_restart_sidecar = True
+                    restart_reason = "supervisor.sidecar.code_changed"
+                elif sidecar_ready is False and self._sidecar_consecutive_probe_failures >= 2:
+                    should_restart_sidecar = True
+                    restart_reason = "supervisor.sidecar.unhealthy"
+                if should_restart_sidecar:
                     try:
                         async with self._lock:
-                            if self._sidecar_proc is None and not self._stopping:
-                                await self._spawn_sidecar_locked()
+                            if self._stopping:
+                                pass
+                            elif self._sidecar_proc is None and restart_reason == "supervisor.sidecar.missing":
+                                self._sidecar_last_restart_reason = restart_reason
+                                await self._spawn_sidecar_locked(reason=restart_reason)
+                            else:
+                                self._sidecar_last_restart_reason = str(restart_reason or "supervisor.sidecar.restart")
+                                new_proc, restart_result = await restart_realtime_sidecar_subprocess(
+                                    proc=self._sidecar_proc,
+                                    role=self._sidecar_role(),
+                                )
+                                self._sidecar_proc = new_proc
+                                self._sidecar_launch_cwd = str(code_state.get("repo_root") or self._sidecar_launch_cwd or "") or None
+                                self._sidecar_code_fingerprint = current_fingerprint
+                                self._sidecar_code_fingerprint_updated_at = time.time() if current_fingerprint else None
+                                self._sidecar_last_start_reason = str(restart_reason or "supervisor.sidecar.restart")
+                                self._sidecar_last_restart_reason = str(restart_reason or restart_result.get("reason") or "restarted")
+                                self._sidecar_last_probe_at = None
+                                self._sidecar_last_probe_ok = None
+                                self._sidecar_last_probe_error = None
+                                self._sidecar_consecutive_probe_failures = 0
+                                self._persist_runtime_state()
                     except Exception:
                         _LOG.warning("failed to restart adaos-realtime sidecar", exc_info=True)
             await self._maybe_resume_or_continue_transition()

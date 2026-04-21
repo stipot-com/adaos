@@ -29,6 +29,7 @@ from adaos.services.nats_ws_transport import (
     _ws_proxy_from_env,
 )
 from adaos.services.runtime_dotenv import merged_runtime_dotenv_env
+from adaos.services.runtime_paths import current_repo_root
 
 NATS_PING = b"PING\r\n"
 NATS_PONG = b"PONG\r\n"
@@ -128,6 +129,20 @@ def _default_realtime_sidecar_role(role: str | None = None) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _realtime_sidecar_repo_root() -> Path | None:
+    try:
+        from adaos.services.agent_context import get_ctx
+
+        ctx = get_ctx()
+        repo_root = ctx.paths.repo_root()
+        raw = repo_root() if callable(repo_root) else repo_root
+        if raw:
+            return Path(raw).expanduser().resolve()
+    except Exception:
+        pass
+    return current_repo_root()
 
 
 def realtime_sidecar_enablement_policy(*, role: str | None = None) -> dict[str, Any]:
@@ -658,6 +673,10 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     env.setdefault("ADAOS_REALTIME_PREFER_DEDICATED", "0")
     env["ADAOS_REALTIME_ALLOW_API_FALLBACK"] = "1"
     env.setdefault("ADAOS_REALTIME_WIN_LOOP", "proactor")
+    repo_root = _realtime_sidecar_repo_root()
+    launch_cwd = repo_root if isinstance(repo_root, Path) and repo_root.exists() else Path(os.getcwd()).resolve()
+    if repo_root is not None:
+        env["ADAOS_ROOT_REPO_ROOT"] = str(repo_root)
     log_path = realtime_sidecar_log_path()
     stdout_handle = log_path.open("ab")
     args = [
@@ -673,7 +692,7 @@ async def start_realtime_sidecar_subprocess(*, role: str | None = None) -> subpr
     ]
     proc = subprocess.Popen(
         args,
-        cwd=os.getcwd(),
+        cwd=str(launch_cwd),
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=stdout_handle,
