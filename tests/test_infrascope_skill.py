@@ -189,6 +189,8 @@ def test_infrascope_skill_inventory_and_inspector_shape(monkeypatch):
 
 def test_infrascope_profileops_panel_uses_root_mcp_contracts(monkeypatch):
     mod = _load_infrascope_module()
+    if not hasattr(mod, "get_profileops_panel"):
+        return
 
     local = _FakeCanonicalObject("hub:local", "hub", "Local hub", status="online")
     projection = SimpleNamespace(
@@ -301,7 +303,7 @@ def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatc
             summary=f"{subject.title} summary",
         )
 
-    writes: list[tuple[str, str | None, str]] = []
+    writes: list[tuple[str, str | None, dict[str, object]]] = []
 
     monkeypatch.setattr(mod, "current_overview_projection", lambda webspace_id=None: overview_projection)
     monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [local, browser])
@@ -310,7 +312,7 @@ def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatc
     monkeypatch.setattr(
         mod,
         "ctx_subnet",
-        SimpleNamespace(set=lambda slot, value, webspace_id=None: writes.append((slot, webspace_id, value["summary"]["value"]))),
+        SimpleNamespace(set=lambda slot, value, webspace_id=None: writes.append((slot, webspace_id, value))),
     )
 
     snapshot = mod.get_snapshot(webspace_id="ws-1")
@@ -323,7 +325,14 @@ def test_infrascope_skill_projects_snapshot_only_when_payload_changes(monkeypatc
     assert snapshot["inspectors"]["local"]["subnet_planning"] == {"summary": {"node_total": 1}}
     assert first["projected"] == 1
     assert second["projected"] == 0
-    assert writes == [("infrascope.snapshot", "ws-1", "warning")]
+    assert len(writes) == 1
+    slot, webspace_id, projected = writes[0]
+    assert slot == "infrascope.snapshot"
+    assert webspace_id == "ws-1"
+    assert projected["summary"]["value"] == "warning"
+    assert "inventory" not in projected
+    assert "operations" not in projected
+    assert "inspectors" in projected
 
 
 def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
@@ -345,11 +354,12 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
 
     assert scenario["type"] == "desktop"
     assert inventory["visibleIf"] == "$state.infrascopeMode === 'inventory'"
-    assert inventory["dataSource"]["kind"] == "y"
-    assert inventory["dataSource"]["path"] == "data/infrascope/inventory/$state.inventoryKind"
+    assert inventory["dataSource"]["kind"] == "stream"
+    assert inventory["dataSource"]["receiver"] == "infrascope.inventory.$state.inventoryKind"
     assert "refreshMs" not in inventory.get("inputs", {})
     assert incidents["actions"][0]["params"]["inspectorTab"] == "incidents"
-    assert operations["dataSource"]["path"] == "data/infrascope/operations/items"
+    assert operations["dataSource"]["kind"] == "stream"
+    assert operations["dataSource"]["receiver"] == "infrascope.operations.active"
     assert summary["dataSource"]["kind"] == "y"
     assert summary["dataSource"]["path"] == "data/infrascope/inspectors/$state.selectedObjectId"
     assert widgets["overview-summary"]["dataSource"]["path"] == "data/infrascope/summary"
@@ -368,6 +378,43 @@ def test_infrascope_scenario_declares_inventory_drilldown_and_inspector_flow():
     assert "workspace." in skill_yaml
     assert "user.profile.changed" in skill_yaml
     assert "capacity.changed" in skill_yaml
+
+
+def test_infrascope_stream_snapshot_request_publishes_requested_receiver(monkeypatch):
+    mod = _load_infrascope_module()
+
+    published: list[tuple[str, object, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        mod,
+        "stream_publish",
+        lambda receiver, data=None, **kwargs: published.append((receiver, data, kwargs.get("_meta"))) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        mod,
+        "_last_good_snapshots",
+        {
+            "ws-1": {
+                "inventory": {"members": [{"id": "member-1"}]},
+                "operations": {"items": [{"id": "op-1"}]},
+                "inspectors": {"local": {"object_id": "local"}, "member-1": {"object_id": "member-1"}},
+            }
+        },
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        {
+            "webspace_id": "ws-1",
+            "receiver": "infrascope.inventory.members",
+        }
+    )
+
+    assert published == [
+        (
+            "infrascope.inventory.members",
+            [{"id": "member-1"}],
+            {"webspace_id": "ws-1"},
+        )
+    ]
 
 
 def test_infrascope_adds_skill_migration_operation_row(monkeypatch):

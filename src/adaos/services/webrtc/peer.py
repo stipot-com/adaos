@@ -173,6 +173,37 @@ def _iter_initial_event_channel_messages(topics: set[str]) -> list[dict[str, Any
     return messages
 
 
+def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_ctx()
+            bus_emit(
+                ctx.bus,
+                "webio.stream.snapshot.requested",
+                {
+                    "topic": token,
+                    "webspace_id": webspace_id,
+                    "receiver": receiver,
+                    "transport": str(transport or "webrtc_data:events"),
+                },
+                "webrtc.peer",
+            )
+        except Exception:
+            _log.debug("failed to request webio stream snapshot topic=%s", token, exc_info=True)
+
+
 def _forward_event_channel_bus_event(ev: Any) -> None:
     event_type = str(getattr(ev, "type", "") or "").strip()
     if not event_type:
@@ -513,6 +544,7 @@ class HubPeer:
                             await self._send_event_channel_message(item)
 
                     asyncio.ensure_future(_send_initial())
+                    _request_webio_stream_snapshots(added, transport="webrtc_data:events")
                 return
             ch = msg.get("ch")
             t = msg.get("t")

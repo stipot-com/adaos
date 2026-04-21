@@ -792,6 +792,39 @@ def _iter_initial_ws_event_messages(topics: set[str]) -> list[dict[str, Any]]:
     return messages
 
 
+def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_agent_ctx()
+            ctx.bus.publish(
+                DomainEvent(
+                    type="webio.stream.snapshot.requested",
+                    payload={
+                        "topic": token,
+                        "webspace_id": webspace_id,
+                        "receiver": receiver,
+                        "transport": str(transport or "ws"),
+                    },
+                    source="events_ws",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to request webio stream snapshot topic=%s", token, exc_info=True)
+
+
 async def _send_initial_ws_event_messages(websocket: WebSocket, topics: set[str]) -> None:
     for message in _iter_initial_ws_event_messages(topics):
         try:
@@ -2136,6 +2169,7 @@ async def events_ws(websocket: WebSocket):
                 )
                 if added:
                     await _send_initial_ws_event_messages(websocket, added)
+                    _request_webio_stream_snapshots(added, transport="ws")
                 continue
 
             ch = msg.get("ch")
