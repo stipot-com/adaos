@@ -142,6 +142,7 @@ def test_infra_access_skill_issue_codex_connection(monkeypatch) -> None:
 
     module._CACHE["ts"] = 0.0
     module._CACHE["snapshot"] = None
+    module._LAST_ISSUED.clear()
     monkeypatch.setattr(
         module.sdk_root_mcp,
         "get_local_target_context",
@@ -175,6 +176,7 @@ def test_infra_access_skill_issue_codex_connection(monkeypatch) -> None:
     assert payload["access_token"] == "secret-token"
     assert payload["mcp_http_url"] == "https://root.test/v1/root/mcp"
     assert "--apply-codex" in payload["codex_prepare_command"]
+    assert module._LAST_ISSUED["payload"]["access_token"] == "secret-token"
 
 
 def test_infra_access_skill_projects_fallback_snapshot(monkeypatch) -> None:
@@ -183,6 +185,7 @@ def test_infra_access_skill_projects_fallback_snapshot(monkeypatch) -> None:
     projected: list[tuple[str | None, dict]] = []
     module._CACHE["ts"] = 0.0
     module._CACHE["snapshot"] = None
+    module._LAST_ISSUED.clear()
 
     monkeypatch.setattr(
         module.sdk_root_mcp,
