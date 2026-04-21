@@ -143,6 +143,37 @@ Success criteria:
 - hub restart and realtime restart can be reasoned about independently
 - a hub runtime restart does not implicitly terminate the live media continuity path that has already been delegated to sidecar ownership
 
+## Deferred Design Block: Sidecar-Owned Yjs Session Runtime
+
+This is a separate future block.
+It is intentionally not part of the current `Phase 2 - Route tunnel ownership`
+closeout and should not be mixed into Event Model `Phase 0` completion criteria.
+
+Why this needs its own block:
+
+- moving only browser `"/yws"` socket ingress into sidecar is not enough to make Yjs survive slot switch
+- current live Yjs room lifecycle, in-process `YRoom` ownership, direct live-room mutation paths, and room reset/reload orchestration still live in the runtime process
+- as long as those room/session responsibilities stay runtime-owned, a runtime slot switch can still tear down the live Yjs continuity path even if the public `"/yws"` transport ingress has already moved
+
+Target for the later block:
+
+- sidecar owns Yjs websocket termination and live room/session lifecycle
+- sidecar owns room reset/reload/idle-eviction orchestration for the browser-facing Yjs runtime
+- runtime/core interacts with Yjs through a narrow explicit gateway instead of reaching into in-process `y_server.rooms`
+- diagnostics distinguish transport ownership, session ownership, and persistence ownership instead of collapsing them into one `yws` bit
+
+Preparatory work that is allowed before that block starts:
+
+- reduce direct runtime dependencies on in-process live-room globals
+- introduce a shared Yjs runtime gateway abstraction that can later point to runtime-local or sidecar-owned session authority
+- keep `YStore`/persistence semantics explicit so session ownership can move without smuggling hub business logic into sidecar
+- continue the current roadmap focus on public `"/yws"` transport cutover and communication prerequisites without claiming full Yjs session continuity yet
+
+What this means for the current roadmap:
+
+- Event Model `Phase 0` still depends on the current `"/yws"` transport ownership cutover track
+- full sidecar-owned Yjs session/runtime continuity is a later reliability/runtime block, not a hidden extra acceptance criterion for the current phase
+
 ## Operational Notes
 
 - Hub runtimes now default to `sidecar on` for the current `hub_root` transport scope.

@@ -50,6 +50,7 @@ The project must not start with sidecar or transport adapters as if they alone s
 - supervisor now enforces the first conservative continuity gate on top of that model: live-media-sensitive update transitions are deferred and unsafe manual runtime restart is refused until sidecar continuity becomes a real capability instead of only a declared target
 - local process/update supervision now has a separate supervisor authority in managed deployments, and default plus root-routed browser surfaces now read one shared supervisor transition/routed-base story, but warm-switch recovery soak, cleanup, and constrained-topology hardening are still in progress
 - router-side media route administration now has a normalized contract in code and a browser-visible Yjs carrier at `data.media.route`, but direct `browser <-> member` admission and signaling are still not implemented
+- full sidecar-owned Yjs room/session runtime is intentionally deferred as a separate redesign block; the current roadmap keeps focus on `"/yws"` transport cutover plus preparatory decoupling from runtime-local live-room ownership
 
 ### Event Model dependency note
 
@@ -59,6 +60,7 @@ Phase 0 dependency tracking, the current implementation should be read as:
 - `browser/member semantic channels`: materially ready for current scope
 - `Yjs ownership boundaries`: now explicit in runtime diagnostics for selector, effective branches, compatibility caches, and transport/session lifecycle
 - `Yjs as SyncChannel`: complete for the current sync-channel scope; remaining browser-facing work now sits in `/yws` transport ownership migration rather than in the sync contract itself
+- `sidecar-owned Yjs session runtime`: explicitly deferred beyond current Event Model `Phase 0`; for the current track it is preparatory work plus `"/yws"` transport cutover, not full room/session migration
 - `hub_root` Class A coverage: explicit in runtime diagnostics and now consumed by browser/page runtime communication snapshots instead of being visible only in CLI/control-plane tooling
 - `event_model_phase0_communication` checkpoint: explicit across node API, CLI, canonical control-plane projection, and browser/page runtime, so Event Model Phase 0 reads the same two open communication tasks everywhere
 - sidecar rollout policy: explicit across runtime diagnostics and browser/runtime summaries, so hub default-on transport adoption can be audited separately from the still-open `/ws` and `/yws` ownership debt
