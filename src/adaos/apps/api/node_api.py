@@ -78,6 +78,102 @@ def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
 
+def _compact_phase0_task(value: Any) -> dict[str, Any] | None:
+    payload = _coerce_dict(value)
+    if not payload:
+        return None
+    return {
+        "id": str(payload.get("id") or "").strip(),
+        "status": str(payload.get("status") or "unknown").strip() or "unknown",
+        "summary": str(payload.get("summary") or "").strip(),
+        "completedCriteria": _coerce_list(payload.get("completed_criteria")),
+        "pendingCriteria": _coerce_list(payload.get("pending_criteria")),
+        "pendingReasons": _coerce_list(payload.get("pending_reasons")),
+        "evidence": _coerce_dict(payload.get("evidence")),
+    }
+
+
+def _compact_phase0_checkpoint(value: Any) -> dict[str, Any] | None:
+    payload = _coerce_dict(value)
+    if not payload:
+        return None
+    tasks = _coerce_dict(payload.get("tasks"))
+    return {
+        "state": str(payload.get("state") or "unknown").strip() or "unknown",
+        "ready": bool(payload.get("ready")),
+        "trackedTasks": _coerce_list(payload.get("tracked_tasks")),
+        "completedTaskTotal": int(payload.get("completed_task_total") or 0),
+        "taskTotal": int(payload.get("task_total") or 0),
+        "remainingTasks": _coerce_list(payload.get("remaining_tasks")),
+        "tasks": {
+            "nodeBrowserReady": _compact_phase0_task(tasks.get("phase0.node_browser_ready")),
+            "runtimeCommReady": _compact_phase0_task(tasks.get("phase0.runtime_comm_ready")),
+        },
+    }
+
+
+def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id: str | None = None) -> dict[str, Any]:
+    runtime = _coerce_dict(payload.get("runtime"))
+    hub_root_protocol = _coerce_dict(runtime.get("hub_root_protocol"))
+    sidecar_runtime = _coerce_dict(runtime.get("sidecar_runtime"))
+    hardening = _coerce_dict(hub_root_protocol.get("hardening_coverage"))
+    continuity = _coerce_dict(sidecar_runtime.get("continuity_contract"))
+    progress = _coerce_dict(sidecar_runtime.get("progress"))
+    route_tunnel = _coerce_dict(sidecar_runtime.get("route_tunnel_contract"))
+    ws = _coerce_dict(route_tunnel.get("ws"))
+    yws = _coerce_dict(route_tunnel.get("yws"))
+    supervisor_runtime = _coerce_dict(runtime.get("supervisor_runtime"))
+    resolved_webspace_id = str(
+        webspace_id
+        or runtime.get("webspace_id")
+        or payload.get("webspace_id")
+        or "default"
+    ).strip() or "default"
+    return {
+        "ok": True,
+        "updatedAt": int(time.time() * 1000),
+        "available": True,
+        "source": "api.node.reliability.summary",
+        "webspaceId": resolved_webspace_id,
+        "hubRootHardening": {
+            "state": str(hardening.get("state") or "unknown").strip() or "unknown",
+            "coveredFlows": int(hardening.get("covered_flows") or 0),
+            "totalFlows": int(hardening.get("total_flows") or 0),
+            "flows": _coerce_list(hardening.get("flows")),
+        },
+        "sidecarContinuity": {
+            "currentSupport": str(continuity.get("current_support") or "unknown").strip() or "unknown",
+            "hubRuntimeUpdate": str(continuity.get("hub_runtime_update") or "unknown").strip() or "unknown",
+            "required": bool(continuity.get("required")),
+            "pendingBoundaries": _coerce_list(continuity.get("pending_boundaries")),
+            "readyBoundaries": _coerce_list(continuity.get("ready_boundaries")),
+            "blockers": _coerce_list(continuity.get("blockers")),
+        },
+        "sidecarProgress": {
+            "state": str(progress.get("state") or "unknown").strip() or "unknown",
+            "percent": float(progress.get("percent") or 0),
+            "completedMilestones": int(progress.get("completed_milestones") or 0),
+            "milestoneTotal": int(progress.get("milestone_total") or 0),
+            "currentMilestone": str(progress.get("current_milestone") or "").strip() or None,
+            "nextBlocker": str(progress.get("next_blocker") or "").strip() or None,
+        },
+        "routeTunnel": {
+            "currentSupport": str(route_tunnel.get("current_support") or "unknown").strip() or "unknown",
+            "ownershipBoundary": str(route_tunnel.get("ownership_boundary") or "unknown").strip() or "unknown",
+            "ws": ws,
+            "yws": yws,
+        },
+        "browserWsHandoffReady": str(ws.get("current_owner") or "").strip().lower() == "sidecar" and bool(ws.get("handoff_ready")),
+        "browserYwsHandoffReady": str(yws.get("current_owner") or "").strip().lower() == "sidecar" and bool(yws.get("handoff_ready")),
+        "browserWsHandoffState": str(ws.get("delegation_mode") or ws.get("planned_owner") or ws.get("current_owner") or "unknown").strip() or "unknown",
+        "browserYwsHandoffState": str(yws.get("delegation_mode") or yws.get("planned_owner") or yws.get("current_owner") or "unknown").strip() or "unknown",
+        "browserWsHandoffBlocker": (str((_coerce_list(ws.get("blockers"))[:1] or [""])[0]).strip() or None),
+        "browserYwsHandoffBlocker": (str((_coerce_list(yws.get("blockers"))[:1] or [""])[0]).strip() or None),
+        "supervisorRuntime": supervisor_runtime,
+        "phase0Communication": _compact_phase0_checkpoint(runtime.get("event_model_phase0_communication")),
+    }
+
+
 def _env_flag_enabled(name: str) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -891,6 +987,14 @@ async def node_control_plane_subnet_planning_context(
 @router.get("/reliability", dependencies=[Depends(require_token)])
 async def node_reliability() -> dict[str, Any]:
     return current_reliability_payload()
+
+
+@router.get("/reliability/summary", dependencies=[Depends(require_token)])
+async def node_reliability_summary(webspace_id: str | None = None) -> dict[str, Any]:
+    return _compact_runtime_reliability_payload(
+        current_reliability_payload(webspace_id=webspace_id),
+        webspace_id=webspace_id,
+    )
 
 
 @router.post("/hub-root/reconnect", dependencies=[Depends(require_token)])

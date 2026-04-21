@@ -185,6 +185,37 @@ def _resolve_benchmark_control(
     return requested, "requested", first_code, first_payload
 
 
+def _resolve_reliability_control(
+    *,
+    control: str,
+    token: str,
+    timeout_sec: float = 5.0,
+) -> tuple[str, str, int | None, Any]:
+    requested = str(control or "").strip()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    _append_control_candidate(candidates, seen, requested)
+    for candidate in _supervisor_runtime_control_candidates(requested, token):
+        _append_control_candidate(candidates, seen, candidate)
+
+    first_code: int | None = None
+    first_payload: Any = None
+    for index, candidate in enumerate(candidates):
+        code, payload = _control_get_json(
+            control=candidate,
+            path="/api/node/reliability",
+            token=token,
+            timeout=timeout_sec,
+        )
+        if first_payload is None:
+            first_code = code
+            first_payload = payload
+        if code == 200 and isinstance(payload, dict):
+            reason = "requested" if index == 0 else "supervisor_runtime_fallback"
+            return candidate, reason, code, payload
+    return requested, "requested", first_code, first_payload
+
+
 def _is_supervisor_controlled_transition(payload: Any) -> bool:
     data = payload if isinstance(payload, dict) else {}
     status = data.get("status") if isinstance(data.get("status"), dict) else {}
@@ -2203,11 +2234,10 @@ def node_reliability(
     cfg = load_config()
     control0 = _resolve_node_control_base_url(explicit=control)
     token = _resolved_local_control_token(control0, cfg)
-    status_code, payload = _control_get_json(
+    selected_control, selected_reason, status_code, payload = _resolve_reliability_control(
         control=control0,
-        path="/api/node/reliability",
         token=token,
-        timeout=5.0,
+        timeout_sec=5.0,
     )
     if status_code is None:
         supervisor_status, supervisor_payload = _supervisor_transition_probe(control=control0, token=token)
@@ -2238,8 +2268,19 @@ def node_reliability(
         raise typer.Exit(code=1)
 
     if json_output:
+        if selected_reason != "requested":
+            payload = dict(payload)
+            payload["control_resolution"] = {
+                "requested": control0,
+                "selected": selected_control,
+                "reason": selected_reason,
+            }
         _print(payload, json_output=True)
     else:
+        if selected_reason != "requested":
+            typer.echo(
+                f"reliability.control: requested={control0} selected={selected_control} reason={selected_reason}"
+            )
         _print_reliability_summary(payload)
 
 

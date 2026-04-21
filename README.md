@@ -225,6 +225,12 @@ curl -i http://127.0.0.1:8777/health/live
 curl -i http://127.0.0.1:8777/health/ready
 ```
 
+Backend versioning:
+
+- Current backend base version: `0.1.0`
+- CI/CD publishes backend builds with auto-incremented patch version in the form `MAJOR.MINOR.PATCH`, where `PATCH` is derived from the backend git history during image build.
+- The deployed backend exposes `version`, `build_date`, and `commit` via `https://ru.api.inimatic.com/healthz` and `/v1/health`.
+
 ## Documentation
 
 - Project docs: `docs/`

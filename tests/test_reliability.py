@@ -1301,6 +1301,89 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     assert payload["runtime"]["degraded_matrix"]["root_routed_browser_proxy"]["allowed"] is True
 
 
+def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monkeypatch) -> None:
+    from adaos.apps.api.node_api import require_token, router
+
+    monkeypatch.setattr(
+        "adaos.apps.api.node_api.current_reliability_payload",
+        lambda webspace_id=None: {
+            "runtime": {
+                "hub_root_protocol": {
+                    "hardening_coverage": {
+                        "state": "complete",
+                        "covered_flows": 6,
+                        "total_flows": 6,
+                        "flows": [{"id": "flow-1"}],
+                    }
+                },
+                "sidecar_runtime": {
+                    "continuity_contract": {
+                        "current_support": "ready",
+                        "hub_runtime_update": "preserve_sidecar",
+                        "required": True,
+                        "pending_boundaries": [],
+                        "ready_boundaries": ["browser_yjs_ws"],
+                        "blockers": [],
+                    },
+                    "progress": {
+                        "state": "complete",
+                        "percent": 100,
+                        "completed_milestones": 4,
+                        "milestone_total": 4,
+                        "current_milestone": "done",
+                    },
+                    "route_tunnel_contract": {
+                        "current_support": "ready",
+                        "ownership_boundary": "sidecar",
+                        "ws": {"current_owner": "sidecar", "handoff_ready": True, "blockers": []},
+                        "yws": {"current_owner": "sidecar", "handoff_ready": True, "blockers": []},
+                    },
+                },
+                "supervisor_runtime": {
+                    "status": {"state": "countdown", "phase": "scheduled"},
+                    "runtime": {"transition_mode": "warm_switch"},
+                },
+                "event_model_phase0_communication": {
+                    "state": "complete",
+                    "ready": True,
+                    "tracked_tasks": ["phase0.node_browser_ready"],
+                    "completed_task_total": 2,
+                    "task_total": 2,
+                    "remaining_tasks": [],
+                    "tasks": {
+                        "phase0.node_browser_ready": {
+                            "id": "phase0.node_browser_ready",
+                            "status": "done",
+                            "summary": "ready",
+                            "completed_criteria": ["browser_member_semantic_channels"],
+                            "pending_criteria": [],
+                            "pending_reasons": [],
+                            "evidence": {},
+                        }
+                    },
+                },
+            }
+        },
+    )
+
+    app = FastAPI()
+    app.dependency_overrides[require_token] = lambda: True
+    app.include_router(router, prefix="/api/node")
+    client = TestClient(app)
+
+    response = client.get("/api/node/reliability/summary")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert "runtime" not in payload
+    assert "model" not in payload
+    assert payload["source"] == "api.node.reliability.summary"
+    assert payload["hubRootHardening"]["coveredFlows"] == 6
+    assert payload["sidecarContinuity"]["currentSupport"] == "ready"
+    assert payload["browserYwsHandoffReady"] is True
+    assert payload["phase0Communication"]["tasks"]["nodeBrowserReady"]["status"] == "done"
+
+
 def test_reliability_snapshot_times_out_slow_sync_and_media_sections(monkeypatch) -> None:
     _reset_state()
 
@@ -1748,3 +1831,49 @@ def test_node_reliability_cli_falls_back_to_supervisor_transition(monkeypatch) -
     assert "runtime_restarting_under_supervisor: yes" in result.output
     assert "supervisor.attempt: awaiting_root_restart" in result.output
     assert "supervisor.memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output
+
+
+def test_node_reliability_cli_falls_back_to_supervisor_runtime_candidate(monkeypatch) -> None:
+    node_cli = importlib.import_module("adaos.apps.cli.commands.node")
+    monkeypatch.setattr(node_cli, "load_config", lambda: SimpleNamespace(token="dev-token", role="hub", hub_url=None))
+    monkeypatch.setattr(node_cli, "_resolve_node_control_base_url", lambda explicit=None: "http://127.0.0.1:8778")
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_get_json(**kwargs):
+        control = str(kwargs.get("control") or "")
+        path = str(kwargs.get("path") or "")
+        calls.append((control, path))
+        if path == "/api/supervisor/public/update-status":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "runtime": {
+                        "runtime_url": "http://127.0.0.1:8777",
+                        "candidate_runtime_url": "http://127.0.0.1:8778",
+                    },
+                },
+            )
+        if path == "/api/node/reliability" and control == "http://127.0.0.1:8778":
+            return None, {"error": "connection_error", "detail": "connection refused"}
+        if path == "/api/node/reliability" and control == "http://127.0.0.1:8777":
+            return (
+                200,
+                {
+                    "ok": True,
+                    "node": {"node_id": "node-1", "role": "hub", "ready": True, "node_state": "ready"},
+                    "runtime": {},
+                },
+            )
+        return 404, {"detail": "unexpected"}
+
+    monkeypatch.setattr(node_cli, "_control_get_json", _fake_get_json)
+
+    result = CliRunner().invoke(node_cli.app, ["reliability"])
+
+    assert result.exit_code == 0
+    assert ("http://127.0.0.1:8778", "/api/node/reliability") in calls
+    assert ("http://127.0.0.1:8776", "/api/supervisor/public/update-status") in calls
+    assert ("http://127.0.0.1:8777", "/api/node/reliability") in calls
+    assert "reliability.control: requested=http://127.0.0.1:8778 selected=http://127.0.0.1:8777 reason=supervisor_runtime_fallback" in result.output
