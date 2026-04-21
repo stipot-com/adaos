@@ -508,6 +508,14 @@ def _autostart_admin_unavailable_message(base_url: str) -> str:
     )
 
 
+def _autostart_supervisor_unavailable_message(base_url: str) -> str:
+    journal_cmd, status_path = _autostart_service_diagnostics()
+    return (
+        f"local AdaOS supervisor API is unavailable at {base_url}; the service may be restarting or failed to boot. "
+        f"Inspect '{journal_cmd}' and '{status_path}'."
+    )
+
+
 def _autostart_supervisor_get(path: str, *, token: Optional[str] = None) -> dict:
     base_url = _autostart_supervisor_base_url()
     if not base_url:
@@ -518,7 +526,7 @@ def _autostart_supervisor_get(path: str, *, token: Optional[str] = None) -> dict
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
-        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
+        raise RuntimeError(_autostart_supervisor_unavailable_message(base_url)) from exc
 
 
 def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
@@ -547,7 +555,7 @@ def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Op
                 raise RuntimeError(
                     f"local AdaOS supervisor API request to {base_url}{path} failed with {status_label}: {detail}"
                 ) from exc
-        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
+        raise RuntimeError(_autostart_supervisor_unavailable_message(base_url)) from exc
 
 
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
@@ -661,11 +669,7 @@ def _autostart_update_get(*, token: Optional[str] = None) -> dict:
 
 
 def _autostart_update_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
-    try:
-        return _autostart_supervisor_post(path, body=body, token=token)
-    except RuntimeError:
-        runtime_path = path.replace("/api/supervisor/update/", "/api/admin/update/")
-        return _autostart_admin_post(runtime_path, body=body, token=token)
+    return _autostart_supervisor_post(path, body=body, token=token)
 
 
 def _restart_autostart_service() -> dict[str, object]:

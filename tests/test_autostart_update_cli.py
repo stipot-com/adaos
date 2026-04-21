@@ -289,12 +289,12 @@ def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:
         captured["body"] = body
         return {"ok": True, "accepted": True}
 
-    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _post)
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
 
     result = runner.invoke(autostart_app, ["smoke-update", "--json"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/api/admin/update/start"
+    assert captured["path"] == "/api/supervisor/update/start"
     assert captured["body"]["target_rev"] == "rev2026"
     assert captured["body"]["target_version"] == "0.1.0+1.abc"
     assert captured["body"]["reason"] == "cli.smoke_update"
@@ -311,13 +311,34 @@ def test_autostart_update_start_defaults_to_current_branch(monkeypatch) -> None:
         captured["body"] = body
         return {"ok": True, "accepted": True}
 
-    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _post)
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
 
     result = runner.invoke(autostart_app, ["update-start", "--json"])
 
     assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/start"
     assert captured["body"]["target_rev"] == "rev2026"
     assert captured["body"]["target_version"] == "0.1.0+2.def"
+
+
+def test_autostart_update_start_does_not_fallback_to_runtime_admin(monkeypatch) -> None:
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("local AdaOS supervisor API is unavailable at http://127.0.0.1:8776")),
+    )
+
+    def _unexpected_admin_post(*args, **kwargs):
+        raise AssertionError("runtime admin fallback must not be used for autostart update mutations")
+
+    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _unexpected_admin_post)
+
+    result = runner.invoke(autostart_app, ["update-start"])
+
+    assert result.exit_code == 1, result.output
+    assert "http://127.0.0.1:8776" in result.output
 
 
 def test_autostart_update_promote_root_posts_to_supervisor(monkeypatch) -> None:
