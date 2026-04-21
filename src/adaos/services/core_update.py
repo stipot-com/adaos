@@ -480,7 +480,9 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         payload["bootstrap_update"] = bootstrap_update
     elif root_restart_pending:
         payload["root_promotion_required"] = False
-    return write_status(payload)
+    finalized = write_status(payload)
+    clear_plan()
+    return finalized
 
 
 def _repo_root() -> Path | None:
