@@ -130,16 +130,64 @@ def _default_realtime_sidecar_role(role: str | None = None) -> str | None:
     return None
 
 
-def realtime_sidecar_enabled(*, role: str | None = None, os_name: str | None = None) -> bool:
+def realtime_sidecar_enablement_policy(*, role: str | None = None) -> dict[str, Any]:
+    role_norm = _default_realtime_sidecar_role(role)
+    default_enabled = role_norm == "hub"
     raw = os.getenv("ADAOS_REALTIME_ENABLE")
+    env_var = "ADAOS_REALTIME_ENABLE"
     if raw is None:
         raw = os.getenv("HUB_REALTIME_ENABLE")
+        env_var = "HUB_REALTIME_ENABLE"
     if raw is not None:
-        return _truthy(raw, default=False)
-    role_norm = _default_realtime_sidecar_role(role)
+        enabled = _truthy(raw, default=False)
+        value = str(raw).strip()
+        return {
+            "role": role_norm,
+            "enabled": enabled,
+            "default_enabled": default_enabled,
+            "explicit": True,
+            "source": "env_override",
+            "env_var": env_var,
+            "env_value": value,
+            "reason": f"{env_var}={value or '0'}",
+        }
+    if role_norm == "hub":
+        return {
+            "role": role_norm,
+            "enabled": True,
+            "default_enabled": True,
+            "explicit": False,
+            "source": "role_default",
+            "env_var": None,
+            "env_value": None,
+            "reason": "hub runtimes default to sidecar transport",
+        }
     if role_norm:
-        return role_norm == "hub"
-    return False
+        return {
+            "role": role_norm,
+            "enabled": False,
+            "default_enabled": False,
+            "explicit": False,
+            "source": "role_default",
+            "env_var": None,
+            "env_value": None,
+            "reason": "non-hub runtimes keep sidecar disabled by default",
+        }
+    return {
+        "role": None,
+        "enabled": False,
+        "default_enabled": False,
+        "explicit": False,
+        "source": "role_unresolved",
+        "env_var": None,
+        "env_value": None,
+        "reason": "runtime role is unresolved, so sidecar stays disabled by default",
+    }
+
+
+def realtime_sidecar_enabled(*, role: str | None = None, os_name: str | None = None) -> bool:
+    policy = realtime_sidecar_enablement_policy(role=role)
+    return bool(policy.get("enabled"))
 
 
 def realtime_sidecar_host() -> str:
@@ -694,6 +742,7 @@ def realtime_sidecar_listener_snapshot(
         and int(listener_pid) == int(managed_pid)
     )
     adopted_listener = bool(listener_running and not listener_matches_managed)
+    enablement_policy = realtime_sidecar_enablement_policy(role=role)
     return {
         "host": host,
         "port": int(port),
@@ -707,6 +756,7 @@ def realtime_sidecar_listener_snapshot(
         "listener_running": listener_running,
         "listener_matches_managed": listener_matches_managed,
         "adopted_listener": adopted_listener,
+        "enablement_policy": enablement_policy,
         "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(role=role),
     }
 
@@ -844,6 +894,7 @@ class RealtimeSidecarServer:
             "session_id": self._stats.session_id,
             "active_session": self._stats.active_session,
             "ownership_boundary": "transport_only",
+            "enablement_policy": realtime_sidecar_enablement_policy(),
             "route_tunnel_contract": realtime_sidecar_route_tunnel_contract(),
             "remote_url": self._stats.remote_url,
             "ws_ping_interval_s": self._stats.ws_ping_interval_s,

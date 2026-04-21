@@ -4105,11 +4105,34 @@ def sidecar_runtime_snapshot(
     realtime_sidecar_listener_snapshot = _realtime_sidecar_mod.realtime_sidecar_listener_snapshot
     realtime_sidecar_local_url = _realtime_sidecar_mod.realtime_sidecar_local_url
     route_tunnel_contract_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_route_tunnel_contract", None)
+    enablement_policy_fn = getattr(_realtime_sidecar_mod, "realtime_sidecar_enablement_policy", None)
 
-    try:
-        enabled = bool(realtime_sidecar_enabled(role=role))
-    except TypeError:
-        enabled = bool(realtime_sidecar_enabled())
+    enablement: dict[str, Any]
+    if callable(enablement_policy_fn):
+        try:
+            raw_enablement = enablement_policy_fn(role=role)
+        except TypeError:
+            raw_enablement = enablement_policy_fn()
+        enablement = dict(raw_enablement) if isinstance(raw_enablement, dict) else {}
+    else:
+        enablement = {}
+    if not enablement:
+        try:
+            enabled = bool(realtime_sidecar_enabled(role=role))
+        except TypeError:
+            enabled = bool(realtime_sidecar_enabled())
+        enablement = {
+            "role": str(role or "").strip().lower() or None,
+            "enabled": enabled,
+            "default_enabled": False,
+            "explicit": False,
+            "source": "legacy_runtime",
+            "env_var": None,
+            "env_value": None,
+            "reason": "legacy sidecar enablement probe",
+        }
+    else:
+        enabled = bool(enablement.get("enabled"))
     diag_path = realtime_sidecar_diag_path()
     record = _read_last_jsonl_record(diag_path)
     now_ts = time.time()
@@ -4152,8 +4175,12 @@ def sidecar_runtime_snapshot(
         process_snapshot = realtime_sidecar_listener_snapshot(role=role)
     except TypeError:
         process_snapshot = realtime_sidecar_listener_snapshot()
+    if not enablement and isinstance(process_snapshot.get("enablement_policy"), dict):
+        enablement = dict(process_snapshot.get("enablement_policy") or {})
     if not route_tunnel_contract and isinstance(process_snapshot.get("route_tunnel_contract"), dict):
         route_tunnel_contract = dict(process_snapshot.get("route_tunnel_contract") or {})
+    if isinstance(record, dict) and isinstance(record.get("enablement_policy"), dict):
+        enablement = dict(record.get("enablement_policy") or enablement or {})
     if isinstance(record, dict) and isinstance(record.get("route_tunnel_contract"), dict):
         route_tunnel_contract = dict(record.get("route_tunnel_contract") or route_tunnel_contract or {})
     ws_route_contract = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
@@ -4243,6 +4270,7 @@ def sidecar_runtime_snapshot(
         )
         return {
             "enabled": enabled,
+            "enablement": enablement,
             "phase": "nats_transport_sidecar",
             "transport_owner": "sidecar" if enabled else "runtime",
             "lifecycle_manager": lifecycle_manager,
@@ -4272,6 +4300,7 @@ def sidecar_runtime_snapshot(
 
     return {
         "enabled": enabled,
+        "enablement": enablement,
         "phase": "nats_transport_sidecar",
         "transport_owner": "sidecar" if enabled else "runtime",
         "lifecycle_manager": lifecycle_manager,

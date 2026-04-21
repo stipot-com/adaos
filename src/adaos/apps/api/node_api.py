@@ -116,6 +116,7 @@ def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id
     runtime = _coerce_dict(payload.get("runtime"))
     hub_root_protocol = _coerce_dict(runtime.get("hub_root_protocol"))
     sidecar_runtime = _coerce_dict(runtime.get("sidecar_runtime"))
+    sidecar_enablement = _coerce_dict(sidecar_runtime.get("enablement"))
     hardening = _coerce_dict(hub_root_protocol.get("hardening_coverage"))
     continuity = _coerce_dict(sidecar_runtime.get("continuity_contract"))
     progress = _coerce_dict(sidecar_runtime.get("progress"))
@@ -148,6 +149,16 @@ def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id
             "pendingBoundaries": _coerce_list(continuity.get("pending_boundaries")),
             "readyBoundaries": _coerce_list(continuity.get("ready_boundaries")),
             "blockers": _coerce_list(continuity.get("blockers")),
+        },
+        "sidecarEnablement": {
+            "enabled": bool(sidecar_enablement.get("enabled")),
+            "defaultEnabled": bool(sidecar_enablement.get("default_enabled")),
+            "explicit": bool(sidecar_enablement.get("explicit")),
+            "source": str(sidecar_enablement.get("source") or "unknown").strip() or "unknown",
+            "role": str(sidecar_enablement.get("role") or "").strip() or None,
+            "envVar": str(sidecar_enablement.get("env_var") or "").strip() or None,
+            "envValue": str(sidecar_enablement.get("env_value") or "").strip() or None,
+            "reason": str(sidecar_enablement.get("reason") or "").strip() or None,
         },
         "sidecarProgress": {
             "state": str(progress.get("state") or "unknown").strip() or "unknown",

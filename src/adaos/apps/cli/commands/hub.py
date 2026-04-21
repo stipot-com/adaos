@@ -989,10 +989,15 @@ def hub_root_sidecar_status(
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
     progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
     route_tunnel = runtime.get("route_tunnel_contract") if isinstance(runtime.get("route_tunnel_contract"), dict) else {}
+    enablement = runtime.get("enablement") if isinstance(runtime.get("enablement"), dict) else {}
     planned_next = ",".join(str(item) for item in (scope.get("planned_next_boundaries") or []) if item)
+    enablement_source = str(enablement.get("source") or "").strip() or "-"
+    enablement_env = str(enablement.get("env_var") or "").strip() or None
+    enablement_label = f"{enablement_source}@{enablement_env}" if enablement_env else enablement_source
     typer.echo(
         f"sidecar={runtime.get('status') or 'unknown'} "
         f"phase={runtime.get('phase') or '-'} "
+        f"enablement={enablement_label} "
         f"owner={runtime.get('transport_owner') or '-'} "
         f"manager={runtime.get('lifecycle_manager') or '-'} "
         f"transport={runtime.get('local_listener_state') or '-'}/{runtime.get('remote_session_state') or '-'} "

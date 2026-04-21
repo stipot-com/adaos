@@ -9,6 +9,7 @@ from adaos.apps.cli.commands import realtime as realtime_cmd
 from adaos.services import realtime_sidecar as realtime_sidecar_mod
 from adaos.services.realtime_sidecar import (
     RealtimeSidecarServer,
+    realtime_sidecar_enablement_policy,
     realtime_sidecar_enabled,
     realtime_sidecar_local_url,
 )
@@ -91,6 +92,32 @@ def test_realtime_sidecar_enabled_allows_explicit_opt_out(monkeypatch: pytest.Mo
     assert realtime_sidecar_enabled(role="hub", os_name="nt") is False
 
 
+def test_realtime_sidecar_enablement_policy_reports_default_and_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ADAOS_REALTIME_ENABLE", raising=False)
+    monkeypatch.delenv("HUB_REALTIME_ENABLE", raising=False)
+
+    policy = realtime_sidecar_enablement_policy(role="hub")
+    assert policy == {
+        "role": "hub",
+        "enabled": True,
+        "default_enabled": True,
+        "explicit": False,
+        "source": "role_default",
+        "env_var": None,
+        "env_value": None,
+        "reason": "hub runtimes default to sidecar transport",
+    }
+
+    monkeypatch.setenv("HUB_REALTIME_ENABLE", "0")
+    policy = realtime_sidecar_enablement_policy(role="hub")
+    assert policy["enabled"] is False
+    assert policy["default_enabled"] is True
+    assert policy["explicit"] is True
+    assert policy["source"] == "env_override"
+    assert policy["env_var"] == "HUB_REALTIME_ENABLE"
+    assert policy["env_value"] == "0"
+
+
 def test_realtime_sidecar_local_url_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ADAOS_REALTIME_HOST", "127.0.0.7")
     monkeypatch.setenv("ADAOS_REALTIME_PORT", "9234")
@@ -127,6 +154,8 @@ def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
 
     assert snapshot["listener_running"] is True
     assert snapshot["listener_pid"] == 7422
+    assert snapshot["enablement_policy"]["enabled"] is True
+    assert snapshot["enablement_policy"]["source"] == "env_override"
     assert snapshot["route_tunnel_contract"]["current_support"] == "planned"
     assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
     assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "not_implemented"

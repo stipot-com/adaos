@@ -595,6 +595,8 @@ def test_sidecar_runtime_snapshot_exposes_scope_and_lifecycle_manager(monkeypatc
     )
 
     assert snapshot["enabled"] is True
+    assert snapshot["enablement"]["enabled"] is True
+    assert snapshot["enablement"]["source"] == "legacy_runtime"
     assert snapshot["transport_owner"] == "sidecar"
     assert snapshot["lifecycle_manager"] == "supervisor"
     assert snapshot["scope"]["current_boundaries"] == ["hub_root_transport"]
@@ -672,6 +674,7 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
 
     assert snapshot["route_ready"] == "ready"
     assert snapshot["sync_ready"] == "ready"
+    assert snapshot["enablement"]["enabled"] is True
     assert snapshot["delegations"]["route_tunnel_transport"] is True
     assert snapshot["delegations"]["sync_transport"] is True
     assert snapshot["scope"]["current_boundaries"] == [
@@ -1317,6 +1320,14 @@ def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monk
                     }
                 },
                 "sidecar_runtime": {
+                    "enablement": {
+                        "enabled": True,
+                        "default_enabled": True,
+                        "explicit": False,
+                        "source": "role_default",
+                        "role": "hub",
+                        "reason": "hub runtimes default to sidecar transport",
+                    },
                     "continuity_contract": {
                         "current_support": "ready",
                         "hub_runtime_update": "preserve_sidecar",
@@ -1379,6 +1390,9 @@ def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monk
     assert "model" not in payload
     assert payload["source"] == "api.node.reliability.summary"
     assert payload["hubRootHardening"]["coveredFlows"] == 6
+    assert payload["sidecarEnablement"]["enabled"] is True
+    assert payload["sidecarEnablement"]["defaultEnabled"] is True
+    assert payload["sidecarEnablement"]["source"] == "role_default"
     assert payload["sidecarContinuity"]["currentSupport"] == "ready"
     assert payload["browserYwsHandoffReady"] is True
     assert payload["phase0Communication"]["tasks"]["nodeBrowserReady"]["status"] == "done"
