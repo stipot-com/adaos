@@ -463,6 +463,7 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         payload["candidate_prewarm_ready_at"] = None
     payload["validated_at"] = now
     payload["finished_at"] = float(payload.get("finished_at") or now)
+    payload["scheduled_for"] = None
     if slot:
         payload["target_slot"] = slot
     if isinstance(manifest, dict) and manifest:
@@ -478,8 +479,15 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         )
         payload["root_promotion_required"] = True
         payload["bootstrap_update"] = bootstrap_update
+        payload["candidate_prewarm_state"] = None
+        payload["candidate_prewarm_message"] = None
+        payload["candidate_prewarm_ready_at"] = None
     elif root_restart_pending:
         payload["root_promotion_required"] = False
+    else:
+        payload["candidate_prewarm_state"] = None
+        payload["candidate_prewarm_message"] = None
+        payload["candidate_prewarm_ready_at"] = None
     finalized = write_status(payload)
     clear_plan()
     return finalized

@@ -4617,6 +4617,10 @@ class SupervisorManager:
                     "manifest": manifest,
                     "root_promotion_required": False,
                     "bootstrap_update": bootstrap_update,
+                    "scheduled_for": None,
+                    "candidate_prewarm_state": None,
+                    "candidate_prewarm_message": None,
+                    "candidate_prewarm_ready_at": None,
                     "finished_at": time.time(),
                 }
             )

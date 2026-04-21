@@ -119,6 +119,39 @@ def _autostart_control_url() -> str | None:
     return None
 
 
+def _supervisor_public_runtime_url() -> str | None:
+    try:
+        from adaos.services.agent_context import get_ctx
+        from adaos.services.autostart import status as autostart_status
+
+        info = autostart_status(get_ctx())
+        supervisor_url = _normalize_url((info or {}).get("supervisor_url") if isinstance(info, dict) else None)
+        if not supervisor_url or not _is_local_url(supervisor_url):
+            return None
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+        resp = sess.get(supervisor_url + "/api/supervisor/public/update-status", timeout=0.5)
+        if int(resp.status_code) != 200:
+            return None
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            return None
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        runtime_url = _normalize_url(runtime.get("runtime_url"))
+        if not runtime_url or not _is_local_url(runtime_url):
+            return None
+        if not bool(runtime.get("listener_running")):
+            return None
+        if runtime.get("runtime_api_ready") is False:
+            return None
+        return runtime_url
+    except Exception:
+        return None
+
+
 def _pidfile_control_urls() -> list[str]:
     try:
         from adaos.services.agent_context import get_ctx
@@ -240,6 +273,7 @@ def resolve_control_base_url(
     seen: set[str] = set()
     if role == "hub" and cfg_url and _is_local_url(cfg_url):
         _append_candidate(candidates, seen, cfg_url)
+    _append_candidate(candidates, seen, _supervisor_public_runtime_url())
     _append_candidate(candidates, seen, _pick_local_env_url())
     _append_candidate(candidates, seen, _autostart_control_url())
     for raw in _pidfile_control_urls():

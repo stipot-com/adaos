@@ -1345,8 +1345,8 @@ def autostart_update_status_cmd(
     memory = payload.get("memory") if isinstance(payload.get("memory"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
-    active_slot = str(slots.get("active_slot") or "")
-    previous_slot = str(slots.get("previous_slot") or "")
+    active_slot = str(slots.get("active_slot") or runtime.get("active_slot") or "")
+    previous_slot = str(slots.get("previous_slot") or runtime.get("previous_slot") or "")
     slot_map = slots.get("slots") if isinstance(slots.get("slots"), dict) else {}
 
     def _slot_manifest(slot_id: str) -> dict:
