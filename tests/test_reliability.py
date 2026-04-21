@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 
 from adaos.services.reliability import (
     ReadinessStatus,
+    _event_model_phase0_communication_checkpoint,
     _hub_member_transport_evidence_snapshot,
     assess_transport_diagnostics,
     hub_member_connection_state_snapshot,
@@ -36,6 +37,7 @@ from adaos.services.reliability import (
     reset_reliability_runtime_state,
     set_integration_readiness,
     sidecar_runtime_snapshot,
+    supervisor_transition_runtime_snapshot,
     yjs_sync_runtime_snapshot,
 )
 from adaos.services.runtime_lifecycle import reset_runtime_lifecycle
@@ -802,10 +804,16 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     )
 
     snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
+    contract = snapshot["channel_contract"]
     transport = snapshot["transport"]
     ownership = snapshot["ownership_boundaries"]
 
     assert snapshot["available"] is True
+    assert contract["channel_type"] == "sync_channel"
+    assert contract["recovery_model"] == "snapshot_plus_diff"
+    assert contract["replay_window"] == "bounded"
+    assert contract["awareness_semantics"] == "ephemeral"
+    assert contract["completed_for_scope"] is True
     assert transport["owner"] == "runtime"
     assert transport["planned_owner"] == "sidecar"
     assert transport["lifecycle_manager"] == "supervisor"
@@ -836,6 +844,239 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert ownership["transport_session"]["planned_owner"] == "sidecar"
     assert snapshot["selected_webspace"]["command_trace"]["last_reload"]["fingerprint"] == "abc123def456"
     assert snapshot["selected_webspace"]["command_trace"]["last_reset"]["fingerprint"] == "rst123def456"
+
+
+def test_event_model_phase0_communication_checkpoint_tracks_remaining_runtime_gaps() -> None:
+    checkpoint = _event_model_phase0_communication_checkpoint(
+        sync_runtime={
+            "channel_contract": {
+                "completed_for_scope": True,
+            },
+            "transport": {
+                "owner": "runtime",
+                "planned_owner": "sidecar",
+            },
+        },
+        sidecar_runtime={
+            "enabled": True,
+            "continuity_contract": {
+                "required": False,
+                "hub_runtime_update": "preserve_sidecar",
+                "current_support": "planned",
+                "pending_boundaries": ["browser_events_ws"],
+            },
+            "progress": {
+                "state": "in_progress",
+                "completed_milestones": 2,
+                "milestone_total": 4,
+                "current_milestone": "browser_events_ws_handoff",
+            },
+            "route_tunnel_contract": {
+                "current_support": "planned",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                },
+                "yws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "sidecar_tunnel",
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+            },
+        },
+        hub_root_protocol={
+            "hardening_coverage": {
+                "state": "complete",
+                "covered_flows": 6,
+                "total_flows": 6,
+            }
+        },
+        supervisor_runtime={
+            "available": True,
+            "source": "supervisor.public_update_status",
+            "_served_by": "supervisor_fallback",
+            "browser_safe_surface": {
+                "state": "ready",
+                "ready": True,
+                "carried_by_reliability": True,
+                "transition_state": "countdown",
+                "transition_phase": "scheduled",
+                "transition_mode_visible": True,
+                "candidate_runtime_visible": True,
+                "warm_switch_visible": True,
+                "blockers": [],
+            },
+        },
+    )
+
+    assert checkpoint["state"] == "in_progress"
+    assert checkpoint["ready"] is False
+    assert checkpoint["completed_task_total"] == 1
+    assert checkpoint["task_total"] == 2
+    assert checkpoint["remaining_tasks"] == ["phase0.runtime_comm_ready"]
+    node_browser = checkpoint["tasks"]["phase0.node_browser_ready"]
+    runtime_comm = checkpoint["tasks"]["phase0.runtime_comm_ready"]
+    assert node_browser["status"] == "done"
+    assert node_browser["completed_criteria"] == [
+        "browser_member_semantic_channels",
+        "yjs_as_sync_channel",
+        "browser_yjs_ws_handoff",
+    ]
+    assert node_browser["pending_reasons"] == []
+    assert node_browser["evidence"]["browser_yjs_ws_handoff"]["state"] == "ready"
+    assert runtime_comm["status"] == "in_progress"
+    assert runtime_comm["completed_criteria"] == [
+        "hub_root_class_a_hardening",
+        "browser_yjs_ws_handoff",
+        "sidecar_continuity",
+        "browser_safe_supervisor_continuity",
+    ]
+    assert runtime_comm["pending_reasons"] == [
+        "browser route websocket still terminates in the runtime FastAPI app",
+    ]
+    assert runtime_comm["evidence"]["hub_root_class_a"]["state"] == "complete"
+    assert runtime_comm["evidence"]["sidecar_continuity"]["required"] is False
+    assert runtime_comm["evidence"]["sidecar_continuity"]["hub_runtime_update"] == "preserve_sidecar"
+    assert runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["state"] == "ready"
+    assert runtime_comm["evidence"]["browser_safe_supervisor_continuity"]["carried_by_reliability"] is True
+
+
+def test_supervisor_transition_runtime_snapshot_surfaces_browser_safe_transition_contract(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_PORT", "8776")
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "status": {
+                    "action": "update",
+                    "state": "countdown",
+                    "phase": "scheduled",
+                },
+                "attempt": {
+                    "action": "update",
+                    "state": "planned",
+                },
+                "runtime": {
+                    "transition_mode": "warm_switch",
+                    "candidate_slot": "B",
+                    "candidate_runtime_url": "http://127.0.0.1:8778",
+                    "candidate_runtime_port": 8778,
+                    "candidate_runtime_instance_id": "rt-b-1",
+                    "candidate_runtime_state": "ready",
+                    "candidate_runtime_api_ready": True,
+                    "candidate_transition_role": "candidate",
+                    "warm_switch_supported": True,
+                    "warm_switch_allowed": True,
+                    "warm_switch_reason": "warm switch admitted",
+                },
+                "_served_by": "supervisor_fallback",
+            }
+
+    class _FakeSession:
+        trust_env = True
+
+        def get(self, url, headers=None, timeout=None):
+            assert url == "http://127.0.0.1:8776/api/supervisor/public/update-status"
+            assert headers == {"Accept": "application/json"}
+            assert timeout == 0.35
+            return _FakeResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "requests",
+        SimpleNamespace(Session=lambda: _FakeSession()),
+    )
+
+    snapshot = supervisor_transition_runtime_snapshot(timeout_sec=0.35)
+
+    assert snapshot["available"] is True
+    assert snapshot["source"] == "supervisor.public_update_status"
+    assert snapshot["supervisor_url"] == "http://127.0.0.1:8776"
+    assert snapshot["_served_by"] == "supervisor_fallback"
+    assert snapshot["browser_safe_surface"]["state"] == "ready"
+    assert snapshot["browser_safe_surface"]["ready"] is True
+    assert snapshot["browser_safe_surface"]["carried_by_reliability"] is True
+    assert snapshot["browser_safe_surface"]["transition_state"] == "countdown"
+    assert snapshot["browser_safe_surface"]["transition_mode_visible"] is True
+    assert snapshot["browser_safe_surface"]["candidate_runtime_visible"] is True
+    assert snapshot["browser_safe_surface"]["warm_switch_visible"] is True
+
+
+def test_event_model_phase0_communication_checkpoint_keeps_supervisor_and_optional_continuity_out_of_pending_reasons() -> None:
+    checkpoint = _event_model_phase0_communication_checkpoint(
+        sync_runtime={
+            "channel_contract": {
+                "completed_for_scope": True,
+            },
+        },
+        sidecar_runtime={
+            "enabled": True,
+            "continuity_contract": {
+                "required": False,
+                "hub_runtime_update": "preserve_sidecar",
+                "current_support": "planned",
+            },
+            "route_tunnel_contract": {
+                "current_support": "planned",
+                "ownership_boundary": "transport_only",
+                "ws": {
+                    "current_owner": "runtime",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "not_implemented",
+                    "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
+                },
+                "yws": {
+                    "current_owner": "sidecar",
+                    "planned_owner": "sidecar",
+                    "delegation_mode": "sidecar_tunnel",
+                    "handoff_ready": True,
+                    "blockers": [],
+                },
+            },
+        },
+        hub_root_protocol={
+            "hardening_coverage": {
+                "state": "complete",
+                "covered_flows": 6,
+                "total_flows": 6,
+            }
+        },
+        supervisor_runtime={
+            "available": True,
+            "source": "supervisor.public_update_status",
+            "_served_by": "supervisor_fallback",
+            "browser_safe_surface": {
+                "state": "ready",
+                "ready": True,
+                "carried_by_reliability": True,
+                "transition_state": "countdown",
+                "transition_phase": "scheduled",
+                "transition_mode_visible": True,
+                "candidate_runtime_visible": True,
+                "warm_switch_visible": True,
+                "blockers": [],
+            },
+        },
+    )
+
+    runtime_comm = checkpoint["tasks"]["phase0.runtime_comm_ready"]
+
+    assert runtime_comm["pending_reasons"] == [
+        "browser route websocket still terminates in the runtime FastAPI app",
+    ]
+    assert "sidecar_continuity" not in runtime_comm["pending_criteria"]
+    assert "browser_safe_supervisor_continuity" not in runtime_comm["pending_criteria"]
 
 
 def test_yjs_sync_runtime_snapshot_marks_reconnect_storm_as_pressure(monkeypatch) -> None:
@@ -1148,6 +1389,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             "planned_next_boundaries": ["browser_events_ws", "browser_yjs_ws"],
                         },
                         "continuity_contract": {
+                            "required": False,
                             "current_support": "planned",
                             "hub_runtime_update": "preserve_sidecar",
                         },
@@ -1170,15 +1412,54 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                                 "blockers": ["browser route websocket still terminates in the runtime FastAPI app"],
                             },
                             "yws": {
-                                "current_owner": "runtime",
+                                "current_owner": "sidecar",
                                 "planned_owner": "sidecar",
-                                "delegation_mode": "not_implemented",
-                                "blockers": ["Yjs websocket/session ownership still lives in the runtime gateway"],
+                                "delegation_mode": "sidecar_tunnel",
+                                "handoff_ready": True,
+                                "blockers": [],
                             },
+                        },
+                    },
+                    "supervisor_runtime": {
+                        "available": True,
+                        "source": "supervisor.public_update_status",
+                        "status": {
+                            "action": "update",
+                            "state": "countdown",
+                            "phase": "scheduled",
+                        },
+                        "attempt": {
+                            "action": "update",
+                            "state": "planned",
+                        },
+                        "runtime": {
+                            "transition_mode": "warm_switch",
+                            "candidate_runtime_state": "ready",
+                            "warm_switch_reason": "warm switch admitted",
+                        },
+                        "_served_by": "supervisor_fallback",
+                        "browser_safe_surface": {
+                            "state": "ready",
+                            "ready": True,
+                            "carried_by_reliability": True,
+                            "transition_state": "countdown",
+                            "transition_phase": "scheduled",
+                            "transition_mode_visible": True,
+                            "candidate_runtime_visible": True,
+                            "warm_switch_visible": True,
+                            "blockers": [],
                         },
                     },
                     "sync_runtime": {
                         "assessment": {"state": "nominal"},
+                        "channel_contract": {
+                            "channel_type": "sync_channel",
+                            "recovery_model": "snapshot_plus_diff",
+                            "replay_window": "bounded",
+                            "awareness_semantics": "ephemeral",
+                            "browser_local_persistence": "optional_indexeddb",
+                            "completed_for_scope": True,
+                        },
                         "webspace_total": 1,
                         "active_webspace_total": 1,
                         "compacted_webspace_total": 0,
@@ -1242,6 +1523,65 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
                             },
                         },
                     },
+                    "event_model_phase0_communication": {
+                        "state": "in_progress",
+                        "ready": False,
+                        "tracked_tasks": [
+                            "phase0.node_browser_ready",
+                            "phase0.runtime_comm_ready",
+                        ],
+                        "completed_task_total": 1,
+                        "task_total": 2,
+                        "remaining_tasks": ["phase0.runtime_comm_ready"],
+                        "tasks": {
+                            "phase0.node_browser_ready": {
+                                "id": "phase0.node_browser_ready",
+                                "status": "done",
+                                "pending_reasons": [],
+                                "evidence": {
+                                    "yjs_sync_channel_ready": True,
+                                    "browser_yjs_ws_handoff": {
+                                        "state": "ready",
+                                        "owner": "sidecar",
+                                        "planned_owner": "sidecar",
+                                        "blocker": None,
+                                    },
+                                },
+                            },
+                            "phase0.runtime_comm_ready": {
+                                "id": "phase0.runtime_comm_ready",
+                                "status": "in_progress",
+                                "pending_reasons": [
+                                    "browser route websocket still terminates in the runtime FastAPI app",
+                                ],
+                                "evidence": {
+                                    "hub_root_class_a": {
+                                        "state": "complete",
+                                        "covered_flows": 6,
+                                        "total_flows": 6,
+                                    },
+                                    "browser_events_ws_handoff": {
+                                        "state": "planned",
+                                        "owner": "runtime",
+                                        "planned_owner": "sidecar",
+                                    },
+                                    "browser_yjs_ws_handoff": {
+                                        "state": "ready",
+                                        "owner": "sidecar",
+                                        "planned_owner": "sidecar",
+                                    },
+                                    "sidecar_continuity": {
+                                        "state": "planned",
+                                        "required": False,
+                                        "hub_runtime_update": "preserve_sidecar",
+                                    },
+                                    "browser_safe_supervisor_continuity": {
+                                        "state": "ready",
+                                    },
+                                },
+                            },
+                        },
+                    },
                     "media_runtime": {
                         "assessment": {"state": "nominal"},
                         "counts": {
@@ -1282,17 +1622,23 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "sidecar.progress.blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
-    assert "yws=runtime->sidecar:not_implemented" in result.output
+    assert "yws=sidecar->sidecar:sidecar_tunnel" in result.output
     assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
-    assert "sidecar.route_tunnel.yws_blocker: Yjs websocket/session ownership still lives in the runtime gateway" in result.output
+    assert "sidecar.route_tunnel.yws_blocker" not in result.output
     assert "eligible=1" in result.output
     assert "replay=2/512B" in result.output
     assert "reloads=4/5 dup=3 resets=2/4 rdup=1" in result.output
     assert "sync_runtime.reload_last: client=http:/api/node/yjs/webspaces/default/reload:127.0.0.1:53301" in result.output
     assert "sync_runtime.reset_last: client=events_ws:127.0.0.1:54421" in result.output
+    assert "sync_runtime.contract: type=sync_channel recovery=snapshot_plus_diff replay=bounded awareness=ephemeral persistence=optional_indexeddb done=yes" in result.output
     assert "sync_runtime.boundaries: selector=shared:web_desktop effective=runtime:ready compat=runtime:fallback_cache transport=runtime->sidecar" in result.output
     assert "rooms=1 opens=2/3 single=2 storm=no" in result.output
     assert "owner=runtime->sidecar" in result.output
+    assert "event_model.phase0.communication: state=in_progress done=1/2 open=phase0.runtime_comm_ready" in result.output
+    assert "event_model.phase0.node_browser_ready: status=done yjs=yes yws=ready owner=sidecar->sidecar" in result.output
+    assert "event_model.phase0.runtime_comm_ready: status=in_progress class_a=complete:6/6 ws=planned yws=ready continuity=planned supervisor=ready" in result.output
+    assert "event_model.phase0.runtime_comm_ready.blockers: browser route websocket still terminates in the runtime FastAPI app" in result.output
+    assert "supervisor_runtime: available=True state=countdown phase=scheduled mode=warm_switch candidate=ready warm_switch=warm switch admitted surface=ready served_by=supervisor_fallback" in result.output
     assert "media.update_guard: live=yes" in result.output
     assert "member=defer hub=preserve_sidecar" in result.output
 

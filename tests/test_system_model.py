@@ -491,6 +491,113 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "active_zone_id": "eu",
                     "selected_server": "wss://api.inimatic.com/nats",
                 },
+                "event_model_phase0_communication": {
+                    "state": "in_progress",
+                    "ready": False,
+                    "tracked_tasks": [
+                        "phase0.node_browser_ready",
+                        "phase0.runtime_comm_ready",
+                    ],
+                    "completed_task_total": 0,
+                    "task_total": 2,
+                    "remaining_tasks": [
+                        "phase0.node_browser_ready",
+                        "phase0.runtime_comm_ready",
+                    ],
+                    "tasks": {
+                        "phase0.node_browser_ready": {
+                            "id": "phase0.node_browser_ready",
+                            "status": "in_progress",
+                            "summary": "browser/member communication prerequisites are not fully ready yet",
+                            "completed_criteria": ["browser_member_semantic_channels"],
+                            "pending_criteria": ["browser_yjs_ws_handoff"],
+                            "pending_reasons": [
+                                "Yjs websocket/session ownership still lives in the runtime gateway",
+                            ],
+                            "evidence": {
+                                "browser_yjs_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                    "blocker": "Yjs websocket/session ownership still lives in the runtime gateway",
+                                },
+                            },
+                        },
+                        "phase0.runtime_comm_ready": {
+                            "id": "phase0.runtime_comm_ready",
+                            "status": "in_progress",
+                            "summary": "runtime communication prerequisites are still open",
+                            "completed_criteria": ["hub_root_class_a_hardening"],
+                            "pending_criteria": [
+                                "browser_events_ws_handoff",
+                                "browser_yjs_ws_handoff",
+                                "sidecar_continuity",
+                                "browser_safe_supervisor_continuity",
+                            ],
+                            "pending_reasons": [
+                                "browser route websocket still terminates in the runtime FastAPI app",
+                                "Yjs websocket/session ownership still lives in the runtime gateway",
+                                "sidecar.continuity.planned",
+                                "supervisor.browser_safe_continuity.in_progress",
+                            ],
+                            "evidence": {
+                                "hub_root_class_a": {
+                                    "state": "complete",
+                                    "covered_flows": 6,
+                                    "total_flows": 6,
+                                },
+                                "browser_events_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                },
+                                "browser_yjs_ws_handoff": {
+                                    "state": "planned",
+                                    "owner": "runtime",
+                                    "planned_owner": "sidecar",
+                                },
+                                "sidecar_continuity": {
+                                    "state": "planned",
+                                    "hub_runtime_update": "preserve_sidecar",
+                                },
+                                "browser_safe_supervisor_continuity": {
+                                    "state": "in_progress",
+                                },
+                            },
+                        },
+                    },
+                },
+                "supervisor_runtime": {
+                    "available": True,
+                    "supervisor_url": "http://127.0.0.1:8776",
+                    "status": {
+                        "action": "update",
+                        "state": "countdown",
+                        "phase": "scheduled",
+                    },
+                    "attempt": {
+                        "action": "update",
+                        "state": "planned",
+                    },
+                    "runtime": {
+                        "runtime_state": "ready",
+                        "runtime_api_ready": True,
+                        "managed_alive": True,
+                        "active_slot": "A",
+                        "runtime_instance_id": "rt-a-1",
+                        "transition_role": "active",
+                        "transition_mode": "warm_switch",
+                        "candidate_slot": "B",
+                        "candidate_runtime_url": "http://127.0.0.1:8778",
+                        "candidate_runtime_state": "ready",
+                        "candidate_runtime_instance_id": "rt-b-1",
+                        "candidate_transition_role": "candidate",
+                        "candidate_runtime_api_ready": True,
+                        "warm_switch_supported": True,
+                        "warm_switch_allowed": True,
+                        "warm_switch_reason": "warm switch admitted",
+                    },
+                },
                 "sidecar_runtime": {
                     "enabled": True,
                     "status": "ready",
@@ -540,6 +647,14 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
                     "scope": "hub_local_only",
                     "selected_webspace_id": "desk",
                     "assessment": {"state": "nominal", "reason": "bounded sync runtime observed"},
+                    "channel_contract": {
+                        "channel_type": "sync_channel",
+                        "recovery_model": "snapshot_plus_diff",
+                        "replay_window": "bounded",
+                        "awareness_semantics": "ephemeral",
+                        "browser_local_persistence": "optional_indexeddb",
+                        "completed_for_scope": True,
+                    },
                     "transport": {"server_ready": True},
                     "ownership_boundaries": {
                         "state": "explicit",
@@ -617,6 +732,11 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     assert projection["subject"]["health"]["route"] == "online"
     assert projection["subject"]["health"]["sync"] == "online"
     assert projection["context"]["blocked_capabilities"] == ["root_routed_browser_proxy"]
+    assert projection["context"]["event_model_phase0_communication"]["state"] == "in_progress"
+    assert (
+        projection["subject"]["runtime"]["event_model_phase0_communication"]["tasks"]["phase0.runtime_comm_ready"]["status"]
+        == "in_progress"
+    )
 
     objects = {item["id"]: item for item in projection["objects"]}
     assert objects["root:eu"]["kind"] == "root"
@@ -632,10 +752,16 @@ def test_canonical_projection_from_reliability_snapshot_builds_runtime_component
     )
     assert objects["runtime:hub:hub-1/yjs-sync"]["health"]["availability"] == "online"
     assert objects["runtime:hub:hub-1/yjs-sync"]["relations"]["workspace"] == ["workspace:desk"]
+    assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["channel_contract"]["completed_for_scope"] is True
+    assert objects["runtime:hub:hub-1/yjs-sync"]["actual_state"]["channel_contract"]["recovery_model"] == "snapshot_plus_diff"
     assert objects["runtime:hub:hub-1/yjs-sync"]["actual_state"]["ownership_boundaries"]["state"] == "explicit"
     assert objects["runtime:hub:hub-1/yjs-sync"]["runtime"]["ownership_boundaries"]["transport_session"]["planned_owner"] == "sidecar"
     assert objects["runtime:hub:hub-1/media-plane"]["resources"]["file_total"] == 2
     assert objects["runtime:hub:hub-1/media-plane"]["runtime"]["update_guard"]["current_support"] == "not_applicable"
+    assert objects["runtime:node:hub-1/supervisor"]["kind"] == "runtime"
+    assert objects["runtime:node:hub-1/supervisor"]["runtime"]["transition_mode"] == "warm_switch"
+    assert objects["runtime:node:hub-1/supervisor"]["runtime"]["candidate_runtime_state"] == "ready"
+    assert objects["runtime:node:hub-1/supervisor"]["actual_state"]["supervisor_url"] == "http://127.0.0.1:8776"
 
 
 def test_canonical_projection_from_reliability_snapshot_maps_actions_and_incidents() -> None:

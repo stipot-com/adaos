@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -4300,6 +4301,7 @@ def yjs_sync_runtime_snapshot(
     role_norm = str(role or "").strip().lower()
     selected_webspace_id = str(webspace_id or "").strip()
     action_overrides: dict[str, Any] = {}
+    channel_contract = _build_yjs_sync_channel_contract()
     ownership_boundaries: dict[str, Any] = {}
     recovery_playbook: dict[str, Any] = {}
     recovery_guidance: dict[str, Any] = {}
@@ -4314,6 +4316,7 @@ def yjs_sync_runtime_snapshot(
                 "state": "not_applicable",
                 "reason": "local Yjs store runtime is observed on the hub only",
             },
+            "channel_contract": channel_contract,
             "transport": {},
             "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
@@ -4342,6 +4345,7 @@ def yjs_sync_runtime_snapshot(
                 "state": "unavailable",
                 "reason": f"failed to load Yjs store runtime: {exc}",
             },
+            "channel_contract": channel_contract,
             "transport": {},
             "ownership_boundaries": ownership_boundaries,
             "action_overrides": action_overrides,
@@ -4484,6 +4488,7 @@ def yjs_sync_runtime_snapshot(
             "state": assessment_state,
             "reason": "; ".join(reasons),
         },
+        "channel_contract": channel_contract,
         "transport": {
             "active_yws_connections": int(yws_transport.get("active_connections") or 0),
             "last_open_ago_s": yws_transport.get("last_open_ago_s"),
@@ -4570,6 +4575,20 @@ def yjs_sync_runtime_snapshot(
         "state_vector_fast_path_total": state_vector_fast_path_total,
         "state_vector_compute_total": state_vector_compute_total,
         "webspaces": webspaces,
+    }
+
+
+def _build_yjs_sync_channel_contract() -> dict[str, Any]:
+    return {
+        "channel_type": "sync_channel",
+        "transport_independence": "bounded_runtime_and_resync",
+        "recovery_model": "snapshot_plus_diff",
+        "replay_window": "bounded",
+        "browser_local_persistence": "optional_indexeddb",
+        "explicit_resync_controls": ["reload", "restore", "reset"],
+        "awareness_semantics": "ephemeral",
+        "transport_paths": ["yws", "webrtc_data:yjs"],
+        "completed_for_scope": True,
     }
 
 
@@ -4704,6 +4723,423 @@ def _build_yjs_ownership_boundaries(
             "handoff_ready": bool(transport_state.get("handoff_ready")),
             "handoff_blockers": list(transport_state.get("handoff_blockers") or []),
         },
+    }
+
+
+def _event_model_phase0_task(
+    *,
+    task_id: str,
+    status: str,
+    summary: str,
+    completed_criteria: list[str] | None = None,
+    pending_criteria: list[str] | None = None,
+    pending_reasons: list[str] | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "status": str(status or "").strip() or "in_progress",
+        "summary": str(summary or "").strip(),
+        "completed_criteria": list(completed_criteria or []),
+        "pending_criteria": list(pending_criteria or []),
+        "pending_reasons": list(pending_reasons or []),
+        "evidence": dict(evidence or {}),
+    }
+
+
+def _is_local_http_base(url: str | None) -> bool:
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _supervisor_public_base_candidates() -> list[str]:
+    bases: list[str] = []
+    explicit = (
+        os.getenv("ADAOS_SUPERVISOR_URL")
+        or os.getenv("ADAOS_SUPERVISOR_BASE")
+        or ""
+    ).strip()
+    if explicit and _is_local_http_base(explicit):
+        bases.append(explicit.rstrip("/"))
+    supervisor_port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "").strip() or "8776"
+    bases.append(f"http://127.0.0.1:{supervisor_port}")
+    bases.append(f"http://localhost:{supervisor_port}")
+    result: list[str] = []
+    seen: set[str] = set()
+    for base in bases:
+        token = str(base or "").strip().rstrip("/")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
+
+
+def _supervisor_browser_safe_surface(*, payload: dict[str, Any] | None) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    available = bool(data.get("available"))
+    status = data.get("status") if isinstance(data.get("status"), dict) else {}
+    runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
+    blockers: list[str] = []
+    transition_mode_visible = "transition_mode" in runtime
+    candidate_runtime_visible = all(
+        key in runtime
+        for key in (
+            "candidate_slot",
+            "candidate_runtime_url",
+            "candidate_runtime_port",
+            "candidate_runtime_instance_id",
+            "candidate_runtime_state",
+            "candidate_runtime_api_ready",
+            "candidate_transition_role",
+        )
+    )
+    warm_switch_visible = any(
+        key in runtime
+        for key in (
+            "warm_switch_supported",
+            "warm_switch_allowed",
+            "warm_switch_reason",
+        )
+    )
+    if not available:
+        blockers.append("supervisor.public_update_status.unavailable")
+    if not transition_mode_visible:
+        blockers.append("supervisor.transition_mode.hidden")
+    if not candidate_runtime_visible:
+        blockers.append("supervisor.candidate_runtime.hidden")
+    if not warm_switch_visible:
+        blockers.append("supervisor.warm_switch.hidden")
+    ready = not blockers
+    return {
+        "state": "ready" if ready else ("unavailable" if not available else "in_progress"),
+        "ready": ready,
+        "carried_by_reliability": True,
+        "transition_state": str(status.get("state") or "").strip().lower() or None,
+        "transition_phase": str(status.get("phase") or "").strip().lower() or None,
+        "transition_mode_visible": transition_mode_visible,
+        "candidate_runtime_visible": candidate_runtime_visible,
+        "warm_switch_visible": warm_switch_visible,
+        "served_by": str(data.get("_served_by") or "").strip() or None,
+        "blockers": blockers,
+    }
+
+
+def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 0.35) -> dict[str, Any]:
+    if str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        payload = {
+            "available": False,
+            "source": "supervisor.disabled",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+
+    try:
+        import requests  # type: ignore
+    except Exception as exc:
+        payload = {
+            "available": False,
+            "source": "supervisor.requests_unavailable",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+
+    session = requests.Session()
+    try:
+        with contextlib.suppress(Exception):
+            session.trust_env = False
+        last_error = ""
+        for base in _supervisor_public_base_candidates():
+            try:
+                response = session.get(
+                    base + "/api/supervisor/public/update-status",
+                    headers={"Accept": "application/json"},
+                    timeout=max(0.1, float(timeout_sec)),
+                )
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            if int(response.status_code) != 200:
+                last_error = f"status:{response.status_code}"
+                continue
+            try:
+                body = response.json()
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            if not isinstance(body, dict):
+                last_error = "non_dict_payload"
+                continue
+            runtime = body.get("runtime") if isinstance(body.get("runtime"), dict) else {}
+            payload = {
+                "available": True,
+                "source": "supervisor.public_update_status",
+                "supervisor_url": base,
+                "status": dict(body.get("status") or {}) if isinstance(body.get("status"), dict) else {},
+                "attempt": dict(body.get("attempt") or {}) if isinstance(body.get("attempt"), dict) else {},
+                "runtime": {
+                    **dict(runtime),
+                    "supervisor_url": base,
+                },
+                "_served_by": str(body.get("_served_by") or "").strip() or None,
+            }
+            payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+            return payload
+        payload = {
+            "available": False,
+            "source": "supervisor.public_update_status_unavailable",
+            "supervisor_url": None,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "_served_by": None,
+            "error": last_error or None,
+        }
+        payload["browser_safe_surface"] = _supervisor_browser_safe_surface(payload=payload)
+        return payload
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+
+
+def _event_model_phase0_communication_checkpoint(
+    *,
+    sync_runtime: dict[str, Any] | None,
+    sidecar_runtime: dict[str, Any] | None,
+    hub_root_protocol: dict[str, Any] | None,
+    supervisor_runtime: dict[str, Any] | None,
+) -> dict[str, Any]:
+    sync_payload = sync_runtime if isinstance(sync_runtime, dict) else {}
+    sidecar_payload = sidecar_runtime if isinstance(sidecar_runtime, dict) else {}
+    protocol_payload = hub_root_protocol if isinstance(hub_root_protocol, dict) else {}
+    supervisor_payload = supervisor_runtime if isinstance(supervisor_runtime, dict) else {}
+
+    channel_contract = sync_payload.get("channel_contract") if isinstance(sync_payload.get("channel_contract"), dict) else {}
+    transport = sync_payload.get("transport") if isinstance(sync_payload.get("transport"), dict) else {}
+    continuity = (
+        sidecar_payload.get("continuity_contract")
+        if isinstance(sidecar_payload.get("continuity_contract"), dict)
+        else {}
+    )
+    progress = sidecar_payload.get("progress") if isinstance(sidecar_payload.get("progress"), dict) else {}
+    route_tunnel_contract = (
+        sidecar_payload.get("route_tunnel_contract")
+        if isinstance(sidecar_payload.get("route_tunnel_contract"), dict)
+        else {}
+    )
+    hardening = (
+        protocol_payload.get("hardening_coverage")
+        if isinstance(protocol_payload.get("hardening_coverage"), dict)
+        else {}
+    )
+    supervisor_surface = (
+        supervisor_payload.get("browser_safe_surface")
+        if isinstance(supervisor_payload.get("browser_safe_surface"), dict)
+        else {}
+    )
+    sidecar_enabled = bool(sidecar_payload.get("enabled"))
+    ws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "ws")
+    yws_entry = _sidecar_route_tunnel_entry(route_tunnel_contract, "yws")
+    ws_handoff_state = _sidecar_route_tunnel_state(enabled=sidecar_enabled, entry=ws_entry)
+    yws_handoff_state = _sidecar_route_tunnel_state(enabled=sidecar_enabled, entry=yws_entry)
+    ws_handoff_ready = ws_handoff_state == "ready"
+    yws_handoff_ready = yws_handoff_state == "ready"
+    yjs_sync_scope_ready = bool(channel_contract.get("completed_for_scope"))
+    hub_root_class_a_ready = str(hardening.get("state") or "").strip().lower() == "complete"
+    continuity_required = bool(continuity.get("required"))
+    continuity_state = str(continuity.get("current_support") or "").strip().lower() or "unknown"
+    continuity_ready = continuity_state == "ready" or not continuity_required
+    supervisor_ready = bool(supervisor_surface.get("ready"))
+    ws_blocker = next(
+        (str(item).strip() for item in (ws_entry.get("blockers") or []) if str(item).strip()),
+        "",
+    )
+    yws_blocker = next(
+        (str(item).strip() for item in (yws_entry.get("blockers") or []) if str(item).strip()),
+        "",
+    )
+
+    node_completed = ["browser_member_semantic_channels"]
+    node_pending: list[str] = []
+    node_pending_reasons: list[str] = []
+    if yjs_sync_scope_ready:
+        node_completed.append("yjs_as_sync_channel")
+    else:
+        node_pending.append("yjs_as_sync_channel")
+        node_pending_reasons.append("sync.channel_contract.incomplete")
+    if yws_handoff_ready:
+        node_completed.append("browser_yjs_ws_handoff")
+    else:
+        node_pending.append("browser_yjs_ws_handoff")
+        node_pending_reasons.append(
+            yws_blocker or f"sidecar.browser_yjs_ws_handoff.{yws_handoff_state}"
+        )
+    node_status = "done" if not node_pending else "in_progress"
+    node_summary = (
+        "browser/member communication prerequisites are ready for the current scope"
+        if node_status == "done"
+        else "browser/member semantic channels and Yjs SyncChannel are in place, but browser /yws transport ownership migration is still incomplete"
+    )
+
+    runtime_completed: list[str] = []
+    runtime_pending: list[str] = []
+    runtime_pending_reasons: list[str] = []
+    if hub_root_class_a_ready:
+        runtime_completed.append("hub_root_class_a_hardening")
+    else:
+        runtime_pending.append("hub_root_class_a_hardening")
+        runtime_pending_reasons.append(
+            f"hub_root.class_a.{str(hardening.get('state') or 'unknown').strip().lower() or 'unknown'}"
+        )
+    if ws_handoff_ready:
+        runtime_completed.append("browser_events_ws_handoff")
+    else:
+        runtime_pending.append("browser_events_ws_handoff")
+        runtime_pending_reasons.append(
+            ws_blocker or f"sidecar.browser_events_ws_handoff.{ws_handoff_state}"
+        )
+    if yws_handoff_ready:
+        runtime_completed.append("browser_yjs_ws_handoff")
+    else:
+        runtime_pending.append("browser_yjs_ws_handoff")
+        runtime_pending_reasons.append(
+            yws_blocker or f"sidecar.browser_yjs_ws_handoff.{yws_handoff_state}"
+        )
+    if continuity_ready:
+        runtime_completed.append("sidecar_continuity")
+    else:
+        runtime_pending.append("sidecar_continuity")
+        runtime_pending_reasons.append(f"sidecar.continuity.{continuity_state}")
+    if supervisor_ready:
+        runtime_completed.append("browser_safe_supervisor_continuity")
+    else:
+        runtime_pending.append("browser_safe_supervisor_continuity")
+        runtime_pending_reasons.extend(
+            [
+                str(item).strip()
+                for item in list(supervisor_surface.get("blockers") or [])
+                if str(item).strip()
+            ]
+            or ["supervisor.browser_safe_continuity.in_progress"]
+        )
+    runtime_status = "done" if not runtime_pending else "in_progress"
+    runtime_summary = (
+        "hub-root Class A coverage, sidecar ownership expansion, and browser-safe supervisor continuity are ready"
+        if runtime_status == "done"
+        else "hub-root Class A hardening is explicit, and browser-safe supervisor state now rides through shared runtime surfaces, but sidecar ownership expansion still keeps runtime communication prerequisites open"
+    )
+
+    tasks = {
+        "phase0.node_browser_ready": _event_model_phase0_task(
+            task_id="phase0.node_browser_ready",
+            status=node_status,
+            summary=node_summary,
+            completed_criteria=node_completed,
+            pending_criteria=node_pending,
+            pending_reasons=node_pending_reasons,
+            evidence={
+                "yjs_sync_channel_ready": yjs_sync_scope_ready,
+                "browser_yjs_ws_handoff": {
+                    "state": yws_handoff_state,
+                    "owner": str(yws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(yws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(yws_entry.get("handoff_ready")),
+                    "blocker": yws_blocker or None,
+                },
+                "sync_transport_owner": str(transport.get("owner") or "").strip().lower() or None,
+                "sync_transport_planned_owner": str(transport.get("planned_owner") or "").strip().lower() or None,
+            },
+        ),
+        "phase0.runtime_comm_ready": _event_model_phase0_task(
+            task_id="phase0.runtime_comm_ready",
+            status=runtime_status,
+            summary=runtime_summary,
+            completed_criteria=runtime_completed,
+            pending_criteria=runtime_pending,
+            pending_reasons=runtime_pending_reasons,
+            evidence={
+                "hub_root_class_a": {
+                    "state": str(hardening.get("state") or "").strip().lower() or "unknown",
+                    "covered_flows": int(hardening.get("covered_flows") or 0),
+                    "total_flows": int(hardening.get("total_flows") or 0),
+                },
+                "browser_events_ws_handoff": {
+                    "state": ws_handoff_state,
+                    "owner": str(ws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(ws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(ws_entry.get("handoff_ready")),
+                    "blocker": ws_blocker or None,
+                },
+                "browser_yjs_ws_handoff": {
+                    "state": yws_handoff_state,
+                    "owner": str(yws_entry.get("current_owner") or "").strip().lower() or None,
+                    "planned_owner": str(yws_entry.get("planned_owner") or "").strip().lower() or None,
+                    "handoff_ready": bool(yws_entry.get("handoff_ready")),
+                    "blocker": yws_blocker or None,
+                },
+                "sidecar_continuity": {
+                    "state": continuity_state,
+                    "required": continuity_required,
+                    "hub_runtime_update": str(continuity.get("hub_runtime_update") or "").strip().lower() or None,
+                    "pending_boundaries": list(continuity.get("pending_boundaries") or []),
+                },
+                "browser_safe_supervisor_continuity": {
+                    "state": str(supervisor_surface.get("state") or "").strip().lower() or ("ready" if supervisor_ready else "in_progress"),
+                    "summary": (
+                        "browser-safe supervisor transition state is carried through the shared reliability runtime surface"
+                        if supervisor_ready
+                        else "browser-safe supervisor and warm-switch continuity hardening still remains open across browser topologies"
+                    ),
+                    "source": str(supervisor_payload.get("source") or "").strip() or None,
+                    "served_by": str(supervisor_payload.get("_served_by") or "").strip() or None,
+                    "transition_state": str(supervisor_surface.get("transition_state") or "").strip().lower() or None,
+                    "transition_phase": str(supervisor_surface.get("transition_phase") or "").strip().lower() or None,
+                    "carried_by_reliability": bool(supervisor_surface.get("carried_by_reliability")),
+                    "transition_mode_visible": bool(supervisor_surface.get("transition_mode_visible")),
+                    "candidate_runtime_visible": bool(supervisor_surface.get("candidate_runtime_visible")),
+                    "warm_switch_visible": bool(supervisor_surface.get("warm_switch_visible")),
+                    "blockers": list(supervisor_surface.get("blockers") or []),
+                },
+                "sidecar_progress": {
+                    "state": str(progress.get("state") or "").strip().lower() or "unknown",
+                    "completed_milestones": int(progress.get("completed_milestones") or 0),
+                    "milestone_total": int(progress.get("milestone_total") or 0),
+                    "current_milestone": str(progress.get("current_milestone") or "").strip() or None,
+                },
+            },
+        ),
+    }
+    remaining_tasks = [
+        task_id
+        for task_id, entry in tasks.items()
+        if isinstance(entry, dict) and str(entry.get("status") or "") != "done"
+    ]
+    return {
+        "state": "ready" if not remaining_tasks else "in_progress",
+        "ready": not remaining_tasks,
+        "tracked_tasks": list(tasks.keys()),
+        "completed_task_total": len(tasks) - len(remaining_tasks),
+        "task_total": len(tasks),
+        "remaining_tasks": remaining_tasks,
+        "tasks": tasks,
     }
 
 
@@ -5129,6 +5565,7 @@ def reliability_snapshot(
             "available": False,
             "scope": "hub_local_only",
             "selected_webspace_id": str(webspace_id or "").strip() or None,
+            "channel_contract": _build_yjs_sync_channel_contract(),
             "transport": {},
             "ownership_boundaries": {},
             "action_overrides": {},
@@ -5159,11 +5596,39 @@ def reliability_snapshot(
             },
         },
     )
+    supervisor_runtime = _run_bounded_runtime_section(
+        section="supervisor",
+        timeout_sec=section_timeout,
+        fn=lambda: supervisor_transition_runtime_snapshot(
+            timeout_sec=min(0.35, max(0.1, section_timeout / 2.0))
+        ),
+        fallback={
+            "available": False,
+            "status": {},
+            "attempt": {},
+            "runtime": {},
+            "browser_safe_surface": {
+                "state": "unavailable",
+                "ready": False,
+                "carried_by_reliability": True,
+                "transition_mode_visible": False,
+                "candidate_runtime_visible": False,
+                "warm_switch_visible": False,
+                "blockers": ["supervisor.runtime.unavailable"],
+            },
+        },
+    )
     sidecar_runtime = sidecar_runtime_snapshot(
         readiness_tree=readiness_tree,
         hub_root_protocol=hub_root_protocol,
         transport_strategy=transport_strategy,
         media_runtime=media_runtime,
+    )
+    event_model_phase0_communication = _event_model_phase0_communication_checkpoint(
+        sync_runtime=sync_runtime,
+        sidecar_runtime=sidecar_runtime,
+        hub_root_protocol=hub_root_protocol,
+        supervisor_runtime=supervisor_runtime,
     )
     return {
         "ok": True,
@@ -5198,5 +5663,7 @@ def reliability_snapshot(
             "sidecar_runtime": sidecar_runtime,
             "sync_runtime": sync_runtime,
             "media_runtime": media_runtime,
+            "supervisor_runtime": supervisor_runtime,
+            "event_model_phase0_communication": event_model_phase0_communication,
         },
     }

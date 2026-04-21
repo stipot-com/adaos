@@ -7,6 +7,7 @@ from adaos.services.system_model.mappers import (
     canonical_object_from_integration_quota,
     canonical_object_from_node_status,
     canonical_object_from_protocol_traffic_budget,
+    canonical_object_from_supervisor_runtime,
     coerce_mapping,
 )
 from adaos.services.system_model.model import (
@@ -548,6 +549,7 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
     readiness_tree = coerce_mapping(runtime.get("readiness_tree"))
     degraded_matrix = coerce_mapping(runtime.get("degraded_matrix"))
     zone = coerce_mapping(runtime.get("hub_root_zone"))
+    phase0_communication = coerce_mapping(runtime.get("event_model_phase0_communication"))
     blocked_capabilities = sorted(
         key
         for key, item in degraded_matrix.items()
@@ -564,6 +566,7 @@ def _reliability_focus_context(runtime: dict[str, Any]) -> dict[str, Any]:
             },
             "blocked_capabilities": blocked_capabilities,
             "hub_root_zone": zone,
+            "event_model_phase0_communication": phase0_communication,
         }
     )
 
@@ -818,6 +821,7 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
                 "available": payload.get("available"),
                 "scope": payload.get("scope"),
                 "assessment": assessment,
+                "channel_contract": payload.get("channel_contract"),
                 "transport": payload.get("transport"),
                 "ownership_boundaries": payload.get("ownership_boundaries"),
                 "update_guard": payload.get("update_guard"),
@@ -830,11 +834,30 @@ def _sync_object(subject: CanonicalObject, runtime: dict[str, Any]) -> Canonical
             {
                 "selected_webspace_id": selected_webspace_id,
                 "selected_webspace": selected_webspace,
+                "channel_contract": coerce_mapping(payload.get("channel_contract")),
                 "transport_ownership": coerce_mapping(payload.get("transport")),
                 "ownership_boundaries": coerce_mapping(payload.get("ownership_boundaries")),
             }
         ),
         actions=_actions_from_yjs_overrides(coerce_mapping(payload.get("action_overrides")), webspace_id=selected_webspace_id),
+    )
+
+
+def _supervisor_object(subject: CanonicalObject, runtime: dict[str, Any]) -> CanonicalObject | None:
+    payload = coerce_mapping(runtime.get("supervisor_runtime"))
+    if not bool(payload.get("available")):
+        return None
+    runtime_state = coerce_mapping(payload.get("runtime"))
+    if payload.get("supervisor_url") and not runtime_state.get("supervisor_url"):
+        runtime_state["supervisor_url"] = payload.get("supervisor_url")
+    node_id = str(subject.id.partition(":")[2] or subject.id).strip() or subject.id
+    return canonical_object_from_supervisor_runtime(
+        {
+            "node_id": node_id,
+            "runtime_state": runtime_state,
+            "update_status": coerce_mapping(payload.get("status")),
+            "update_attempt": coerce_mapping(payload.get("attempt")),
+        }
     )
 
 
@@ -1303,6 +1326,7 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
             {
                 "blocked_capabilities": focus_context.get("blocked_capabilities"),
                 "hub_root_zone": focus_context.get("hub_root_zone"),
+                "event_model_phase0_communication": focus_context.get("event_model_phase0_communication"),
             }
         )
     )
@@ -1310,12 +1334,14 @@ def canonical_projection_from_reliability_snapshot(payload: Any) -> CanonicalPro
     llm_repr["reliability_focus"] = focus_context
     subject.representations["llm"] = compact_mapping(llm_repr)
 
+    supervisor_object = _supervisor_object(subject, runtime)
     objects = [
         _root_object(subject, runtime),
         _root_control_object(subject, runtime),
         _route_object(subject, runtime),
         _sidecar_object(subject, runtime),
         _sync_object(subject, runtime),
+        *([supervisor_object] if supervisor_object is not None else []),
         _media_object(subject, runtime),
         *_traffic_budget_objects(subject, runtime),
         *_integration_quota_objects(subject, runtime),
