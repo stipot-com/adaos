@@ -50,6 +50,15 @@ class _FakeAsyncDoc:
         return False
 
 
+def _fake_async_get_ydoc(state: dict[str, _FakeMap], calls: list[dict[str, object]] | None = None):
+    def _factory(_ws: str, **kwargs) -> _FakeAsyncDoc:
+        if calls is not None:
+            calls.append(dict(kwargs))
+        return _FakeAsyncDoc(state)
+
+    return _factory
+
+
 def test_projection_service_merges_deep_yjs_paths_without_overwriting_siblings(monkeypatch) -> None:
     fake_state = {"data": _FakeMap()}
 
@@ -65,11 +74,7 @@ def test_projection_service_merges_deep_yjs_paths_without_overwriting_siblings(m
     )
 
     monkeypatch.setattr(projection_service_module, "mutate_live_room", lambda _ws, _mutator: False)
-    monkeypatch.setattr(
-        projection_service_module,
-        "async_get_ydoc",
-        lambda _ws: _FakeAsyncDoc(fake_state),
-    )
+    monkeypatch.setattr(projection_service_module, "async_get_ydoc", _fake_async_get_ydoc(fake_state))
 
     asyncio.run(
         service.apply(
@@ -119,11 +124,7 @@ def test_projection_service_skips_identical_flat_yjs_update(monkeypatch) -> None
     )
 
     monkeypatch.setattr(projection_service_module, "mutate_live_room", lambda _ws, _mutator: False)
-    monkeypatch.setattr(
-        projection_service_module,
-        "async_get_ydoc",
-        lambda _ws: _FakeAsyncDoc(fake_state),
-    )
+    monkeypatch.setattr(projection_service_module, "async_get_ydoc", _fake_async_get_ydoc(fake_state))
 
     asyncio.run(service.apply("runtime", "weather", {"city": "Moscow"}, webspace_id="ws-test"))
     asyncio.run(service.apply("runtime", "weather", {"city": "Moscow"}, webspace_id="ws-test"))
@@ -157,14 +158,37 @@ def test_projection_service_skips_identical_deep_yjs_update(monkeypatch) -> None
     )
 
     monkeypatch.setattr(projection_service_module, "mutate_live_room", lambda _ws, _mutator: False)
-    monkeypatch.setattr(
-        projection_service_module,
-        "async_get_ydoc",
-        lambda _ws: _FakeAsyncDoc(fake_state),
-    )
+    monkeypatch.setattr(projection_service_module, "async_get_ydoc", _fake_async_get_ydoc(fake_state))
 
     asyncio.run(service.apply("runtime", "profile", {"theme": "dark"}, webspace_id="ws-test"))
     asyncio.run(service.apply("runtime", "profile", {"theme": "dark"}, webspace_id="ws-test"))
 
     assert fake_root["skills"]["profile"]["u1"]["settings"] == {"theme": "dark"}
     assert len(fake_root.set_calls) == 1
+
+
+def test_projection_service_passes_target_root_to_async_get_ydoc(monkeypatch) -> None:
+    fake_state = {"data": _FakeMap()}
+    calls: list[dict[str, object]] = []
+
+    target = SimpleNamespace(
+        backend="yjs",
+        path="data/weather",
+        webspace_id=None,
+    )
+    registry = SimpleNamespace(resolve=lambda scope, slot: [target])  # noqa: ARG005
+    service = projection_service_module.ProjectionService(
+        ctx=SimpleNamespace(),
+        registry=registry,
+    )
+
+    monkeypatch.setattr(projection_service_module, "mutate_live_room", lambda _ws, _mutator: False)
+    monkeypatch.setattr(
+        projection_service_module,
+        "async_get_ydoc",
+        _fake_async_get_ydoc(fake_state, calls),
+    )
+
+    asyncio.run(service.apply("runtime", "weather", {"city": "Moscow"}, webspace_id="ws-test"))
+
+    assert calls == [{"load_mark_roots": ["data"]}]

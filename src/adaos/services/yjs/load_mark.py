@@ -252,6 +252,48 @@ def record_detached_ydoc_update(
     )
 
 
+def record_detached_root_update(
+    webspace_id: str,
+    *,
+    root_names: list[str] | tuple[str, ...],
+    total_bytes: int,
+    now_ts: float | None = None,
+    source: str | None = None,
+) -> None:
+    names = [str(name or "").strip() for name in root_names if str(name or "").strip()]
+    if not names:
+        return
+    now = time.time() if now_ts is None else float(now_ts)
+    bytes_total = max(0, int(total_bytes or 0))
+    if bytes_total <= 0:
+        return
+    with _LOCK:
+        webspace_state = _ensure_webspace_state(webspace_id)
+        snapshot_sizes = (
+            dict(webspace_state.get("snapshot_sizes"))
+            if isinstance(webspace_state.get("snapshot_sizes"), dict)
+            else {}
+        )
+        share = max(1, int(bytes_total / max(1, len(names))))
+        assigned = 0
+        for index, root_name in enumerate(names):
+            bytes_written = share if index < len(names) - 1 else max(1, bytes_total - assigned)
+            assigned += bytes_written
+            previous_size = int(snapshot_sizes.get(root_name) or 0)
+            current_size = max(previous_size, previous_size + bytes_written)
+            snapshot_sizes[root_name] = current_size
+            _record_root_bytes_locked(
+                webspace_state,
+                root_name=root_name,
+                bytes_written=bytes_written,
+                now_ts=now,
+                current_size_bytes=current_size,
+                source=source or "detached_root",
+            )
+        webspace_state["snapshot_sizes"] = snapshot_sizes
+        webspace_state["updated_at"] = float(now)
+
+
 def _status_for_rate(avg_bps: float, peak_bps: float) -> str:
     if peak_bps >= float(_CRITICAL_BPS) or avg_bps >= float(_CRITICAL_BPS):
         return "critical"
@@ -456,6 +498,7 @@ except Exception:
 
 __all__ = [
     "capture_ydoc_root_sizes",
+    "record_detached_root_update",
     "record_detached_ydoc_update",
     "record_root_flow",
     "yjs_load_mark_snapshot",

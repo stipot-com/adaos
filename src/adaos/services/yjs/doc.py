@@ -48,8 +48,21 @@ def _record_load_mark_update(
     before_sizes: dict[str, int] | None,
     update: bytes | None,
     source: str,
+    root_names: list[str] | tuple[str, ...] | None = None,
 ) -> None:
     try:
+        if root_names:
+            from adaos.services.yjs.load_mark import record_detached_root_update
+
+            record_detached_root_update(
+                webspace_id,
+                root_names=root_names,
+                total_bytes=len(update or b""),
+                now_ts=time.time(),
+                source=source,
+            )
+            return
+
         from adaos.services.yjs.load_mark import record_detached_ydoc_update
 
         record_detached_ydoc_update(
@@ -234,6 +247,7 @@ def get_ydoc(
     read_only: bool = False,
     timings: dict[str, float] | None = None,
     timing_prefix: str = "",
+    load_mark_roots: list[str] | tuple[str, ...] | None = None,
 ) -> Iterator[Y.YDoc]:
     """
     Synchronously load a webspace-backed YDoc, applying persisted updates on
@@ -272,7 +286,10 @@ def get_ydoc(
             return None
 
     before = _run_blocking(_load())
-    before_root_sizes = None if read_only else _capture_load_mark_sizes(ydoc)
+    tracked_load_mark_roots = [str(name or "").strip() for name in (load_mark_roots or ()) if str(name or "").strip()]
+    before_root_sizes = None
+    if not read_only and not tracked_load_mark_roots:
+        before_root_sizes = _capture_load_mark_sizes(ydoc)
     try:
         yield ydoc
     finally:
@@ -302,6 +319,7 @@ def get_ydoc(
                         before_sizes=before_root_sizes,
                         update=update,
                         source="get_ydoc",
+                        root_names=tracked_load_mark_roots,
                     )
                 else:
                     _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
@@ -331,6 +349,7 @@ async def async_get_ydoc(
     prefer_live_room: bool = False,
     timings: dict[str, float] | None = None,
     timing_prefix: str = "",
+    load_mark_roots: list[str] | tuple[str, ...] | None = None,
 ) -> AsyncIterator[Y.YDoc]:
     """
     Async counterpart of :func:`get_ydoc` for use inside running event loops.
@@ -360,6 +379,7 @@ async def async_get_ydoc(
                 pass
         before = None
         before_root_sizes = None
+        tracked_load_mark_roots = [str(name or "").strip() for name in (load_mark_roots or ()) if str(name or "").strip()]
         if not read_only:
             stage_started = time.perf_counter()
             before = await ystore.current_state_vector()
@@ -372,7 +392,7 @@ async def async_get_ydoc(
                 except Exception:
                     _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
                     before = None
-            if not use_live_room:
+            if not use_live_room and not tracked_load_mark_roots:
                 before_root_sizes = _capture_load_mark_sizes(ydoc)
         yield ydoc
         if not read_only:
@@ -406,6 +426,7 @@ async def async_get_ydoc(
                         before_sizes=before_root_sizes,
                         update=update,
                         source="async_get_ydoc",
+                        root_names=tracked_load_mark_roots,
                     )
             else:
                 _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)

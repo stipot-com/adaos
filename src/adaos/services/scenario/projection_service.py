@@ -203,7 +203,7 @@ class ProjectionService:
 
         if not mutate_live_room(ws_id, _mutator):
             try:
-                async with async_get_ydoc(ws_id) as ydoc:
+                async with async_get_ydoc(ws_id, load_mark_roots=[root_name]) as ydoc:
                     with ydoc.begin_transaction() as txn:
                         _mutator(ydoc, txn)
             except Exception:
