@@ -623,6 +623,30 @@ def test_supervisor_profile_mode_shutdown_uses_extended_grace(monkeypatch, tmp_p
     assert sleeps
 
 
+def test_supervisor_profile_session_requests_finalize_after_runtime_window(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_SAMPLED_PROFILE_MAX_RUNTIME_SEC", "40")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._memory_active_session_id = "mem-001"
+    manager._memory_profile_mode = "sampled_profile"
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "requested_at": 10.0,
+            "started_at": 10.0,
+        }
+    )
+
+    decision = manager._should_finalize_active_memory_profile(now=55.0)
+
+    assert decision is not None
+    assert decision["session_id"] == "mem-001"
+    assert decision["profile_mode"] == "sampled_profile"
+    assert decision["reason"] == "supervisor.memory.profile_window_complete.sampled_profile"
+
+
 def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

@@ -935,6 +935,22 @@ def _runtime_profile_graceful_shutdown_timeout_sec(profile_mode: str) -> tuple[f
     return drain_timeout, signal_delay, graceful_wait, terminate_wait
 
 
+def _memory_profile_max_runtime_sec(profile_mode: str) -> float:
+    normalized = str(profile_mode or "normal").strip().lower()
+    if normalized == "sampled_profile":
+        raw = os.getenv("ADAOS_SUPERVISOR_SAMPLED_PROFILE_MAX_RUNTIME_SEC")
+        default = "40"
+    elif normalized == "trace_profile":
+        raw = os.getenv("ADAOS_SUPERVISOR_TRACE_PROFILE_MAX_RUNTIME_SEC")
+        default = "75"
+    else:
+        return 0.0
+    try:
+        return max(5.0, float(str(raw or default).strip()))
+    except Exception:
+        return float(default)
+
+
 def _proc_details(proc: subprocess.Popen[Any] | None, *, cwd_hint: str | None = None) -> dict[str, Any]:
     managed_pid = None
     managed_alive = False
@@ -1565,6 +1581,35 @@ class SupervisorManager:
                 if recent_policy_sessions >= _memory_auto_profile_circuit_limit():
                     return False, "auto_profile_circuit_open"
         return True, None
+
+    def _should_finalize_active_memory_profile(self, *, now: float | None = None) -> dict[str, Any] | None:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id:
+            return None
+        profile_mode = str(self._memory_profile_mode or "").strip().lower()
+        max_runtime_sec = _memory_profile_max_runtime_sec(profile_mode)
+        if profile_mode == "normal" or max_runtime_sec <= 0:
+            return None
+        summary = read_memory_session_summary(session_id)
+        if not isinstance(summary, dict):
+            return None
+        state = str(summary.get("session_state") or "").strip().lower()
+        if state not in {"running", "requested"}:
+            return None
+        started_at = float(summary.get("started_at") or summary.get("requested_at") or 0.0)
+        if started_at <= 0:
+            return None
+        current_time = time.time() if now is None else float(now)
+        elapsed_sec = max(0.0, current_time - started_at)
+        if elapsed_sec < max_runtime_sec:
+            return None
+        return {
+            "session_id": session_id,
+            "profile_mode": profile_mode,
+            "elapsed_sec": elapsed_sec,
+            "max_runtime_sec": max_runtime_sec,
+            "reason": f"supervisor.memory.profile_window_complete.{profile_mode}",
+        }
 
     async def _maybe_apply_memory_profile_mode(self) -> None:
         desired_mode = self._desired_memory_profile_mode()
@@ -3566,6 +3611,19 @@ class SupervisorManager:
                     await self._maybe_apply_memory_profile_mode()
                 except Exception:
                     _LOG.warning("failed to apply requested memory profile mode", exc_info=True)
+                finalize_profile = self._should_finalize_active_memory_profile()
+                if finalize_profile is not None:
+                    try:
+                        self.stop_memory_profile(
+                            str(finalize_profile.get("session_id") or ""),
+                            reason=str(finalize_profile.get("reason") or "supervisor.memory.profile_window_complete"),
+                        )
+                        await self.restart_runtime(
+                            reason=f"supervisor.memory.complete_profile_mode.{str(finalize_profile.get('profile_mode') or 'profile')}"
+                        )
+                    except Exception:
+                        _LOG.warning("failed to finalize active memory profile session", exc_info=True)
+                    continue
                 restart_decision = self._runtime_self_heal_decision()
                 if restart_decision is not None:
                     self._last_error = str(restart_decision.get("message") or "active runtime became unhealthy")
