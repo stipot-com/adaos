@@ -222,6 +222,39 @@ def test_runtime_profile_signal_handler_finishes_session(monkeypatch, tmp_path: 
     assert restored[int(signal.SIGTERM)] == f"previous-{int(signal.SIGTERM)}"
 
 
+def test_finish_active_runtime_memory_profile_reports_missing_session() -> None:
+    runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    result = runtime_memory_profile.finish_active_runtime_memory_profile()
+
+    assert result == {"ok": False, "found": False, "reason": "no_active_session"}
+
+
+def test_finish_active_runtime_memory_profile_reports_finish_error() -> None:
+    class _Session:
+        session_id = "mem-oops"
+        profile_mode = "sampled_profile"
+        started = True
+        _finished = False
+
+        def finish(self) -> None:
+            raise RuntimeError("boom")
+
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
+    try:
+        result = runtime_memory_profile.finish_active_runtime_memory_profile()
+    finally:
+        runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    assert result["ok"] is False
+    assert result["found"] is True
+    assert result["session_id"] == "mem-oops"
+    assert result["profile_mode"] == "sampled_profile"
+    assert result["error_type"] == "RuntimeError"
+    assert result["error"] == "boom"
+    assert "RuntimeError: boom" in result["traceback"]
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(

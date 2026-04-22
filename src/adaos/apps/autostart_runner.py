@@ -4,6 +4,7 @@ import argparse
 import atexit
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -66,6 +67,7 @@ from adaos.services.supervisor_memory import (
 
 
 _SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
+_LOG = logging.getLogger("adaos.autostart")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -338,7 +340,9 @@ def _install_runtime_profile_signal_handlers(
     registered: list[int] = []
 
     def _handler(signum: int, _frame: Any) -> None:
-        finish_active_runtime_memory_profile()
+        finish_result = finish_active_runtime_memory_profile()
+        if not finish_result.get("ok"):
+            _LOG.warning("runtime memory profile finalize on signal did not complete result=%s", finish_result)
         raise SystemExit(128 + int(signum))
 
     for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
@@ -1220,7 +1224,9 @@ def main() -> None:
             )
         finally:
             restore_profile_signal_handlers()
-            finish_active_runtime_memory_profile()
+            finish_result = finish_active_runtime_memory_profile()
+            if not finish_result.get("ok"):
+                _LOG.warning("runtime memory profile finalize on runner shutdown did not complete result=%s", finish_result)
             register_active_runtime_memory_profile(None)
             if pidfile is not None:
                 _cleanup_pidfile(pidfile)

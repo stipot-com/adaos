@@ -98,6 +98,7 @@ except Exception:
 
 
 _startup_log = logging.getLogger("adaos.startup")
+_runtime_log = logging.getLogger("adaos.runtime")
 
 
 class _StartupTimer:
@@ -1036,8 +1037,19 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     app.state.shutdown_reason = body.reason
     app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
     if str(os.getenv("ADAOS_SUPERVISOR_PROFILE_MODE") or "normal").strip().lower() != "normal":
-        with contextlib.suppress(Exception):
-            finish_active_runtime_memory_profile()
+        finish_result = finish_active_runtime_memory_profile()
+        if finish_result.get("ok"):
+            _runtime_log.info(
+                "runtime memory profile finalized during admin shutdown session_id=%s profile_mode=%s finished=%s",
+                finish_result.get("session_id"),
+                finish_result.get("profile_mode"),
+                finish_result.get("finished"),
+            )
+        else:
+            _runtime_log.warning(
+                "runtime memory profile finalize during admin shutdown did not complete result=%s",
+                finish_result,
+            )
     stopping_payload = {
         "subnet_id": conf.subnet_id,
         "reason": body.reason,

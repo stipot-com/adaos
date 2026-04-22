@@ -4,6 +4,7 @@ import atexit
 import json
 import threading
 import time
+import traceback
 import tracemalloc
 from pathlib import Path
 from typing import Any
@@ -262,11 +263,26 @@ def register_active_runtime_memory_profile(session: RuntimeMemoryProfileSession 
         _ACTIVE_RUNTIME_MEMORY_PROFILE = session
 
 
-def finish_active_runtime_memory_profile() -> bool:
+def finish_active_runtime_memory_profile() -> dict[str, Any]:
     with _ACTIVE_RUNTIME_MEMORY_PROFILE_LOCK:
         session = _ACTIVE_RUNTIME_MEMORY_PROFILE
     if session is None:
-        return False
-    session.finish()
-    return True
-
+        return {"ok": False, "found": False, "reason": "no_active_session"}
+    result = {
+        "ok": False,
+        "found": True,
+        "session_id": getattr(session, "session_id", None),
+        "profile_mode": getattr(session, "profile_mode", None),
+        "started": bool(getattr(session, "started", False)),
+        "finished": bool(getattr(session, "_finished", False)),
+    }
+    try:
+        session.finish()
+    except Exception as exc:
+        result["error_type"] = type(exc).__name__
+        result["error"] = str(exc)
+        result["traceback"] = traceback.format_exc()
+        return result
+    result["ok"] = True
+    result["finished"] = bool(getattr(session, "_finished", False))
+    return result
