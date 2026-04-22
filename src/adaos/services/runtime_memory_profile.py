@@ -43,6 +43,23 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _write_finalize_debug_artifact(session_id: str | None, payload: dict[str, Any]) -> dict[str, Any] | None:
+    session_name = str(session_id or "").strip()
+    if not session_name:
+        return None
+    artifacts_dir = supervisor_memory_session_artifacts_dir(session_name)
+    path = (artifacts_dir / "runtime-profile-finalize-debug.json").resolve()
+    _write_json_file(path, payload)
+    return MemoryArtifactRef(
+        artifact_id=f"{session_name}-finalize-debug",
+        kind="runtime_profile_finalize_debug",
+        path=str(path),
+        content_type="application/json",
+        size_bytes=path.stat().st_size if path.exists() else None,
+        created_at=time.time(),
+    ).to_dict()
+
+
 class RuntimeMemoryProfileSession:
     def __init__(
         self,
@@ -268,10 +285,11 @@ def finish_active_runtime_memory_profile() -> dict[str, Any]:
         session = _ACTIVE_RUNTIME_MEMORY_PROFILE
     if session is None:
         return {"ok": False, "found": False, "reason": "no_active_session"}
+    session_id = getattr(session, "session_id", None)
     result = {
         "ok": False,
         "found": True,
-        "session_id": getattr(session, "session_id", None),
+        "session_id": session_id,
         "profile_mode": getattr(session, "profile_mode", None),
         "started": bool(getattr(session, "started", False)),
         "finished": bool(getattr(session, "_finished", False)),
@@ -282,7 +300,19 @@ def finish_active_runtime_memory_profile() -> dict[str, Any]:
         result["error_type"] = type(exc).__name__
         result["error"] = str(exc)
         result["traceback"] = traceback.format_exc()
+        artifact_ref = _write_finalize_debug_artifact(session_id, result)
+        if artifact_ref:
+            summary = read_memory_session_summary(str(session_id)) or {"session_id": str(session_id)}
+            existing = summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []
+            summary["artifact_refs"] = [*existing, artifact_ref]
+            write_memory_session_summary(str(session_id), summary)
         return result
     result["ok"] = True
     result["finished"] = bool(getattr(session, "_finished", False))
+    artifact_ref = _write_finalize_debug_artifact(session_id, result)
+    if artifact_ref:
+        summary = read_memory_session_summary(str(session_id)) or {"session_id": str(session_id)}
+        existing = summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []
+        summary["artifact_refs"] = [*existing, artifact_ref]
+        write_memory_session_summary(str(session_id), summary)
     return result

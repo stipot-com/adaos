@@ -255,6 +255,33 @@ def test_finish_active_runtime_memory_profile_reports_finish_error() -> None:
     assert "RuntimeError: boom" in result["traceback"]
 
 
+def test_finish_active_runtime_memory_profile_writes_debug_artifact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+
+    class _Session:
+        session_id = "mem-debug"
+        profile_mode = "sampled_profile"
+        started = True
+        _finished = False
+
+        def finish(self) -> None:
+            self._finished = True
+
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
+    try:
+        result = runtime_memory_profile.finish_active_runtime_memory_profile()
+    finally:
+        runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    artifacts_dir = supervisor_memory_session_artifacts_dir("mem-debug")
+    summary = read_memory_session_summary("mem-debug")
+
+    assert result["ok"] is True
+    assert (artifacts_dir / "runtime-profile-finalize-debug.json").exists()
+    assert summary is not None
+    assert any(item.get("kind") == "runtime_profile_finalize_debug" for item in summary.get("artifact_refs", []))
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(
