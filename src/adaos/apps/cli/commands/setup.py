@@ -36,7 +36,7 @@ from adaos.services.autostart import disable as autostart_disable
 from adaos.services.autostart import enable as autostart_enable
 from adaos.services.autostart import restart_service as autostart_restart_service
 from adaos.services.autostart import status as autostart_status
-from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_slots import active_slot_manifest, slot_dir, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
 from adaos.services.core_update import plan_path as core_update_plan_path
 from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
@@ -382,6 +382,44 @@ def _repo_git_text(*args: str) -> str:
         return (completed.stdout or "").strip()
     except Exception:
         return ""
+
+
+def _repo_git_text_at(repo_root: Path | str | None, *args: str) -> str:
+    if not repo_root:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return (completed.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _slot_build_version(slot_id: str) -> str:
+    slot_name = str(slot_id or "").strip().upper()
+    if not slot_name:
+        return ""
+    try:
+        repo_root = slot_dir(slot_name) / "repo"
+    except Exception:
+        return ""
+    base_version = str(os.getenv("ADAOS_BASE_VERSION") or "0.1.0").strip() or "0.1.0"
+    explicit = str(os.getenv("ADAOS_BUILD_VERSION") or "").strip()
+    if explicit:
+        return explicit
+    rev_count = _repo_git_text_at(repo_root, "rev-list", "--count", "HEAD")
+    if not rev_count:
+        return ""
+    short_sha = _repo_git_text_at(repo_root, "rev-parse", "--short", "HEAD")
+    suffix = f"+{rev_count}"
+    if short_sha:
+        suffix += f".{short_sha}"
+    return f"{base_version}{suffix}"
 
 
 def _autostart_admin_base_url(token: Optional[str] = None) -> str:
@@ -1366,7 +1404,7 @@ def autostart_update_status_cmd(
         manifest = _slot_manifest(slot_id)
         if not slot_id:
             return "--"
-        version = str(manifest.get("target_version") or "").strip()
+        version = _slot_build_version(slot_id) or str(manifest.get("target_version") or "").strip()
         short_commit = str(manifest.get("git_short_commit") or "").strip()
         if not short_commit:
             full_commit = str(manifest.get("git_commit") or "").strip()
@@ -1390,6 +1428,9 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    active_build_version = _slot_build_version(active_slot)
+    if active_build_version:
+        typer.echo(f"active build version: {active_build_version}")
     if status.get("scheduled_for"):
         try:
             scheduled_for = float(status.get("scheduled_for") or 0.0)

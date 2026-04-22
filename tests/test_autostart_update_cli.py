@@ -71,15 +71,17 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
         raise AssertionError(path)
 
     monkeypatch.setattr(setup_cmd, "_autostart_supervisor_get", _fake_supervisor_get)
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.0+42.8e2f6e75" if slot_id == "A" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "target rev: rev2026" in result.output
+    assert "active build version: 0.1.0+42.8e2f6e75" in result.output
     assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output
     assert "memory last session: id=mem-001 state=requested mode=sampled_profile publish=local_only" in result.output
-    assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active slot: A | 0.1.0+42.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 
@@ -107,11 +109,13 @@ def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypat
             },
         },
     )
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.0+42.8e2f6e75" if slot_id == "B" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
-    assert "active slot: B | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active build version: 0.1.0+42.8e2f6e75" in result.output
+    assert "active slot: B | 0.1.0+42.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
@@ -655,14 +659,16 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
             "_local_fallback": True,
         },
     )
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.1+43.8e2f6e75" if slot_id == "B" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "message: autostart runner boot" in result.output
+    assert "active build version: 0.1.1+43.8e2f6e75" in result.output
     assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=2 requested=sampled_profile" in result.output
-    assert "active slot: B | 0.1.1 | 8e2f6e75 | rev2026" in result.output
+    assert "active slot: B | 0.1.1+43.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
 
 
 def test_autostart_inspect_renders_hot_children_and_services(monkeypatch) -> None:

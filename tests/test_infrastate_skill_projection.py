@@ -732,15 +732,19 @@ def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch)
 def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeypatch):
     mod = _load_infrastate_module()
     published: list[tuple[str, object, str | None]] = []
+    cache_flags: list[bool] = []
 
     monkeypatch.setattr(
         mod,
         "_snapshot_or_fallback_cached",
-        lambda webspace_id=None, allow_cache=True: {
-            "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
-            "logs": [{"id": "log-1"}],
-            "events": [{"id": "evt-1"}],
-        },
+        lambda webspace_id=None, allow_cache=True: (
+            cache_flags.append(bool(allow_cache)),
+            {
+                "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
+                "logs": [{"id": "log-1"}],
+                "events": [{"id": "evt-1"}],
+            },
+        )[1],
     )
     monkeypatch.setattr(
         mod,
@@ -760,6 +764,40 @@ def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeyp
     assert published == [
         ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
     ]
+    assert cache_flags == [False]
+
+
+def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):
+    mod = _load_infrastate_module()
+    invalidated: list[str | None] = []
+    refreshed: list[tuple[str | None, str]] = []
+    appended: list[str] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_invalidate_runtime_caches",
+        lambda *, webspace_id=None, marketplace=False: invalidated.append(webspace_id),
+    )
+    monkeypatch.setattr(mod, "_append_event", lambda event_type, payload: appended.append(event_type))
+    monkeypatch.setattr(
+        mod,
+        "_schedule_snapshot_refresh",
+        lambda *, webspace_id=None, reason="runtime.event": refreshed.append((webspace_id, reason)),
+    )
+
+    mod.on_runtime_event(
+        SimpleNamespace(
+            type="core.update.status",
+            payload={
+                "state": "succeeded",
+                "webspace_id": "default",
+            },
+        )
+    )
+
+    assert invalidated == ["default"]
+    assert appended == ["core.update.status"]
+    assert refreshed == [("default", "core.update.status")]
 
 
 def test_infrastate_marketplace_hides_skills_installed_via_scenario_dependencies(monkeypatch):
