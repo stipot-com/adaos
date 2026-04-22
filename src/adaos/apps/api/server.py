@@ -214,6 +214,7 @@ from adaos.services.runtime_lifecycle import (
     runtime_lifecycle_snapshot,
 )
 from adaos.services.runtime_memory_profile import finish_active_runtime_memory_profile
+from adaos.services.supervisor_memory import supervisor_memory_session_artifacts_dir
 from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias, save_subnet_alias
 from adaos.domain import Event as DomainEvent
 
@@ -222,6 +223,18 @@ init_ctx()
 _DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
 _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
 _DEFAULT_UPDATE_COUNTDOWN_SEC = 60.0
+
+
+def _write_runtime_profile_shutdown_debug(payload: dict[str, Any]) -> None:
+    session_id = str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID") or "").strip()
+    if not session_id:
+        return
+    try:
+        path = (supervisor_memory_session_artifacts_dir(session_id) / "runtime-admin-shutdown-debug.json").resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        _runtime_log.warning("failed to persist runtime admin shutdown debug payload", exc_info=True)
 
 
 def _runtime_identity_public_payload() -> dict[str, Any]:
@@ -1036,8 +1049,22 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     app.state.shutdown_requested = True
     app.state.shutdown_reason = body.reason
     app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
-    if str(os.getenv("ADAOS_SUPERVISOR_PROFILE_MODE") or "normal").strip().lower() != "normal":
+    profile_mode = str(os.getenv("ADAOS_SUPERVISOR_PROFILE_MODE") or "normal").strip().lower()
+    shutdown_debug_payload: dict[str, Any] = {
+        "entered_at": time.time(),
+        "reason": body.reason,
+        "drain_timeout_sec": float(body.drain_timeout_sec),
+        "signal_delay_sec": float(body.signal_delay_sec),
+        "profile_mode": profile_mode,
+        "session_id": str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID") or "").strip() or None,
+        "finish_result": None,
+    }
+    _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
+    if profile_mode != "normal":
         finish_result = finish_active_runtime_memory_profile()
+        shutdown_debug_payload["finish_result"] = finish_result
+        shutdown_debug_payload["finished_at"] = time.time()
+        _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
         if finish_result.get("ok"):
             _runtime_log.info(
                 "runtime memory profile finalized during admin shutdown session_id=%s profile_mode=%s finished=%s",
