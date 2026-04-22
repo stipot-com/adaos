@@ -666,6 +666,7 @@ def test_infrastate_project_async_skips_snapshot_with_only_timestamp_changes(mon
 
     monkeypatch.setattr(mod, "ctx_subnet", SimpleNamespace(set_async=_fake_set_async))
     monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+    monkeypatch.setattr(mod, "_publish_snapshot_streams", lambda snapshot, webspace_id=None: None)
 
     first = {
         "summary": {"value": "ready", "updated_at": 10.0},
@@ -686,6 +687,79 @@ def test_infrastate_project_async_skips_snapshot_with_only_timestamp_changes(mon
     assert applied == [("default", "ready")]
     assert mod._projection_diag["apply_total"] == 1
     assert mod._projection_diag["skip_total"] == 1
+
+
+def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch):
+    mod = _load_infrastate_module()
+    projected: list[dict[str, object]] = []
+    published: list[tuple[str, object, str | None]] = []
+    mod._projection_fingerprints.clear()
+    mod._projection_diag.update({"apply_total": 0, "skip_total": 0, "cache_hit_total": 0})
+
+    async def _fake_set_async(slot, value, *, user_id=None, webspace_id=None):
+        projected.append(value)
+
+    monkeypatch.setattr(mod, "ctx_subnet", SimpleNamespace(set_async=_fake_set_async))
+    monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    snapshot = {
+        "summary": {"value": "ready"},
+        "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
+        "logs": [{"id": "log-1"}],
+        "events": [{"id": "evt-1"}],
+    }
+
+    asyncio.run(mod._project_async(snapshot, webspace_id="default"))
+
+    assert projected == [
+        {
+            "summary": {"value": "ready"},
+            "operations": {"active": [{"id": "op-1"}]},
+        }
+    ]
+    assert published == [
+        ("infrastate.operations.active", [{"id": "op-1"}], "default"),
+        ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
+        ("infrastate.events.recent", [{"id": "evt-1"}], "default"),
+    ]
+
+
+def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: {
+            "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
+            "logs": [{"id": "log-1"}],
+            "events": [{"id": "evt-1"}],
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.logs.recent",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
+    ]
 
 
 def test_infrastate_marketplace_hides_skills_installed_via_scenario_dependencies(monkeypatch):
