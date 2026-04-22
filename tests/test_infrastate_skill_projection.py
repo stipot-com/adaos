@@ -712,6 +712,7 @@ def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch)
         "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
         "logs": [{"id": "log-1"}],
         "events": [{"id": "evt-1"}],
+        "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "data"}]}}},
     }
 
     asyncio.run(mod._project_async(snapshot, webspace_id="default"))
@@ -726,6 +727,7 @@ def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch)
         ("infrastate.operations.active", [{"id": "op-1"}], "default"),
         ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
         ("infrastate.events.recent", [{"id": "evt-1"}], "default"),
+        ("infrastate.yjs.load_mark", [{"root": "data"}], "default"),
     ]
 
 
@@ -743,6 +745,7 @@ def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeyp
                 "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
                 "logs": [{"id": "log-1"}],
                 "events": [{"id": "evt-1"}],
+                "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "data"}]}}},
             },
         )[1],
     )
@@ -765,6 +768,37 @@ def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeyp
         ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
     ]
     assert cache_flags == [False]
+
+
+def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: {
+            "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "ui", "peak_bps": 12.0}]}}},
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.yjs.load_mark",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.yjs.load_mark", [{"root": "ui", "peak_bps": 12.0}], "default"),
+    ]
 
 
 def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):

@@ -4446,6 +4446,31 @@ def yjs_sync_runtime_snapshot(
         weather_observer = weather_observer_snapshot(webspace_id=selected_webspace_id or None)
     except Exception:
         weather_observer = {}
+    try:
+        from adaos.services.yjs.load_mark import yjs_load_mark_snapshot
+
+        load_mark = yjs_load_mark_snapshot(
+            webspace_id=selected_webspace_id or None,
+            now_ts=now,
+        )
+    except Exception:
+        load_mark = {
+            "window_sec": 60,
+            "bucket_sec": 1,
+            "thresholds": {
+                "high_bps": 32 * 1024,
+                "critical_bps": 128 * 1024,
+            },
+            "assessment": {
+                "state": "unavailable",
+                "reason": "failed_to_load_yjs_load_mark",
+            },
+            "selected_webspace_id": selected_webspace_id or None,
+            "selected_webspace": {},
+            "webspace_total": 0,
+            "active_root_total": 0,
+            "webspaces": {},
+        }
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
     ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
@@ -4475,9 +4500,12 @@ def yjs_sync_runtime_snapshot(
     backup_skipped_total = 0
     state_vector_fast_path_total = 0
     state_vector_compute_total = 0
-    for item in webspaces.values():
+    for ws_id, item in list(webspaces.items()):
         if not isinstance(item, dict):
             continue
+        ws_load_mark = load_mark.get("webspaces", {}).get(str(ws_id)) if isinstance(load_mark.get("webspaces"), dict) else {}
+        if isinstance(ws_load_mark, dict):
+            item["load_mark"] = dict(ws_load_mark)
         update_entries = int(item.get("update_log_entries") or 0)
         max_entries = int(item.get("max_update_log_entries") or 0)
         replay_window_total += int(item.get("replay_window_entries") or 0)
@@ -4521,6 +4549,7 @@ def yjs_sync_runtime_snapshot(
             selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
     selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
     selected_webspace = _build_yjs_selected_webspace_snapshot(selected_webspace_id)
+    selected_load_mark = load_mark.get("selected_webspace") if isinstance(load_mark.get("selected_webspace"), dict) else {}
     last_reload = (
         dict(gateway_commands.get("last_reload") or {})
         if isinstance(gateway_commands.get("last_reload"), dict)
@@ -4624,8 +4653,10 @@ def yjs_sync_runtime_snapshot(
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
         "recovery_guidance": recovery_guidance,
+        "load_mark": load_mark,
         "selected_webspace": {
             **selected_webspace,
+            "load_mark": dict(selected_load_mark),
             "gateway_room": dict(gateway_rooms.get(selected_webspace_id) or {})
             if isinstance(gateway_rooms.get(selected_webspace_id), dict)
             else {},

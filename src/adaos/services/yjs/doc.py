@@ -32,6 +32,38 @@ def _set_doc_timing(timings: dict[str, float] | None, key: str, value: float, *,
     return round(float(value), 3)
 
 
+def _capture_load_mark_sizes(ydoc: Y.YDoc) -> dict[str, int] | None:
+    try:
+        from adaos.services.yjs.load_mark import capture_ydoc_root_sizes
+
+        return capture_ydoc_root_sizes(ydoc)
+    except Exception:
+        return None
+
+
+def _record_load_mark_update(
+    webspace_id: str,
+    *,
+    ydoc: Y.YDoc,
+    before_sizes: dict[str, int] | None,
+    update: bytes | None,
+    source: str,
+) -> None:
+    try:
+        from adaos.services.yjs.load_mark import record_detached_ydoc_update
+
+        record_detached_ydoc_update(
+            webspace_id,
+            before_sizes=before_sizes,
+            ydoc=ydoc,
+            total_bytes=len(update or b""),
+            now_ts=time.time(),
+            source=source,
+        )
+    except Exception:
+        _log.debug("load mark update failed for webspace=%s source=%s", webspace_id, source, exc_info=True)
+
+
 def _run_blocking(coro: Awaitable[T]) -> T:
     """
     Execute an async SQLiteYStore operation from synchronous code.
@@ -240,6 +272,7 @@ def get_ydoc(
             return None
 
     before = _run_blocking(_load())
+    before_root_sizes = None if read_only else _capture_load_mark_sizes(ydoc)
     try:
         yield ydoc
     finally:
@@ -263,6 +296,13 @@ def get_ydoc(
                     stage_started = time.perf_counter()
                     _schedule_room_update(webspace_id, update)
                     _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                    _record_load_mark_update(
+                        webspace_id,
+                        ydoc=ydoc,
+                        before_sizes=before_root_sizes,
+                        update=update,
+                        source="get_ydoc",
+                    )
                 else:
                     _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
                     _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)
@@ -319,6 +359,7 @@ async def async_get_ydoc(
                 _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
                 pass
         before = None
+        before_root_sizes = None
         if not read_only:
             stage_started = time.perf_counter()
             before = await ystore.current_state_vector()
@@ -331,6 +372,8 @@ async def async_get_ydoc(
                 except Exception:
                     _record_doc_timing(timings, "encode_state_vector", stage_started, prefix=timing_prefix)
                     before = None
+            if not use_live_room:
+                before_root_sizes = _capture_load_mark_sizes(ydoc)
         yield ydoc
         if not read_only:
             if _state_changed(ydoc, before, timings, prefix=timing_prefix):
@@ -357,6 +400,13 @@ async def async_get_ydoc(
                     stage_started = time.perf_counter()
                     _schedule_room_update(webspace_id, update)
                     _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
+                    _record_load_mark_update(
+                        webspace_id,
+                        ydoc=ydoc,
+                        before_sizes=before_root_sizes,
+                        update=update,
+                        source="async_get_ydoc",
+                    )
             else:
                 _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
                 _set_doc_timing(timings, "ystore_write_update", 0.0, prefix=timing_prefix)

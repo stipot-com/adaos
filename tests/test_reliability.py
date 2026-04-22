@@ -878,6 +878,37 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
         "adaos.services.reliability._build_yjs_webspace_guidance",
         lambda selected_webspace, action_overrides: {},
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.load_mark",
+        SimpleNamespace(
+            yjs_load_mark_snapshot=lambda **kwargs: {
+                "window_sec": 60,
+                "bucket_sec": 1,
+                "thresholds": {"high_bps": 32768, "critical_bps": 131072},
+                "assessment": {"state": "high", "reason": "selected_or_cached_webspaces_above_high_threshold"},
+                "selected_webspace_id": kwargs.get("webspace_id") or "default",
+                "selected_webspace": {
+                    "webspace_id": kwargs.get("webspace_id") or "default",
+                    "assessment": {"state": "high", "reason": "recent_root_flow_above_high_threshold"},
+                    "items": [
+                        {"root": "data", "status": "high", "avg_bps": 1024.0, "peak_bps": 4096.0},
+                    ],
+                },
+                "webspace_total": 1,
+                "active_root_total": 1,
+                "webspaces": {
+                    "default": {
+                        "webspace_id": "default",
+                        "assessment": {"state": "high", "reason": "recent_root_flow_above_high_threshold"},
+                        "items": [
+                            {"root": "data", "status": "high", "avg_bps": 1024.0, "peak_bps": 4096.0},
+                        ],
+                    }
+                },
+            }
+        ),
+    )
 
     snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
     contract = snapshot["channel_contract"]
@@ -908,6 +939,9 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert snapshot["compaction_eligible_webspace_total"] == 1
     assert snapshot["replay_window_byte_total"] == 512
     assert snapshot["backup_fast_path_total"] == 1
+    assert snapshot["load_mark"]["assessment"]["state"] == "high"
+    assert snapshot["selected_webspace"]["load_mark"]["items"][0]["root"] == "data"
+    assert snapshot["webspaces"]["default"]["load_mark"]["assessment"]["state"] == "high"
     assert ownership["state"] == "explicit"
     assert ownership["selector"]["owner"] == "shared"
     assert ownership["selector"]["status"] == "unset"
