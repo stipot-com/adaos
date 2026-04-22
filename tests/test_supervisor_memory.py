@@ -647,6 +647,27 @@ def test_supervisor_profile_session_requests_finalize_after_runtime_window(monke
     assert decision["reason"] == "supervisor.memory.profile_window_complete.sampled_profile"
 
 
+def test_supervisor_observes_runtime_profile_finalize_markers(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-debug",
+                    "kind": "runtime_profile_finalize_debug",
+                    "path": str(tmp_path / "debug.json"),
+                }
+            ],
+        }
+    )
+
+    assert manager._memory_profile_finalize_observed("mem-001") is True
+
+
 def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")

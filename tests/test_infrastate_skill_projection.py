@@ -801,6 +801,47 @@ def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
     ]
 
 
+def test_infrastate_stream_snapshot_request_supports_yjs_load_mark_from_reliability_runtime(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: {
+            "reliability": {
+                "runtime": {
+                    "sync_runtime": {
+                        "load_mark": {
+                            "selected_webspace": {
+                                "items": [{"root": "registry", "avg_bps": 7.0}],
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.yjs.load_mark",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.yjs.load_mark", [{"root": "registry", "avg_bps": 7.0}], "default"),
+    ]
+
+
 def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):
     mod = _load_infrastate_module()
     invalidated: list[str | None] = []

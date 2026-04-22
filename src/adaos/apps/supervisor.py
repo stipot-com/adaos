@@ -935,6 +935,16 @@ def _runtime_profile_graceful_shutdown_timeout_sec(profile_mode: str) -> tuple[f
     return drain_timeout, signal_delay, graceful_wait, terminate_wait
 
 
+def _runtime_profile_finalize_wait_sec() -> float:
+    try:
+        return max(
+            2.0,
+            float(str(os.getenv("ADAOS_SUPERVISOR_PROFILE_FINALIZE_WAIT_SEC") or "8").strip()),
+        )
+    except Exception:
+        return 8.0
+
+
 def _memory_profile_max_runtime_sec(profile_mode: str) -> float:
     normalized = str(profile_mode or "normal").strip().lower()
     if normalized == "sampled_profile":
@@ -1717,6 +1727,28 @@ class SupervisorManager:
                 self._memory_suspicion_reason = auto_block_reason
         self._persist_runtime_state()
         return sample
+
+    def _memory_profile_finalize_observed(self, session_id: str | None) -> bool:
+        token = str(session_id or "").strip()
+        if not token:
+            return False
+        summary = read_memory_session_summary(token) or {}
+        artifact_refs = summary.get("artifact_refs") if isinstance(summary.get("artifact_refs"), list) else []
+        artifact_kinds = {str(item.get("kind") or "").strip() for item in artifact_refs if isinstance(item, dict)}
+        if "runtime_profile_finalize_debug" in artifact_kinds:
+            return True
+        if "tracemalloc_final_snapshot" in artifact_kinds or "tracemalloc_top_growth" in artifact_kinds:
+            return True
+        artifacts_dir = supervisor_memory_session_artifacts_dir(token)
+        for name in (
+            "runtime-admin-shutdown-debug.json",
+            "runtime-profile-finalize-debug.json",
+            "tracemalloc-final.json",
+            "tracemalloc-top-growth.json",
+        ):
+            if (artifacts_dir / name).exists():
+                return True
+        return False
 
     def _schedule_service_restart(self, *, reason: str) -> dict[str, Any]:
         delay_sec = _root_restart_delay_sec()
@@ -3180,10 +3212,12 @@ class SupervisorManager:
         if proc.poll() is not None:
             return
         profile_mode = self._memory_profile_mode if proc is self._proc else "normal"
+        profile_session_id = str(self._memory_active_session_id or "").strip() if proc is self._proc else ""
         drain_timeout_sec, signal_delay_sec, graceful_wait_sec, terminate_wait_sec = _runtime_profile_graceful_shutdown_timeout_sec(
             profile_mode
         )
         if graceful:
+            shutdown_requested = False
             try:
                 headers = {"Content-Type": "application/json"}
                 if self.token:
@@ -3201,8 +3235,17 @@ class SupervisorManager:
                         signal_delay_sec=signal_delay_sec,
                     ),
                 )
+                shutdown_requested = True
             except Exception:
                 pass
+            finalize_wait_deadline = time.time() + float(_runtime_profile_finalize_wait_sec())
+            if shutdown_requested and profile_mode != "normal" and profile_session_id:
+                while time.time() < finalize_wait_deadline:
+                    if proc.poll() is not None:
+                        return
+                    if self._memory_profile_finalize_observed(profile_session_id):
+                        break
+                    await asyncio.sleep(0.1)
             deadline = time.time() + float(graceful_wait_sec)
             while time.time() < deadline:
                 if proc.poll() is not None:
