@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 from adaos.apps import autostart_runner
+from adaos.services import runtime_memory_profile
 from adaos.services.supervisor_memory import read_memory_session_summary, supervisor_memory_session_artifacts_dir
 
 
@@ -205,6 +206,7 @@ def test_runtime_profile_signal_handler_finishes_session(monkeypatch, tmp_path: 
         def finish(self) -> None:
             calls.append("finish")
 
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
     restore = autostart_runner._install_runtime_profile_signal_handlers(_Session())  # type: ignore[arg-type]
 
     assert int(signal.SIGTERM) in installed
@@ -216,6 +218,7 @@ def test_runtime_profile_signal_handler_finishes_session(monkeypatch, tmp_path: 
 
     assert calls == ["finish"]
     restore()
+    runtime_memory_profile.register_active_runtime_memory_profile(None)
     assert restored[int(signal.SIGTERM)] == f"previous-{int(signal.SIGTERM)}"
 
 

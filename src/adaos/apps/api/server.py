@@ -212,6 +212,7 @@ from adaos.services.runtime_lifecycle import (
     reset_runtime_lifecycle,
     runtime_lifecycle_snapshot,
 )
+from adaos.services.runtime_memory_profile import finish_active_runtime_memory_profile
 from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias, save_subnet_alias
 from adaos.domain import Event as DomainEvent
 
@@ -1034,6 +1035,9 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     app.state.shutdown_requested = True
     app.state.shutdown_reason = body.reason
     app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
+    if str(os.getenv("ADAOS_SUPERVISOR_PROFILE_MODE") or "normal").strip().lower() != "normal":
+        with contextlib.suppress(Exception):
+            finish_active_runtime_memory_profile()
     stopping_payload = {
         "subnet_id": conf.subnet_id,
         "reason": body.reason,

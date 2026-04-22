@@ -50,6 +50,10 @@ from adaos.services.core_slots import (
     write_slot_manifest,
 )
 from adaos.services.node_config import load_config, save_config
+from adaos.services.runtime_memory_profile import (
+    finish_active_runtime_memory_profile,
+    register_active_runtime_memory_profile,
+)
 from adaos.services.runtime_paths import current_base_dir, current_logs_dir
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root.core_update_sync import build_core_update_report
@@ -334,7 +338,7 @@ def _install_runtime_profile_signal_handlers(
     registered: list[int] = []
 
     def _handler(signum: int, _frame: Any) -> None:
-        runtime_memory_profile.finish()
+        finish_active_runtime_memory_profile()
         raise SystemExit(128 + int(signum))
 
     for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
@@ -1200,6 +1204,7 @@ def main() -> None:
 
         runtime_memory_profile = _RuntimeMemoryProfileSession()
         runtime_memory_profile.start()
+        register_active_runtime_memory_profile(runtime_memory_profile)
         restore_profile_signal_handlers = _install_runtime_profile_signal_handlers(runtime_memory_profile)
 
         phase = "uvicorn.run"
@@ -1215,7 +1220,8 @@ def main() -> None:
             )
         finally:
             restore_profile_signal_handlers()
-            runtime_memory_profile.finish()
+            finish_active_runtime_memory_profile()
+            register_active_runtime_memory_profile(None)
             if pidfile is not None:
                 _cleanup_pidfile(pidfile)
     except SystemExit:
