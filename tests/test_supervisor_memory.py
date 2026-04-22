@@ -334,7 +334,7 @@ def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeyp
     monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
     monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
     monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
-    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
     monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
 
     first = manager._sample_memory_telemetry()
@@ -501,7 +501,7 @@ def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypat
     monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
     monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
     monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
-    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
 
     manager._sample_memory_telemetry()
     manager._sample_memory_telemetry()
@@ -599,10 +599,10 @@ def test_supervisor_profile_mode_shutdown_uses_extended_grace(monkeypatch, tmp_p
         captured["timeout"] = timeout
         raise RuntimeError("shutdown-api-unavailable")
 
-    times = iter([0.0, 0.0, 10.0, 20.0, 26.0, 26.0, 31.0, 37.0])
+    times = iter([0.0, 0.0, 10.0, 20.0, 26.0, 26.0, 31.0, 37.0, 37.0, 43.0, 48.0])
 
     monkeypatch.setattr(supervisor.requests, "post", _post)
-    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
 
     async def _sleep(delay: float) -> None:
         sleeps.append(delay)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import threading
 import time
 import traceback
@@ -15,6 +16,9 @@ from adaos.services.supervisor_memory import (
     supervisor_memory_session_artifacts_dir,
     write_memory_session_summary,
 )
+
+
+_LOG = logging.getLogger("adaos.runtime.profile")
 
 
 def _runtime_profile_tracemalloc_frames(mode: str) -> int:
@@ -80,10 +84,28 @@ class RuntimeMemoryProfileSession:
     def start(self) -> None:
         with self._lock:
             if self.profile_mode == "normal" or not self.session_id or self.started:
+                _LOG.info(
+                    "runtime memory profile start skipped session_id=%s profile_mode=%s started=%s",
+                    self.session_id,
+                    self.profile_mode,
+                    self.started,
+                )
                 return
             frames = _runtime_profile_tracemalloc_frames(self.profile_mode)
             if frames <= 0:
+                _LOG.warning(
+                    "runtime memory profile start skipped because frame depth is non-positive session_id=%s profile_mode=%s",
+                    self.session_id,
+                    self.profile_mode,
+                )
                 return
+            _LOG.info(
+                "runtime memory profile start session_id=%s profile_mode=%s frames=%s trigger=%s",
+                self.session_id,
+                self.profile_mode,
+                frames,
+                self.profile_trigger,
+            )
             tracemalloc.start(frames)
             self.started_at = time.time()
             self.started = True
@@ -116,6 +138,11 @@ class RuntimeMemoryProfileSession:
 
     def _write_start_snapshot(self) -> None:
         if not self.session_id or not tracemalloc.is_tracing():
+            _LOG.warning(
+                "runtime memory profile start snapshot skipped session_id=%s tracing=%s",
+                self.session_id,
+                tracemalloc.is_tracing(),
+            )
             return
         snapshot = self._start_snapshot or tracemalloc.take_snapshot()
         artifacts_dir = supervisor_memory_session_artifacts_dir(self.session_id)
@@ -172,11 +199,29 @@ class RuntimeMemoryProfileSession:
                 *extra_refs,
             ]
         )
+        _LOG.info(
+            "runtime memory profile wrote start snapshot session_id=%s profile_mode=%s artifact_path=%s",
+            self.session_id,
+            self.profile_mode,
+            path,
+        )
 
     def finish(self) -> None:
         with self._lock:
             if self._finished or not self.started or not self.session_id or not tracemalloc.is_tracing():
+                _LOG.warning(
+                    "runtime memory profile finish skipped session_id=%s started=%s finished=%s tracing=%s",
+                    self.session_id,
+                    self.started,
+                    self._finished,
+                    tracemalloc.is_tracing(),
+                )
                 return
+            _LOG.info(
+                "runtime memory profile finish begin session_id=%s profile_mode=%s",
+                self.session_id,
+                self.profile_mode,
+            )
             finished_at = time.time()
             snapshot = tracemalloc.take_snapshot()
             artifacts_dir = supervisor_memory_session_artifacts_dir(self.session_id)
@@ -264,10 +309,22 @@ class RuntimeMemoryProfileSession:
                 top_growth_sites=growth_sites,
                 finished=True,
             )
+            _LOG.info(
+                "runtime memory profile finish wrote artifacts session_id=%s final_path=%s growth_path=%s growth_sites=%s",
+                self.session_id,
+                snapshot_path,
+                diff_path,
+                len(growth_sites),
+            )
             tracemalloc.stop()
             self.started = False
             self._start_snapshot = None
             self._finished = True
+            _LOG.info(
+                "runtime memory profile finish complete session_id=%s profile_mode=%s",
+                self.session_id,
+                self.profile_mode,
+            )
 
 
 _ACTIVE_RUNTIME_MEMORY_PROFILE: RuntimeMemoryProfileSession | None = None
@@ -284,6 +341,7 @@ def finish_active_runtime_memory_profile() -> dict[str, Any]:
     with _ACTIVE_RUNTIME_MEMORY_PROFILE_LOCK:
         session = _ACTIVE_RUNTIME_MEMORY_PROFILE
     if session is None:
+        _LOG.warning("finish_active_runtime_memory_profile found no active session")
         return {"ok": False, "found": False, "reason": "no_active_session"}
     session_id = getattr(session, "session_id", None)
     result = {
@@ -295,11 +353,25 @@ def finish_active_runtime_memory_profile() -> dict[str, Any]:
         "finished": bool(getattr(session, "_finished", False)),
     }
     try:
+        _LOG.info(
+            "finish_active_runtime_memory_profile invoking finish session_id=%s profile_mode=%s started=%s finished=%s",
+            result.get("session_id"),
+            result.get("profile_mode"),
+            result.get("started"),
+            result.get("finished"),
+        )
         session.finish()
     except Exception as exc:
         result["error_type"] = type(exc).__name__
         result["error"] = str(exc)
         result["traceback"] = traceback.format_exc()
+        _LOG.warning(
+            "finish_active_runtime_memory_profile failed session_id=%s profile_mode=%s error_type=%s error=%s",
+            result.get("session_id"),
+            result.get("profile_mode"),
+            result["error_type"],
+            result["error"],
+        )
         artifact_ref = _write_finalize_debug_artifact(session_id, result)
         if artifact_ref:
             summary = read_memory_session_summary(str(session_id)) or {"session_id": str(session_id)}
@@ -309,6 +381,12 @@ def finish_active_runtime_memory_profile() -> dict[str, Any]:
         return result
     result["ok"] = True
     result["finished"] = bool(getattr(session, "_finished", False))
+    _LOG.info(
+        "finish_active_runtime_memory_profile completed session_id=%s profile_mode=%s finished=%s",
+        result.get("session_id"),
+        result.get("profile_mode"),
+        result.get("finished"),
+    )
     artifact_ref = _write_finalize_debug_artifact(session_id, result)
     if artifact_ref:
         summary = read_memory_session_summary(str(session_id)) or {"session_id": str(session_id)}

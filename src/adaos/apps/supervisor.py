@@ -3218,12 +3218,23 @@ class SupervisorManager:
         )
         if graceful:
             shutdown_requested = False
+            shutdown_url = str(base_url or self.runtime_base_url) + "/api/admin/shutdown"
+            shutdown_status_code: int | None = None
+            shutdown_error: str | None = None
             try:
                 headers = {"Content-Type": "application/json"}
                 if self.token:
                     headers["X-AdaOS-Token"] = self.token
-                requests.post(
-                    str(base_url or self.runtime_base_url) + "/api/admin/shutdown",
+                _LOG.info(
+                    "supervisor requesting runtime shutdown reason=%s url=%s profile_mode=%s session_id=%s pid=%s",
+                    reason,
+                    shutdown_url,
+                    profile_mode,
+                    profile_session_id or None,
+                    getattr(proc, "pid", None),
+                )
+                response = requests.post(
+                    shutdown_url,
                     headers=headers,
                     json={
                         "reason": reason,
@@ -3235,17 +3246,50 @@ class SupervisorManager:
                         signal_delay_sec=signal_delay_sec,
                     ),
                 )
+                shutdown_status_code = int(response.status_code)
+                response_tail = (response.text or "").strip()[-400:]
+                _LOG.info(
+                    "supervisor runtime shutdown response reason=%s url=%s status_code=%s body_tail=%s",
+                    reason,
+                    shutdown_url,
+                    shutdown_status_code,
+                    response_tail,
+                )
                 shutdown_requested = True
-            except Exception:
-                pass
+            except Exception as exc:
+                shutdown_error = f"{type(exc).__name__}: {exc}"
+                _LOG.warning(
+                    "supervisor runtime shutdown request failed reason=%s url=%s profile_mode=%s session_id=%s error=%s",
+                    reason,
+                    shutdown_url,
+                    profile_mode,
+                    profile_session_id or None,
+                    shutdown_error,
+                )
             finalize_wait_deadline = time.time() + float(_runtime_profile_finalize_wait_sec())
             if shutdown_requested and profile_mode != "normal" and profile_session_id:
+                _LOG.info(
+                    "supervisor waiting for runtime profile finalize marker session_id=%s timeout_sec=%.2f",
+                    profile_session_id,
+                    _runtime_profile_finalize_wait_sec(),
+                )
                 while time.time() < finalize_wait_deadline:
                     if proc.poll() is not None:
                         return
                     if self._memory_profile_finalize_observed(profile_session_id):
+                        _LOG.info(
+                            "supervisor observed runtime profile finalize marker session_id=%s",
+                            profile_session_id,
+                        )
                         break
                     await asyncio.sleep(0.1)
+                else:
+                    _LOG.warning(
+                        "supervisor did not observe runtime profile finalize marker before timeout session_id=%s shutdown_status_code=%s shutdown_error=%s",
+                        profile_session_id,
+                        shutdown_status_code,
+                        shutdown_error,
+                    )
             deadline = time.time() + float(graceful_wait_sec)
             while time.time() < deadline:
                 if proc.poll() is not None:

@@ -1059,12 +1059,26 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
         "session_id": str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID") or "").strip() or None,
         "finish_result": None,
     }
+    _runtime_log.info(
+        "admin shutdown entered reason=%s profile_mode=%s session_id=%s drain_timeout_sec=%s signal_delay_sec=%s",
+        body.reason,
+        profile_mode,
+        shutdown_debug_payload.get("session_id"),
+        body.drain_timeout_sec,
+        body.signal_delay_sec,
+    )
     _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
     if profile_mode != "normal":
         finish_result = finish_active_runtime_memory_profile()
         shutdown_debug_payload["finish_result"] = finish_result
         shutdown_debug_payload["finished_at"] = time.time()
         _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
+        _runtime_log.info(
+            "admin shutdown finish result session_id=%s profile_mode=%s result=%s",
+            shutdown_debug_payload.get("session_id"),
+            profile_mode,
+            finish_result,
+        )
         if finish_result.get("ok"):
             _runtime_log.info(
                 "runtime memory profile finalized during admin shutdown session_id=%s profile_mode=%s finished=%s",
