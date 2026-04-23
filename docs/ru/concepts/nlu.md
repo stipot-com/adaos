@@ -4,7 +4,7 @@ This document describes the current production MVP direction for intent detectio
 
 ## MVP baseline
 
-- Pipeline: `regex` -> `rasa (service-skill)` -> `teacher (LLM in the loop)`
+- Pipeline: `regex` -> `neural (service-skill, optional)` -> `rasa (service-skill)` -> `teacher (LLM in the loop)`
 - System boundary: NLU runtime code is one; only **data** varies per scenario/skill.
 - Transport: intent detection is integrated into AdaOS event bus (not CLI-only).
 
@@ -19,13 +19,28 @@ This document describes the current production MVP direction for intent detectio
      - workspace skills (`skill.yaml:nlu.regex_rules`)
      - legacy per-webspace cache (`data.nlu.regex_rules`)
 3. If regex does not match:
-   - `nlp.intent.detect.rasa` is emitted (delegates to the Rasa service skill)
-4. If an intent is found:
+   - if `ADAOS_NLU_NEURAL=1`: emits `nlp.intent.detect.neural`
+   - otherwise emits `nlp.intent.detect.rasa`
+4. Neural bridge:
+   - calls `neural_nlu_service_skill:/parse`
+   - if the skill is missing, hub bootstraps it from packaged template (`adaos.interpreter_data/neural_nlu_service_skill`)
+   - upstream detector code is ported into `handlers/upstream_detector_port.py` (service-side runtime module)
+   - neural service can run notebook-compatible Char-CNN + BiLSTM weights via:
+     - `ADAOS_NEURAL_MODEL_PATH` (state_dict `.pt`)
+     - `ADAOS_NEURAL_LABELS_PATH` (JSON list of intents)
+     - `ADAOS_NEURAL_VOCAB_PATH` (JSON char vocabulary)
+   - default artifact location (if env vars are not set):
+     - `<ADAOS_BASE_DIR>/state/nlu/neural/model.pt`
+     - `<ADAOS_BASE_DIR>/state/nlu/neural/labels.json`
+     - `<ADAOS_BASE_DIR>/state/nlu/neural/vocab.json`
+   - on high confidence -> emits `nlp.intent.detected { via: "neural" }`
+   - on abstain/error -> falls back to `nlp.intent.detect.rasa`
+5. If an intent is found:
    - `nlp.intent.detected { intent, confidence, slots, text, webspace_id, request_id, via }`
-5. If intent is not obtained:
+6. If intent is not obtained:
    - `nlp.intent.not_obtained { reason, text, via, webspace_id, request_id }`
    - Router emits a human-friendly `io.out.chat.append` and records the request for NLU Teacher.
-6. If teacher is enabled:
+7. If teacher is enabled:
    - `nlp.teacher.request { webspace_id, request }` is emitted for teacher runtimes.
 
 ## Rasa as a service-skill
