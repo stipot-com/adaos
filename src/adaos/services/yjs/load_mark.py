@@ -18,9 +18,11 @@ _WINDOW_SEC = max(10, int(os.getenv("ADAOS_YJS_LOAD_MARK_WINDOW_SEC") or "60"))
 _BUCKET_SEC = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_BUCKET_SEC") or "1"))
 _HIGH_BPS = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_BPS") or str(32 * 1024)))
 _CRITICAL_BPS = max(_HIGH_BPS + 1, int(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_BPS") or str(128 * 1024)))
-_UNATTRIBUTED_ROOT = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_ROOT") or "_unattributed").strip() or "_unattributed"
+_UNATTRIBUTED_ROOT = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_ROOT") or "_by_initiator/unknown").strip() or "_by_initiator/unknown"
+_UNATTRIBUTED_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_PREFIX") or "_by_initiator/").strip() or "_by_initiator/"
 _STREAM_RECEIVER = str(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_RECEIVER") or "infrastate.yjs.load_mark").strip() or "infrastate.yjs.load_mark"
 _STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "0.25"))
+_STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "0"))
 
 _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
@@ -100,6 +102,16 @@ def _ensure_webspace_state(webspace_id: str) -> dict[str, Any]:
     return state
 
 
+def _normalize_source_bucket(source: str | None) -> str:
+    token = str(source or "").strip().lower()
+    if not token:
+        return _UNATTRIBUTED_ROOT
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in token).strip("._")
+    if not safe:
+        return _UNATTRIBUTED_ROOT
+    return f"{_UNATTRIBUTED_PREFIX}{safe}"
+
+
 def _has_active_stream_subscription_locked(webspace_id: str) -> bool:
     return int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(str(webspace_id or "").strip() or "default") or 0) > 0
 
@@ -119,7 +131,10 @@ def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
 def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dict[str, Any]]:
     state = _ensure_webspace_state(webspace_id)
     snapshot = _snapshot_webspace_locked(str(webspace_id or "").strip() or "default", state, now_ts=now_ts)
-    return [dict(item) for item in list(snapshot.get("items") or []) if isinstance(item, dict)]
+    items = [dict(item) for item in list(snapshot.get("items") or []) if isinstance(item, dict)]
+    if _STREAM_TOP_N > 0:
+        return items[:_STREAM_TOP_N]
+    return items
 
 
 def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = None) -> None:
@@ -388,12 +403,13 @@ def record_write_update(
             if isinstance(webspace_state.get("snapshot_sizes"), dict)
             else {}
         )
-        previous_size = int(snapshot_sizes.get(_UNATTRIBUTED_ROOT) or 0)
+        bucket_name = _normalize_source_bucket(source)
+        previous_size = int(snapshot_sizes.get(bucket_name) or 0)
         current_size = max(previous_size, previous_size + bytes_total)
-        snapshot_sizes[_UNATTRIBUTED_ROOT] = current_size
+        snapshot_sizes[bucket_name] = current_size
         _record_root_bytes_locked(
             webspace_state,
-            root_name=_UNATTRIBUTED_ROOT,
+            root_name=bucket_name,
             bytes_written=bytes_total,
             now_ts=now,
             current_size_bytes=current_size,
