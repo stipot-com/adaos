@@ -6,12 +6,22 @@ from typing import Any, List, Optional
 import json
 import logging
 
+from adaos.sdk.data.context import get_current_skill
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import mutate_live_room, async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.user.profile import UserProfileService
 from .projection_registry import ProjectionRegistry, ProjectionTarget
 
 _log = logging.getLogger("adaos.scenario.projection")
+
+
+def _projection_write_owner() -> str:
+    current = get_current_skill()
+    name = str(getattr(current, "name", "") or "").strip()
+    if name:
+        return f"skill:{name}"
+    return "core"
 
 
 def _clone_json_like(value: Any) -> Any:
@@ -177,6 +187,8 @@ class ProjectionService:
         if len(segments) < 2:
             return
         root_name = segments[0]
+        owner = _projection_write_owner()
+        prefer_live_room = owner == "core"
 
         def _mutator(doc, txn) -> None:
             root = doc.get_map(root_name)
@@ -201,13 +213,20 @@ class ProjectionService:
                 return
             root.set(txn, top_key, merged)
 
-        if not mutate_live_room(ws_id, _mutator):
-            try:
+        if prefer_live_room and mutate_live_room(ws_id, _mutator):
+            return
+        try:
+            async with ystore_write_metadata(
+                root_names=[root_name],
+                source="projection_service",
+                owner=owner,
+                channel=f"projection.{str(target.backend or 'yjs')}",
+            ):
                 async with async_get_ydoc(ws_id, load_mark_roots=[root_name]) as ydoc:
                     with ydoc.begin_transaction() as txn:
                         _mutator(ydoc, txn)
-            except Exception:
-                _log.warning("failed to apply yjs projection webspace=%s path=%s", ws_id, path, exc_info=True)
+        except Exception:
+            _log.warning("failed to apply yjs projection webspace=%s path=%s", ws_id, path, exc_info=True)
 
     def _apply_kv(self, scope: str, slot: str, value: Any, *, user_id: Optional[str]) -> None:
         # For MVP treat (current_user, "profile.settings") specially and

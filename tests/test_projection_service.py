@@ -4,6 +4,7 @@ import asyncio
 import sys
 import types
 from types import SimpleNamespace
+from contextlib import asynccontextmanager
 
 if "y_py" not in sys.modules:
     sys.modules["y_py"] = types.SimpleNamespace(YDoc=object)
@@ -57,6 +58,11 @@ def _fake_async_get_ydoc(state: dict[str, _FakeMap], calls: list[dict[str, objec
         return _FakeAsyncDoc(state)
 
     return _factory
+
+
+@asynccontextmanager
+async def _fake_ystore_write_metadata(**kwargs):
+    yield kwargs
 
 
 def test_projection_service_merges_deep_yjs_paths_without_overwriting_siblings(monkeypatch) -> None:
@@ -191,4 +197,84 @@ def test_projection_service_passes_target_root_to_async_get_ydoc(monkeypatch) ->
 
     asyncio.run(service.apply("runtime", "weather", {"city": "Moscow"}, webspace_id="ws-test"))
 
+    assert calls == [{"load_mark_roots": ["data"]}]
+
+
+def test_projection_service_marks_skill_owner_in_write_metadata(monkeypatch) -> None:
+    fake_state = {"data": _FakeMap()}
+    metadata_calls: list[dict[str, object]] = []
+
+    @asynccontextmanager
+    async def _capture_metadata(**kwargs):
+        metadata_calls.append(dict(kwargs))
+        yield kwargs
+
+    target = SimpleNamespace(
+        backend="yjs",
+        path="data/weather",
+        webspace_id=None,
+    )
+    registry = SimpleNamespace(resolve=lambda scope, slot: [target])  # noqa: ARG005
+    service = projection_service_module.ProjectionService(
+        ctx=SimpleNamespace(),
+        registry=registry,
+    )
+
+    monkeypatch.setattr(projection_service_module, "mutate_live_room", lambda _ws, _mutator: False)
+    monkeypatch.setattr(projection_service_module, "async_get_ydoc", _fake_async_get_ydoc(fake_state))
+    monkeypatch.setattr(projection_service_module, "ystore_write_metadata", _capture_metadata)
+    monkeypatch.setattr(
+        projection_service_module,
+        "get_current_skill",
+        lambda: SimpleNamespace(name="infrastate_skill"),
+    )
+
+    asyncio.run(service.apply("subnet", "infrastate.snapshot", {"ok": True}, webspace_id="ws-test"))
+
+    assert metadata_calls == [
+        {
+            "root_names": ["data"],
+            "source": "projection_service",
+            "owner": "skill:infrastate_skill",
+            "channel": "projection.yjs",
+        }
+    ]
+
+
+def test_projection_service_skips_live_room_fast_path_for_skill_owned_writes(monkeypatch) -> None:
+    fake_state = {"data": _FakeMap()}
+    calls: list[dict[str, object]] = []
+    mutate_calls: list[str] = []
+
+    target = SimpleNamespace(
+        backend="yjs",
+        path="data/weather",
+        webspace_id=None,
+    )
+    registry = SimpleNamespace(resolve=lambda scope, slot: [target])  # noqa: ARG005
+    service = projection_service_module.ProjectionService(
+        ctx=SimpleNamespace(),
+        registry=registry,
+    )
+
+    monkeypatch.setattr(
+        projection_service_module,
+        "mutate_live_room",
+        lambda ws, _mutator: mutate_calls.append(ws) or True,
+    )
+    monkeypatch.setattr(
+        projection_service_module,
+        "async_get_ydoc",
+        _fake_async_get_ydoc(fake_state, calls),
+    )
+    monkeypatch.setattr(projection_service_module, "ystore_write_metadata", _fake_ystore_write_metadata)
+    monkeypatch.setattr(
+        projection_service_module,
+        "get_current_skill",
+        lambda: SimpleNamespace(name="infra_access_skill"),
+    )
+
+    asyncio.run(service.apply("subnet", "infra_access.snapshot", {"ok": True}, webspace_id="ws-test"))
+
+    assert mutate_calls == []
     assert calls == [{"load_mark_roots": ["data"]}]
