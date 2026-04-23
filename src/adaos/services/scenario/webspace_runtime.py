@@ -625,6 +625,13 @@ def _write_effective_branch_fingerprints(
     return True
 
 
+def _has_effective_branch_value(y_map: Any, key: str) -> bool:
+    try:
+        return y_map.get(key) is not None
+    except Exception:
+        return False
+
+
 def _resolver_cache_keys(inputs: WebspaceResolverInputs) -> Dict[str, str]:
     scenario_snapshot = {
         "scenario_id": inputs.scenario_id,
@@ -2180,7 +2187,12 @@ class WebspaceScenarioRuntime:
             ignore_errors: bool = False,
         ) -> None:
             fingerprint = str(resolved_branch_fingerprints.get(path) or "").strip()
-            if fingerprint and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint:
+            branch_present = _has_effective_branch_value(y_map, key)
+            if (
+                fingerprint
+                and branch_present
+                and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint
+            ):
                 fingerprint_unchanged_paths.append(path)
                 fingerprint_updates[path] = fingerprint
                 pending_fingerprint_updates[path] = fingerprint

@@ -45,6 +45,25 @@ async def test_async_get_ydoc_uses_diff_writeback() -> None:
         reset_ystore_for_webspace(webspace_id)
 
 
+async def test_async_read_ydoc_collects_timings_without_name_error() -> None:
+    webspace_id = _webspace_id("read-timings")
+    timings: dict[str, float] = {}
+    try:
+        async with async_get_ydoc(webspace_id) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                ydoc.get_map("ui").set(txn, "current_scenario", "web_desktop")
+
+        async with async_read_ydoc(webspace_id, timings=timings, timing_prefix="probe.") as ydoc:
+            assert ydoc.get_map("ui").get("current_scenario") == "web_desktop"
+
+        assert "probe.ystore_start" in timings
+        assert "probe.ystore_apply_updates" in timings
+        assert "probe.ystore_stop" in timings
+        assert "probe.total" in timings
+    finally:
+        reset_ystore_for_webspace(webspace_id)
+
+
 async def test_async_get_ydoc_skips_noop_flush() -> None:
     webspace_id = _webspace_id("noop-flush")
     store = get_ystore_for_webspace(webspace_id)
