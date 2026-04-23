@@ -122,6 +122,28 @@ def test_sidecar_role_falls_back_to_load_config_when_ctx_config_is_missing(monke
     assert manager._sidecar_role() == "hub"
 
 
+def test_sidecar_repo_root_prefers_shared_dotenv_project_root_over_venv_ctx_repo_root(monkeypatch, tmp_path) -> None:
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token=None)
+    project_root = tmp_path / "adaos"
+    project_root.mkdir()
+    (project_root / ".env").write_text("ADAOS_TOKEN=test\n", encoding="utf-8")
+    (project_root / ".git").mkdir()
+    venv_repo_root = tmp_path / "venv" / "lib" / "python3.11"
+    (venv_repo_root / "src" / "adaos").mkdir(parents=True)
+
+    class _Paths:
+        def repo_root(self):
+            return venv_repo_root
+
+    class _Ctx:
+        paths = _Paths()
+
+    monkeypatch.setattr(supervisor, "get_ctx", lambda: _Ctx())
+    monkeypatch.setenv("ADAOS_SHARED_DOTENV_PATH", str(project_root / ".env"))
+
+    assert manager._sidecar_repo_root() == project_root.resolve()
+
+
 def test_reconcile_update_status_completes_awaiting_root_restart_attempt(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setattr(supervisor.time, "time", lambda: 500.0)

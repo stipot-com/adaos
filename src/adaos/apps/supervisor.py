@@ -1099,15 +1099,72 @@ class SupervisorManager:
         self._sidecar_last_sync_changed_paths: list[str] = []
 
     def _sidecar_repo_root(self) -> Path | None:
+        def _normalize_candidate(raw: Any) -> Path | None:
+            try:
+                text = str(raw or "").strip()
+                if not text:
+                    return None
+                path = Path(text).expanduser().resolve()
+            except Exception:
+                return None
+            return path if path.exists() else None
+
+        def _looks_like_python_install_root(path: Path) -> bool:
+            parts = tuple(part.lower() for part in path.parts)
+            if "site-packages" in parts or "dist-packages" in parts:
+                return True
+            for idx, part in enumerate(parts):
+                if part == "venv" and idx + 2 < len(parts):
+                    if parts[idx + 1] == "lib" and parts[idx + 2].startswith("python"):
+                        return True
+            return False
+
+        def _looks_like_project_root(path: Path) -> bool:
+            try:
+                if (path / ".git").exists() or (path / "pyproject.toml").exists():
+                    return True
+                src_root = path / "src" / "adaos"
+                return src_root.exists()
+            except Exception:
+                return False
+
+        def _shared_dotenv_repo_root() -> Path | None:
+            raw = str(os.getenv("ADAOS_SHARED_DOTENV_PATH") or "").strip()
+            if not raw:
+                return None
+            try:
+                dotenv_path = Path(raw).expanduser().resolve()
+            except Exception:
+                return None
+            if not dotenv_path.exists():
+                return None
+            candidate = dotenv_path.parent
+            return candidate if _looks_like_project_root(candidate) else None
+
+        shared_dotenv_root = _shared_dotenv_repo_root()
+        if shared_dotenv_root is not None:
+            return shared_dotenv_root
         try:
             ctx = get_ctx()
             repo_root = ctx.paths.repo_root()
             raw = repo_root() if callable(repo_root) else repo_root
-            if raw:
-                return Path(raw).expanduser().resolve()
+            candidate = _normalize_candidate(raw)
+            if candidate is not None and not _looks_like_python_install_root(candidate):
+                return candidate
         except Exception:
             pass
-        return current_repo_root()
+        candidate = current_repo_root()
+        if candidate is not None and not _looks_like_python_install_root(candidate):
+            return candidate
+        try:
+            cwd = Path.cwd().resolve()
+        except Exception:
+            cwd = None
+        if cwd is not None:
+            for base in (cwd, *cwd.parents):
+                if _looks_like_project_root(base):
+                    return base
+        return shared_dotenv_root
 
     def _sidecar_active_slot_repo_root(self) -> Path | None:
         manifest = active_slot_manifest()
