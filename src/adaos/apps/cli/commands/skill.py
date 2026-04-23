@@ -158,6 +158,35 @@ def _resolve_list_skill_version(
     return workspace_version or _clean_version_text(row_version) or "unknown"
 
 
+def _resolve_list_skill_git_flags(
+    *,
+    ctx,
+    skill_name: str,
+    workspace_root: Path,
+    workspace_skills_root: Path,
+) -> list[str]:
+    source_workdir, source_path, source_kind = _resolve_workspace_skill_source(
+        ctx,
+        skill_name,
+        workspace_root,
+        workspace_skills_root,
+    )
+    try:
+        path_status = compute_path_status(
+            workdir=source_workdir,
+            path=source_path,
+            base_ref="HEAD" if source_kind == "workspace" else None,
+        )
+    except Exception:
+        return []
+    flags: list[str] = []
+    if path_status.dirty:
+        flags.append("dirty")
+    if path_status.changed_vs_base:
+        flags.append("diff")
+    return flags
+
+
 def _resolve_workspace_skill_versions(
     *,
     runtime_state: dict[str, object] | None,
@@ -556,6 +585,12 @@ def list_cmd(
                         workspace_skills_root=workspace_skills_root,
                         registry_meta=workspace_registry_by_name.get(r.name),
                     ),
+                    "flags": _resolve_list_skill_git_flags(
+                        ctx=ctx,
+                        skill_name=r.name,
+                        workspace_root=workspace_root,
+                        workspace_skills_root=workspace_skills_root,
+                    ),
                 }
                 for r in rows
                 # оставляем только действительно установленные (если поле есть)
@@ -579,7 +614,14 @@ def list_cmd(
                 workspace_skills_root=workspace_skills_root,
                 registry_meta=workspace_registry_by_name.get(r.name),
             )
-            typer.echo(_("cli.skill.list.item", name=r.name, version=av))
+            flags = _resolve_list_skill_git_flags(
+                ctx=ctx,
+                skill_name=r.name,
+                workspace_root=workspace_root,
+                workspace_skills_root=workspace_skills_root,
+            )
+            suffix = f" [{' '.join(flags)}]" if flags else ""
+            typer.echo(f'{_("cli.skill.list.item", name=r.name, version=av)}{suffix}')
 
     if show_fs:
         present = {m.id.value for m in mgr.list_present()}

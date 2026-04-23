@@ -149,10 +149,37 @@ def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
 def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dict[str, Any]]:
     state = _ensure_webspace_state(webspace_id)
     snapshot = _snapshot_webspace_locked(str(webspace_id or "").strip() or "default", state, now_ts=now_ts)
-    items = [dict(item) for item in list(snapshot.get("items") or []) if isinstance(item, dict)]
+    rows: list[dict[str, Any]] = []
+    for item in list(snapshot.get("owner_items") or []):
+        if not isinstance(item, dict):
+            continue
+        owner = str(item.get("owner") or "").strip()
+        row = dict(item)
+        row["kind"] = "owner"
+        row["id"] = owner or "unknown"
+        row["display"] = owner or "unknown"
+        rows.append(row)
+    for item in list(snapshot.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        root = str(item.get("root") or "").strip()
+        row = dict(item)
+        row["kind"] = "root"
+        row["id"] = root or "unknown"
+        row["display"] = root or "unknown"
+        rows.append(row)
+    rows.sort(
+        key=lambda entry: (
+            0 if str(entry.get("kind") or "") == "owner" else 1,
+            -float(entry.get("peak_bps") or 0.0),
+            -float(entry.get("peak_wps") or 0.0),
+            -float(entry.get("avg_bps") or 0.0),
+            str(entry.get("display") or ""),
+        )
+    )
     if _STREAM_TOP_N > 0:
-        return items[:_STREAM_TOP_N]
-    return items
+        return rows[:_STREAM_TOP_N]
+    return rows
 
 
 def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = None) -> None:
