@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
@@ -471,6 +472,72 @@ def _linux_service_main_pid(scope: str) -> int | None:
     except Exception:
         return None
     return value if value > 0 else None
+
+
+def _linux_systemctl_cmd(scope: str, *args: str) -> list[str]:
+    cmd = ["systemctl"]
+    if str(scope or "").strip().lower() == "user":
+        cmd.append("--user")
+    cmd.extend(args)
+    return cmd
+
+
+def _linux_wait_for_restart_ready(
+    *,
+    scope: str,
+    service_name: str,
+    configured_host: str | None,
+    configured_port: int | None,
+    previous_main_pid: int | None,
+    timeout: float = 45.0,
+    poll_interval: float = 0.5,
+) -> dict[str, object]:
+    deadline = time.monotonic() + max(timeout, 1.0)
+    last_active = ""
+    last_pid: int | None = None
+    last_listening = False
+
+    while time.monotonic() < deadline:
+        active_proc = _run(_linux_systemctl_cmd(scope, "is-active", service_name))
+        last_active = str(active_proc.stdout or active_proc.stderr or "").strip()
+        last_pid = _linux_service_main_pid(scope)
+
+        live_host_port = None
+        if configured_host and configured_port:
+            live_host_port = _discover_live_control_bind(configured_host, configured_port)
+            last_listening = live_host_port is not None
+        else:
+            last_listening = active_proc.returncode == 0
+
+        active_ok = active_proc.returncode == 0
+        pid_ok = last_pid is not None and (previous_main_pid is None or last_pid != previous_main_pid)
+        listening_ok = last_listening if configured_host and configured_port else True
+        if active_ok and pid_ok and listening_ok:
+            payload: dict[str, object] = {
+                "active": True,
+                "listening": bool(last_listening),
+                "service_main_pid": last_pid,
+            }
+            if live_host_port is not None:
+                payload["host"] = live_host_port[0]
+                payload["port"] = live_host_port[1]
+                payload["url"] = f"http://{live_host_port[0]}:{int(live_host_port[1])}"
+            elif configured_host and configured_port:
+                payload["host"] = configured_host
+                payload["port"] = int(configured_port)
+                payload["url"] = f"http://{configured_host}:{int(configured_port)}"
+            return payload
+        time.sleep(max(poll_interval, 0.05))
+
+    status_proc = _run(_linux_systemctl_cmd(scope, "status", service_name, "--no-pager", "--lines=40"))
+    raise RuntimeError(
+        f"timed out waiting for {service_name} to restart\n"
+        f"active: {last_active or 'unknown'}\n"
+        f"main pid: {last_pid or 'unknown'}\n"
+        f"listening: {last_listening}\n"
+        f"stdout:\n{(status_proc.stdout or '')[-4000:]}\n"
+        f"stderr:\n{(status_proc.stderr or '')[-4000:]}"
+    )
 
 
 def _parse_wrapper_host_port(wrapper: Path) -> tuple[str, int] | None:
@@ -1288,13 +1355,21 @@ def restart_service(ctx: AgentContext) -> dict[str, object]:
     service_ref = str(info.get("service") or "adaos.service").strip() or "adaos.service"
     service_name = Path(service_ref).name or "adaos.service"
     if sys.platform.startswith("linux"):
-        if scope == "system":
-            cmd = ["systemctl", "restart", service_name]
-        elif scope == "user":
-            cmd = ["systemctl", "--user", "restart", service_name]
-        else:
+        if scope not in {"system", "user"}:
             raise RuntimeError(f"unsupported autostart scope for restart: {scope or 'unknown'}")
-        completed = subprocess.run(cmd, capture_output=True, timeout=30, **_text_subprocess_kwargs())
+        previous_main_pid = None
+        try:
+            previous_main_pid = int(info.get("service_main_pid") or 0) or None
+        except Exception:
+            previous_main_pid = None
+        configured_host = str(info.get("host") or "").strip() or None
+        try:
+            configured_port = int(info.get("port") or 0) or None
+        except Exception:
+            configured_port = None
+
+        cmd = _linux_systemctl_cmd(scope, "restart", service_name, "--no-block")
+        completed = subprocess.run(cmd, capture_output=True, timeout=10, **_text_subprocess_kwargs())
         if completed.returncode != 0:
             raise RuntimeError(
                 f"failed to restart {service_name}\n"
@@ -1304,6 +1379,15 @@ def restart_service(ctx: AgentContext) -> dict[str, object]:
         payload: dict[str, object] = {"ok": True, "scope": scope, "service": service_name, "command": cmd}
         if service_ref != service_name:
             payload["service_ref"] = service_ref
+        payload.update(
+            _linux_wait_for_restart_ready(
+                scope=scope,
+                service_name=service_name,
+                configured_host=configured_host,
+                configured_port=configured_port,
+                previous_main_pid=previous_main_pid,
+            )
+        )
         return payload
     raise RuntimeError("autostart service restart is currently supported only on Linux autostart deployments")
 
