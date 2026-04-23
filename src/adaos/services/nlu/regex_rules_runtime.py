@@ -17,9 +17,19 @@ from adaos.services.nlu.teacher_events import append_event, make_event
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.regex_rules")
+
+
+def _nlu_regex_rules_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.regex_rules_runtime",
+        owner="core:nlu.regex_rules",
+        channel="core.nlu.regex_rules.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -214,60 +224,43 @@ async def _on_regex_rule_apply(evt: Any) -> None:
     applied_to: dict[str, Any] | None = None
 
     try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
+        async with _nlu_regex_rules_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
 
-            # Prefer writing regex rules into scenario/skill definitions (workspace),
-            # so NLU can evolve as part of skills/scenarios rather than per-webspace state.
-            target = payload.get("target") if isinstance(payload.get("target"), Mapping) else None
-            target_type = target.get("type") if isinstance(target, Mapping) else None
-            target_id = target.get("id") if isinstance(target, Mapping) else None
+                # Prefer writing regex rules into scenario/skill definitions (workspace),
+                # so NLU can evolve as part of skills/scenarios rather than per-webspace state.
+                target = payload.get("target") if isinstance(payload.get("target"), Mapping) else None
+                target_type = target.get("type") if isinstance(target, Mapping) else None
+                target_id = target.get("id") if isinstance(target, Mapping) else None
 
-            ui_map = ydoc.get_map("ui")
-            token = ui_map.get("current_scenario")
-            scenario_id = token.strip() if isinstance(token, str) and token.strip() else None
+                ui_map = ydoc.get_map("ui")
+                token = ui_map.get("current_scenario")
+                scenario_id = token.strip() if isinstance(token, str) and token.strip() else None
 
-            applied_ok = False
-            if target_type == "scenario" and isinstance(target_id, str) and target_id.strip():
-                applied_ok = _write_scenario_regex_rule(scenario_id=target_id.strip(), rule=rule)
-                if applied_ok:
-                    applied_to = {"type": "scenario", "id": target_id.strip()}
-            elif target_type == "skill" and isinstance(target_id, str) and target_id.strip():
-                applied_ok = _write_skill_regex_rule(skill_name=target_id.strip(), rule=rule)
-                if applied_ok:
-                    applied_to = {"type": "skill", "id": target_id.strip()}
-            elif scenario_id:
-                try:
-                    content = scenarios_loader.read_content(scenario_id)
-                except Exception:
-                    content = {}
-                intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
-                if isinstance(intents, dict) and intent.strip() in intents:
-                    applied_ok = _write_scenario_regex_rule(scenario_id=scenario_id, rule=rule)
+                applied_ok = False
+                if target_type == "scenario" and isinstance(target_id, str) and target_id.strip():
+                    applied_ok = _write_scenario_regex_rule(scenario_id=target_id.strip(), rule=rule)
                     if applied_ok:
-                        applied_to = {"type": "scenario", "id": scenario_id}
+                        applied_to = {"type": "scenario", "id": target_id.strip()}
+                elif target_type == "skill" and isinstance(target_id, str) and target_id.strip():
+                    applied_ok = _write_skill_regex_rule(skill_name=target_id.strip(), rule=rule)
+                    if applied_ok:
+                        applied_to = {"type": "skill", "id": target_id.strip()}
+                elif scenario_id:
+                    try:
+                        content = scenarios_loader.read_content(scenario_id)
+                    except Exception:
+                        content = {}
+                    intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
+                    if isinstance(intents, dict) and intent.strip() in intents:
+                        applied_ok = _write_scenario_regex_rule(scenario_id=scenario_id, rule=rule)
+                        if applied_ok:
+                            applied_to = {"type": "scenario", "id": scenario_id}
 
-            if not applied_ok:
-                # Backward-compatible fallback: keep per-webspace storage if we can't
-                # resolve a skill/scenario target.
-                nlu_obj = _read_nlu_obj(data_map)
-                rules = nlu_obj.get("regex_rules")
-                rules = [dict(x) for x in iter_mappings(rules)]
-                cleaned: list[dict[str, Any]] = []
-                for item in rules:
-                    normalized = _normalize_rule(item)
-                    if normalized:
-                        cleaned.append(normalized)
-                cleaned.append(rule)
-                nlu_obj["regex_rules"] = cleaned[-200:]
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "nlu", nlu_obj)
-                applied_to = {"type": "webspace", "id": webspace_id}
-            else:
-                # Mirror applied rules into per-webspace state as a runtime cache so the
-                # regex stage can pick them up immediately without depending on scenario
-                # reloads. Primary source-of-truth remains scenario.json / skill.yaml.
-                try:
+                if not applied_ok:
+                    # Backward-compatible fallback: keep per-webspace storage if we can't
+                    # resolve a skill/scenario target.
                     nlu_obj = _read_nlu_obj(data_map)
                     rules = nlu_obj.get("regex_rules")
                     rules = [dict(x) for x in iter_mappings(rules)]
@@ -280,27 +273,45 @@ async def _on_regex_rule_apply(evt: Any) -> None:
                     nlu_obj["regex_rules"] = cleaned[-200:]
                     with ydoc.begin_transaction() as txn:
                         data_map.set(txn, "nlu", nlu_obj)
-                except Exception:
-                    pass
+                    applied_to = {"type": "webspace", "id": webspace_id}
+                else:
+                    # Mirror applied rules into per-webspace state as a runtime cache so the
+                    # regex stage can pick them up immediately without depending on scenario
+                    # reloads. Primary source-of-truth remains scenario.json / skill.yaml.
+                    try:
+                        nlu_obj = _read_nlu_obj(data_map)
+                        rules = nlu_obj.get("regex_rules")
+                        rules = [dict(x) for x in iter_mappings(rules)]
+                        cleaned: list[dict[str, Any]] = []
+                        for item in rules:
+                            normalized = _normalize_rule(item)
+                            if normalized:
+                                cleaned.append(normalized)
+                        cleaned.append(rule)
+                        nlu_obj["regex_rules"] = cleaned[-200:]
+                        with ydoc.begin_transaction() as txn:
+                            data_map.set(txn, "nlu", nlu_obj)
+                    except Exception:
+                        pass
 
-            # Mark candidate as applied (if present)
-            teacher = _teacher_obj(data_map)
-            candidates = teacher.get("candidates")
-            if isinstance(candidate_id, str) and candidate_id:
-                next_candidates: list[dict[str, Any]] = []
-                for item in iter_mappings(candidates):
-                    d = dict(item)
-                    if d.get("id") == candidate_id:
-                        request_id = d.get("request_id") if isinstance(d.get("request_id"), str) else None
-                        request_text = d.get("text") if isinstance(d.get("text"), str) else ""
-                        d["status"] = "applied"
-                        d["applied_at"] = time.time()
-                        d["applied"] = {"type": "regex_rule", "rule_id": rule_id, "target": dict(applied_to or {})}
-                    next_candidates.append(d)
-                teacher["candidates"] = next_candidates
+                # Mark candidate as applied (if present)
+                teacher = _teacher_obj(data_map)
+                candidates = teacher.get("candidates")
+                if isinstance(candidate_id, str) and candidate_id:
+                    next_candidates: list[dict[str, Any]] = []
+                    for item in iter_mappings(candidates):
+                        d = dict(item)
+                        if d.get("id") == candidate_id:
+                            request_id = d.get("request_id") if isinstance(d.get("request_id"), str) else None
+                            request_text = d.get("text") if isinstance(d.get("text"), str) else ""
+                            d["status"] = "applied"
+                            d["applied_at"] = time.time()
+                            d["applied"] = {"type": "regex_rule", "rule_id": rule_id, "target": dict(applied_to or {})}
+                        next_candidates.append(d)
+                    teacher["candidates"] = next_candidates
 
-            with ydoc.begin_transaction() as txn:
-                data_map.set(txn, "nlu_teacher", teacher)
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "nlu_teacher", teacher)
     except Exception:
         _log.warning("failed to apply regex rule webspace=%s intent=%s", webspace_id, intent, exc_info=True)
         return

@@ -6,11 +6,21 @@ import time
 from typing import Any, Dict, Mapping
 
 from adaos.sdk.core.decorators import subscribe
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.trace")
 
 _MAX_ITEMS = int(os.getenv("ADAOS_NLU_TRACE_MAX", "200") or "200")
+
+
+def _nlu_trace_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.trace_store",
+        owner="core:nlu.trace",
+        channel="core.nlu.trace.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -35,17 +45,18 @@ async def _append_trace_item(webspace_id: str, item: dict) -> None:
     # where YJS is not available.
     from adaos.services.yjs.doc import async_get_ydoc
 
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        current = data_map.get("nlu_trace")
-        items = []
-        if isinstance(current, dict) and isinstance(current.get("items"), list):
-            items = list(current.get("items") or [])
-        items.append(item)
-        if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
-            items = items[-_MAX_ITEMS:]
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_trace", {"items": items})
+    async with _nlu_trace_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            current = data_map.get("nlu_trace")
+            items = []
+            if isinstance(current, dict) and isinstance(current.get("items"), list):
+                items = list(current.get("items") or [])
+            items.append(item)
+            if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
+                items = items[-_MAX_ITEMS:]
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_trace", {"items": items})
 
 
 def _compact_meta(meta: Mapping[str, Any] | None) -> dict:

@@ -6,11 +6,21 @@ from collections.abc import Iterable
 from typing import Any, Mapping, Optional
 
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 
 _MAX_EVENTS = int(os.getenv("ADAOS_NLU_TEACHER_EVENTS_MAX", "500") or "500")
 _MAX_EVENTS_BY_CANDIDATE = int(os.getenv("ADAOS_NLU_TEACHER_EVENTS_BY_CANDIDATE_MAX", "1500") or "1500")
 _MAX_THREADS = int(os.getenv("ADAOS_NLU_TEACHER_THREADS_MAX", "250") or "250")
+
+
+def _nlu_teacher_events_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.teacher_events",
+        owner="core:nlu.teacher_events",
+        channel="core.nlu.teacher_events.async",
+    )
 
 
 def _as_list_of_dicts(value: Any) -> list[dict[str, Any]]:
@@ -390,21 +400,22 @@ def make_event(
 
 
 async def append_event(webspace_id: str, event: Mapping[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        current = data_map.get("nlu_teacher")
-        teacher: dict[str, Any] = coerce_dict(current)
+    async with _nlu_teacher_events_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            current = data_map.get("nlu_teacher")
+            teacher: dict[str, Any] = coerce_dict(current)
 
-        events = teacher.get("events")
-        if isinstance(events, (str, bytes, bytearray)) or isinstance(events, Mapping) or not isinstance(events, Iterable):
-            events = []
-        events = [dict(x) for x in iter_mappings(events)]
-        events.append(dict(event) if isinstance(event, Mapping) else {})
-        if _MAX_EVENTS > 0 and len(events) > _MAX_EVENTS:
-            events = events[-_MAX_EVENTS:]
-        teacher["events"] = events
+            events = teacher.get("events")
+            if isinstance(events, (str, bytes, bytearray)) or isinstance(events, Mapping) or not isinstance(events, Iterable):
+                events = []
+            events = [dict(x) for x in iter_mappings(events)]
+            events.append(dict(event) if isinstance(event, Mapping) else {})
+            if _MAX_EVENTS > 0 and len(events) > _MAX_EVENTS:
+                events = events[-_MAX_EVENTS:]
+            teacher["events"] = events
 
-        rebuild_events_by_candidate(teacher)
+            rebuild_events_by_candidate(teacher)
 
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)

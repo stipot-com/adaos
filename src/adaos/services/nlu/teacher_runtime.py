@@ -15,12 +15,22 @@ from adaos.services.nlu.teacher_events import append_event, make_event, rebuild_
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.teacher.runtime")
 
 _MAX_ITEMS = int(os.getenv("ADAOS_NLU_TEACHER_MAX", "200") or "200")
 _ENABLED = os.getenv("ADAOS_NLU_TEACHER") == "1"
+
+
+def _nlu_teacher_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.teacher_runtime",
+        owner="core:nlu.teacher",
+        channel="core.nlu.teacher.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -134,16 +144,17 @@ def _apply_revision_to_scenario_file(*, scenario_id: str, intent: str, examples:
 
 
 async def _append_revision(webspace_id: str, revision: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _read_teacher_obj(data_map)
-        revisions = _list_of_dicts(teacher.get("revisions"))
-        revisions.append(dict(revision))
-        revisions = _bounded(revisions, max_items=_MAX_ITEMS)
-        teacher["revisions"] = revisions
-        rebuild_events_by_candidate(teacher)
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_teacher_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _read_teacher_obj(data_map)
+            revisions = _list_of_dicts(teacher.get("revisions"))
+            revisions.append(dict(revision))
+            revisions = _bounded(revisions, max_items=_MAX_ITEMS)
+            teacher["revisions"] = revisions
+            rebuild_events_by_candidate(teacher)
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 async def _update_revision(
@@ -152,44 +163,46 @@ async def _update_revision(
     revision_id: str,
     patch: dict[str, Any],
 ) -> Optional[dict[str, Any]]:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _read_teacher_obj(data_map)
-        revisions = teacher.get("revisions")
-        if isinstance(revisions, (str, bytes, bytearray)) or isinstance(revisions, Mapping) or not isinstance(revisions, Iterable):
-            return None
+    async with _nlu_teacher_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _read_teacher_obj(data_map)
+            revisions = teacher.get("revisions")
+            if isinstance(revisions, (str, bytes, bytearray)) or isinstance(revisions, Mapping) or not isinstance(revisions, Iterable):
+                return None
 
-        cleaned: list[dict[str, Any]] = []
-        updated: Optional[dict[str, Any]] = None
-        for item in list(revisions):
-            if not isinstance(item, Mapping):
-                continue
-            d = dict(item)
-            if d.get("id") == revision_id:
-                updated = dict(d)
-                updated.update(patch)
-                cleaned.append(updated)
-            else:
-                cleaned.append(d)
+            cleaned: list[dict[str, Any]] = []
+            updated: Optional[dict[str, Any]] = None
+            for item in list(revisions):
+                if not isinstance(item, Mapping):
+                    continue
+                d = dict(item)
+                if d.get("id") == revision_id:
+                    updated = dict(d)
+                    updated.update(patch)
+                    cleaned.append(updated)
+                else:
+                    cleaned.append(d)
 
-        teacher["revisions"] = _bounded(cleaned, max_items=_MAX_ITEMS)
-        rebuild_events_by_candidate(teacher)
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
-        return updated
+            teacher["revisions"] = _bounded(cleaned, max_items=_MAX_ITEMS)
+            rebuild_events_by_candidate(teacher)
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
+            return updated
 
 
 async def _append_dataset_item(webspace_id: str, item: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _read_teacher_obj(data_map)
-        dataset = _list_of_dicts(teacher.get("dataset"))
-        dataset.append(dict(item))
-        dataset = _bounded(dataset, max_items=_MAX_ITEMS)
-        teacher["dataset"] = dataset
-        rebuild_events_by_candidate(teacher)
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_teacher_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _read_teacher_obj(data_map)
+            dataset = _list_of_dicts(teacher.get("dataset"))
+            dataset.append(dict(item))
+            dataset = _bounded(dataset, max_items=_MAX_ITEMS)
+            teacher["dataset"] = dataset
+            rebuild_events_by_candidate(teacher)
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 @subscribe("nlp.teacher.request")
