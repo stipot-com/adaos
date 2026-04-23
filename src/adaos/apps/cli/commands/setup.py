@@ -1361,6 +1361,19 @@ def autostart_disable_cmd(json_output: bool = typer.Option(False, "--json", help
         typer.secho("[AdaOS] autostart disabled", fg=typer.colors.GREEN)
 
 
+@autostart_app.command("restart")
+@_run_safe
+def autostart_restart_cmd(json_output: bool = typer.Option(False, "--json", help=_("cli.option.json"))):
+    res = _restart_autostart_service()
+    if json_output:
+        typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        typer.secho("[AdaOS] autostart restarted", fg=typer.colors.GREEN)
+        for key in ("scope", "service", "service_ref"):
+            if key in res:
+                typer.echo(f"{key}: {res[key]}")
+
+
 @autostart_app.command("update-status")
 @_run_safe
 def autostart_update_status_cmd(

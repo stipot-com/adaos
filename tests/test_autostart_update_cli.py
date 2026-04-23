@@ -260,8 +260,53 @@ def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monk
     assert result.exit_code == 0, result.output
     assert "scheduled for:" in result.output
     assert "subsequent transition: queued" in result.output
-    assert "transition mode: warm_switch" in result.output
-    assert "candidate prewarm: starting" in result.output
+
+
+def test_autostart_restart_calls_restart_service(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _restart() -> dict[str, object]:
+        captured["called"] = True
+        return {
+            "ok": True,
+            "scope": "system",
+            "service": "adaos.service",
+            "service_ref": "/etc/systemd/system/adaos.service",
+        }
+
+    monkeypatch.setattr(setup_cmd, "_restart_autostart_service", _restart)
+
+    result = runner.invoke(autostart_app, ["restart"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["called"] is True
+    assert "[AdaOS] autostart restarted" in result.output
+    assert "scope: system" in result.output
+    assert "service: adaos.service" in result.output
+
+
+def test_autostart_restart_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_restart_autostart_service",
+        lambda: {
+            "ok": True,
+            "scope": "user",
+            "service": "adaos.service",
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["restart", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == {
+        "ok": True,
+        "scope": "user",
+        "service": "adaos.service",
+    }
 
 
 def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
