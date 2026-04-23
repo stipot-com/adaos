@@ -7,6 +7,10 @@ import threading
 import time
 from typing import Any
 
+from adaos.sdk.core.decorators import subscribe
+from adaos.sdk.io.out import stream_publish
+from adaos.services.yjs.store import add_ystore_write_listener
+
 _log = logging.getLogger("adaos.yjs.load_mark")
 
 _ROOT_NAMES: tuple[str, ...] = ("ui", "data", "registry", "runtime", "devices")
@@ -14,9 +18,14 @@ _WINDOW_SEC = max(10, int(os.getenv("ADAOS_YJS_LOAD_MARK_WINDOW_SEC") or "60"))
 _BUCKET_SEC = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_BUCKET_SEC") or "1"))
 _HIGH_BPS = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_BPS") or str(32 * 1024)))
 _CRITICAL_BPS = max(_HIGH_BPS + 1, int(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_BPS") or str(128 * 1024)))
+_UNATTRIBUTED_ROOT = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_ROOT") or "_unattributed").strip() or "_unattributed"
+_STREAM_RECEIVER = str(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_RECEIVER") or "infrastate.yjs.load_mark").strip() or "infrastate.yjs.load_mark"
+_STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "0.25"))
 
 _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
+_ACTIVE_STREAM_SUBSCRIPTIONS: dict[str, int] = {}
+_LAST_STREAM_PUBLISH_AT: dict[str, float] = {}
 
 
 def _clone_json(value: Any) -> Any:
@@ -91,6 +100,51 @@ def _ensure_webspace_state(webspace_id: str) -> dict[str, Any]:
     return state
 
 
+def _has_active_stream_subscription_locked(webspace_id: str) -> bool:
+    return int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(str(webspace_id or "").strip() or "default") or 0) > 0
+
+
+def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    with _LOCK:
+        current = int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(key) or 0)
+        next_value = current + 1 if active else max(0, current - 1)
+        if next_value > 0:
+            _ACTIVE_STREAM_SUBSCRIPTIONS[key] = next_value
+        else:
+            _ACTIVE_STREAM_SUBSCRIPTIONS.pop(key, None)
+            _LAST_STREAM_PUBLISH_AT.pop(key, None)
+
+
+def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dict[str, Any]]:
+    state = _ensure_webspace_state(webspace_id)
+    snapshot = _snapshot_webspace_locked(str(webspace_id or "").strip() or "default", state, now_ts=now_ts)
+    return [dict(item) for item in list(snapshot.get("items") or []) if isinstance(item, dict)]
+
+
+def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = None) -> None:
+    now = time.time() if now_ts is None else float(now_ts)
+    key = str(webspace_id or "").strip() or "default"
+    with _LOCK:
+        if not _has_active_stream_subscription_locked(key):
+            return
+        last_published = float(_LAST_STREAM_PUBLISH_AT.get(key) or 0.0)
+        if _STREAM_PUBLISH_MIN_INTERVAL_SEC > 0.0 and last_published > 0.0:
+            if now - last_published < _STREAM_PUBLISH_MIN_INTERVAL_SEC:
+                return
+        payload = _stream_payload_items_locked(key, now_ts=now)
+        _LAST_STREAM_PUBLISH_AT[key] = now
+    try:
+        stream_publish(
+            _STREAM_RECEIVER,
+            payload,
+            _meta={"webspace_id": key},
+            ts=now,
+        )
+    except Exception:
+        _log.debug("failed to publish load_mark stream update webspace=%s", key, exc_info=True)
+
+
 def _ensure_root_state(webspace_state: dict[str, Any], root_name: str) -> dict[str, Any]:
     roots = webspace_state.setdefault("roots", {})
     entry = roots.get(root_name)
@@ -154,6 +208,15 @@ def _record_root_bytes_locked(
     root_state["last_changed_at"] = float(now_ts)
     root_state["current_size_bytes"] = int(current_size_bytes)
     root_state["last_source"] = str(source or "").strip() or None
+    webspace_state["updated_at"] = float(now_ts)
+    webspace_state["tx_total"] = int(webspace_state.get("tx_total") or 0) + 1
+
+
+def _record_webspace_activity_locked(
+    webspace_state: dict[str, Any],
+    *,
+    now_ts: float,
+) -> None:
     webspace_state["updated_at"] = float(now_ts)
     webspace_state["tx_total"] = int(webspace_state.get("tx_total") or 0) + 1
 
@@ -292,6 +355,65 @@ def record_detached_root_update(
             )
         webspace_state["snapshot_sizes"] = snapshot_sizes
         webspace_state["updated_at"] = float(now)
+
+
+def record_write_update(
+    webspace_id: str,
+    *,
+    total_bytes: int,
+    root_names: list[str] | tuple[str, ...] | None = None,
+    now_ts: float | None = None,
+    source: str | None = None,
+) -> None:
+    names = [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()]
+    if names:
+        record_detached_root_update(
+            webspace_id,
+            root_names=names,
+            total_bytes=total_bytes,
+            now_ts=now_ts,
+            source=source or "ystore_write",
+        )
+        _maybe_publish_stream_update(webspace_id, now_ts=now_ts)
+        return
+
+    now = time.time() if now_ts is None else float(now_ts)
+    bytes_total = max(0, int(total_bytes or 0))
+    if bytes_total <= 0:
+        return
+    with _LOCK:
+        webspace_state = _ensure_webspace_state(webspace_id)
+        snapshot_sizes = (
+            dict(webspace_state.get("snapshot_sizes"))
+            if isinstance(webspace_state.get("snapshot_sizes"), dict)
+            else {}
+        )
+        previous_size = int(snapshot_sizes.get(_UNATTRIBUTED_ROOT) or 0)
+        current_size = max(previous_size, previous_size + bytes_total)
+        snapshot_sizes[_UNATTRIBUTED_ROOT] = current_size
+        _record_root_bytes_locked(
+            webspace_state,
+            root_name=_UNATTRIBUTED_ROOT,
+            bytes_written=bytes_total,
+            now_ts=now,
+            current_size_bytes=current_size,
+            source=source or "ystore_write",
+        )
+        webspace_state["snapshot_sizes"] = snapshot_sizes
+        webspace_state["updated_at"] = float(now)
+    _maybe_publish_stream_update(webspace_id, now_ts=now)
+
+
+def record_live_room_activity(
+    webspace_id: str,
+    *,
+    now_ts: float | None = None,
+) -> None:
+    key = str(webspace_id or "").strip() or "default"
+    now = time.time() if now_ts is None else float(now_ts)
+    with _LOCK:
+        webspace_state = _ensure_webspace_state(key)
+        _record_webspace_activity_locked(webspace_state, now_ts=now)
 
 
 def _status_for_rate(avg_bps: float, peak_bps: float) -> str:
@@ -433,65 +555,41 @@ def yjs_load_mark_snapshot(*, webspace_id: str | None = None, now_ts: float | No
     }
 
 
-def _load_mark_room_observer(webspace_id: str, ydoc: Any):
-    key = str(webspace_id or "").strip() or "default"
-    try:
-        initial_sizes = capture_ydoc_root_sizes(ydoc)
-    except Exception:
-        initial_sizes = {}
-    with _LOCK:
-        webspace_state = _ensure_webspace_state(key)
-        webspace_state["snapshot_sizes"] = dict(initial_sizes)
-        webspace_state["updated_at"] = float(time.time())
+def _load_mark_write_listener(webspace_id: str, update: bytes, meta: dict[str, Any] | None = None) -> None:
+    payload = bytes(update or b"")
+    if not payload:
+        return
+    metadata = dict(meta or {})
+    root_names = metadata.get("root_names")
+    if not isinstance(root_names, (list, tuple)):
+        root_names = None
+    record_write_update(
+        webspace_id,
+        total_bytes=len(payload),
+        root_names=root_names,
+        now_ts=time.time(),
+        source=str(metadata.get("source") or "ystore_write"),
+    )
 
-    def _on_after_transaction(event=None) -> None:  # noqa: ARG001
-        try:
-            after_sizes = capture_ydoc_root_sizes(ydoc)
-        except Exception:
-            _log.debug("capture_ydoc_root_sizes failed for live room webspace=%s", key, exc_info=True)
-            return
-        with _LOCK:
-            before_sizes = dict((_ensure_webspace_state(key).get("snapshot_sizes") or {}))
-        estimated_bytes = sum(
-            abs(int(after_sizes.get(name) or 0) - int(before_sizes.get(name) or 0))
-            for name in set(before_sizes) | set(after_sizes)
-        )
-        record_root_flow(
-            key,
-            before_sizes=before_sizes,
-            after_sizes=after_sizes,
-            total_bytes=int(estimated_bytes),
-            now_ts=time.time(),
-            source="live_room",
-        )
 
-    sub_id = None
-    observe = getattr(ydoc, "observe_after_transaction", None)
-    if callable(observe):
-        try:
-            sub_id = observe(_on_after_transaction)
-        except Exception:
-            sub_id = None
-
-    def _detach() -> None:
-        method = getattr(ydoc, "unobserve_after_transaction", None)
-        if callable(method):
-            for args in ((sub_id,), (_on_after_transaction,), (sub_id, _on_after_transaction)):
-                try:
-                    method(*args)
-                    return
-                except TypeError:
-                    continue
-                except Exception:
-                    return
-
-    return _detach
+@subscribe("webio.stream.subscription.changed")
+def on_webio_stream_subscription_changed(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not isinstance(payload, dict):
+        return
+    receiver = str(payload.get("receiver") or "").strip()
+    if receiver != _STREAM_RECEIVER:
+        return
+    webspace_id = str(payload.get("webspace_id") or "").strip() or "default"
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "subscribed":
+        _mark_stream_subscription(webspace_id, active=True)
+    elif action == "unsubscribed":
+        _mark_stream_subscription(webspace_id, active=False)
 
 
 try:
-    from adaos.services.yjs.observers import register_room_observer
-
-    register_room_observer(_load_mark_room_observer)
+    add_ystore_write_listener(_load_mark_write_listener)
 except Exception:
     pass
 
@@ -500,6 +598,8 @@ __all__ = [
     "capture_ydoc_root_sizes",
     "record_detached_root_update",
     "record_detached_ydoc_update",
+    "record_live_room_activity",
+    "record_write_update",
     "record_root_flow",
     "yjs_load_mark_snapshot",
 ]

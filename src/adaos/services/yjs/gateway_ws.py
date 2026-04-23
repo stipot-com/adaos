@@ -838,6 +838,40 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
             _ylog.debug("failed to request webio stream snapshot topic=%s", token, exc_info=True)
 
 
+def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_agent_ctx()
+            ctx.bus.publish(
+                DomainEvent(
+                    type="webio.stream.subscription.changed",
+                    payload={
+                        "topic": token,
+                        "webspace_id": webspace_id,
+                        "receiver": receiver,
+                        "transport": str(transport or "ws"),
+                        "action": str(action or "").strip() or "subscribed",
+                    },
+                    source="events_ws",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to publish webio stream subscription change topic=%s", token, exc_info=True)
+
+
 async def _send_initial_ws_event_messages(websocket: WebSocket, topics: set[str]) -> None:
     for message in _iter_initial_ws_event_messages(topics):
         try:
@@ -878,12 +912,17 @@ def _register_ws_event_subscriptions(
         tracked = entry.setdefault("topics", set())
         added = set(topics) - set(tracked)
         tracked.update(topics)
+    if added:
+        _publish_webio_stream_subscription_change(added, action="subscribed", transport="ws")
     return added
 
 
 def _unregister_ws_event_subscriptions(websocket: WebSocket) -> None:
     with _WS_EVENT_SUBSCRIPTIONS_LOCK:
-        _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+        entry = _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+    topics = set(entry.get("topics") or []) if isinstance(entry, dict) else set()
+    if topics:
+        _publish_webio_stream_subscription_change(topics, action="unsubscribed", transport="ws")
 
 
 def _forward_ws_bus_event(ev: DomainEvent) -> None:

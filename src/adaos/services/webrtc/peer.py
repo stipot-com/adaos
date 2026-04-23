@@ -129,12 +129,17 @@ def _register_event_channel_subscriptions(
         tracked = entry.setdefault("topics", set())
         added = set(topics) - set(tracked)
         tracked.update(topics)
+    if added:
+        _publish_webio_stream_subscription_change(added, action="subscribed", transport="webrtc_data:events")
     return added
 
 
 def _unregister_event_channel_subscriptions(peer: "HubPeer") -> None:
     with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
-        _EVENT_CHANNEL_SUBSCRIBERS.pop(id(peer), None)
+        entry = _EVENT_CHANNEL_SUBSCRIBERS.pop(id(peer), None)
+    topics = set(entry.get("topics") or []) if isinstance(entry, dict) else set()
+    if topics:
+        _publish_webio_stream_subscription_change(topics, action="unsubscribed", transport="webrtc_data:events")
 
 
 def _iter_initial_event_channel_messages(topics: set[str]) -> list[dict[str, Any]]:
@@ -215,6 +220,38 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
             )
         except Exception:
             _log.debug("failed to request webio stream snapshot topic=%s", token, exc_info=True)
+
+
+def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_ctx()
+            bus_emit(
+                ctx.bus,
+                "webio.stream.subscription.changed",
+                {
+                    "topic": token,
+                    "webspace_id": webspace_id,
+                    "receiver": receiver,
+                    "transport": str(transport or "webrtc_data:events"),
+                    "action": str(action or "").strip() or "subscribed",
+                },
+                "webrtc.peer",
+            )
+        except Exception:
+            _log.debug("failed to publish webio stream subscription change topic=%s", token, exc_info=True)
 
 
 def _forward_event_channel_bus_event(ev: Any) -> None:

@@ -22,6 +22,7 @@ from adaos.sdk.core.decorators import subscribe
 _log = logging.getLogger("adaos.yjs.ystore")
 
 _SUPPRESS_NOTIFY: contextvars.ContextVar[bool] = contextvars.ContextVar("adaos_ystore_suppress_notify", default=False)
+_WRITE_META: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("adaos_ystore_write_meta", default=None)
 _GLOBAL_WRITE_LISTENERS: list[Callable[[str, bytes], Any]] = []
 
 
@@ -78,6 +79,42 @@ async def suppress_ystore_write_notifications():
             pass
 
 
+@contextlib.asynccontextmanager
+async def ystore_write_metadata(
+    *,
+    root_names: list[str] | tuple[str, ...] | None = None,
+    source: str | None = None,
+):
+    payload = {
+        "root_names": [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()],
+        "source": str(source or "").strip() or None,
+    }
+    token = _WRITE_META.set(payload)
+    try:
+        yield
+    finally:
+        try:
+            _WRITE_META.reset(token)
+        except Exception:
+            pass
+
+
+def _listener_accepts_meta(cb: Callable[..., Any]) -> bool:
+    try:
+        sig = inspect.signature(cb)
+    except Exception:
+        return False
+    params = list(sig.parameters.values())
+    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in params):
+        return True
+    positional = [
+        param
+        for param in params
+        if param.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    return len(positional) >= 3
+
+
 def _notify_write_listeners(webspace_id: str, update: bytes) -> None:
     if _SUPPRESS_NOTIFY.get():
         return
@@ -90,9 +127,13 @@ def _notify_write_listeners(webspace_id: str, update: bytes) -> None:
         loop = asyncio.get_running_loop()
     except Exception:
         loop = None
+    meta = dict(_WRITE_META.get() or {})
     for cb in list(_GLOBAL_WRITE_LISTENERS):
         try:
-            res = cb(webspace_id, update)
+            if meta and _listener_accepts_meta(cb):
+                res = cb(webspace_id, update, meta)
+            else:
+                res = cb(webspace_id, update)
             if loop is not None:
                 try:
                     import asyncio
