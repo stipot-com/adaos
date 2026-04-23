@@ -27,6 +27,7 @@ from .desktop import (
 from .webspace import (
     webspace_list,
     webspace_describe,
+    webspace_validate,
     webspace_create,
     webspace_rename,
     webspace_delete,
@@ -52,6 +53,7 @@ __all__ = [
     "desktop_set_snapshot",
     "webspace_list",
     "webspace_describe",
+    "webspace_validate",
     "webspace_create",
     "webspace_rename",
     "webspace_delete",

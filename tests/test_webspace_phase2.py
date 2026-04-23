@@ -93,6 +93,11 @@ def test_describe_webspace_operational_state_exposes_manifest_and_current_scenar
         "data": _FakeMap(),
     }
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_scenario_exists_for_switch",
+        lambda scenario_id, *, space: scenario_id in {"prompt_engineer_scenario", "prompt_engineer_runtime"},
+    )
 
     result = asyncio.run(webspace_runtime_module.describe_webspace_operational_state(webspace_id))
 
@@ -103,6 +108,9 @@ def test_describe_webspace_operational_state_exposes_manifest_and_current_scenar
     assert result.effective_home_scenario == "prompt_engineer_scenario"
     assert result.current_scenario == "prompt_engineer_runtime"
     assert result.to_dict()["current_matches_home"] is False
+    assert result.stored_home_scenario_exists is True
+    assert result.current_scenario_exists is True
+    assert result.degraded is False
 
 
 def test_describe_webspace_projection_state_reports_active_layer(monkeypatch) -> None:
@@ -1209,6 +1217,7 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
         return {"ok": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
 
     monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
 
     result = asyncio.run(webspace_runtime_module.go_home_webspace(webspace_id))
 
@@ -1217,6 +1226,45 @@ def test_go_home_webspace_uses_manifest_home_scenario(monkeypatch) -> None:
     assert result["action"] == "go_home"
     assert result["source_of_truth"] == "manifest_home_scenario"
     assert result["scenario_resolution"] == "manifest_home"
+
+
+def test_go_home_webspace_preflight_falls_back_to_web_desktop_when_home_missing(monkeypatch) -> None:
+    webspace_id = "phase2-go-home-fallback"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Phase 2 Go Home Fallback",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="infrascope",
+    )
+
+    captured: list[tuple[str, str, bool]] = []
+
+    async def _fake_switch(
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        set_home: bool = False,
+        wait_for_rebuild: bool = True,
+    ) -> dict[str, object]:
+        captured.append((webspace_id, scenario_id, set_home))
+        return {"ok": True, "webspace_id": webspace_id, "scenario_id": scenario_id, "set_home": set_home}
+
+    def _scenario_exists(scenario_id: str, *, space: str) -> bool:  # noqa: ARG001
+        return scenario_id == "web_desktop"
+
+    monkeypatch.setattr(webspace_runtime_module, "switch_webspace_scenario", _fake_switch)
+    monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", _scenario_exists)
+
+    result = asyncio.run(webspace_runtime_module.go_home_webspace(webspace_id))
+
+    assert captured == [(webspace_id, "web_desktop", False)]
+    assert result["scenario_id"] == "web_desktop"
+    assert result["scenario_resolution"] == "manifest_home_fallback"
+    assert result["validation"]["requested_scenario_id"] == "infrascope"
+    assert result["validation"]["resolved_scenario_id"] == "web_desktop"
+    assert result["validation"]["fallback_applied"] is True
 
 
 def test_phase3_resolve_rebuild_target_prefers_current_before_manifest_home(monkeypatch) -> None:

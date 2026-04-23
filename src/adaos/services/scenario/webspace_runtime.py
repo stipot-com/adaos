@@ -119,6 +119,13 @@ class WebspaceInfo:
     home_scenario: str = "web_desktop"
     source_mode: str = "workspace"
     is_dev: bool = False
+    current_scenario: str | None = None
+    stored_home_scenario_exists: bool | None = None
+    home_scenario_exists: bool = True
+    current_scenario_exists: bool | None = None
+    degraded: bool = False
+    validation_reason: str | None = None
+    recommended_action: str | None = None
 
 
 @dataclass(slots=True)
@@ -141,6 +148,12 @@ class WebspaceOperationalState:
     stored_home_scenario: str | None
     effective_home_scenario: str
     current_scenario: str | None
+    stored_home_scenario_exists: bool | None = None
+    home_scenario_exists: bool = True
+    current_scenario_exists: bool | None = None
+    degraded: bool = False
+    validation_reason: str | None = None
+    recommended_action: str | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -152,6 +165,12 @@ class WebspaceOperationalState:
             "stored_home_scenario": self.stored_home_scenario,
             "home_scenario": self.effective_home_scenario,
             "current_scenario": self.current_scenario,
+            "stored_home_scenario_exists": self.stored_home_scenario_exists,
+            "home_scenario_exists": self.home_scenario_exists,
+            "current_scenario_exists": self.current_scenario_exists,
+            "degraded": self.degraded,
+            "validation_reason": self.validation_reason,
+            "recommended_action": self.recommended_action,
             "current_matches_home": bool(self.current_scenario) and self.current_scenario == self.effective_home_scenario,
         }
 
@@ -803,6 +822,110 @@ def _scenario_exists_for_switch(scenario_id: str, *, space: str) -> bool:
         return bool(scenarios_loader.scenario_exists(scenario_id, space=space))
     except Exception:
         return False
+
+
+def _scenario_exists_for_source_mode(scenario_id: str | None, *, source_mode: str) -> bool | None:
+    token = str(scenario_id or "").strip()
+    if not token:
+        return None
+    return _scenario_exists_for_switch(token, space=_scenario_loader_space(source_mode))
+
+
+def _build_webspace_validation(
+    *,
+    source_mode: str,
+    stored_home_scenario: str | None,
+    effective_home_scenario: str,
+    current_scenario: str | None,
+) -> dict[str, Any]:
+    stored_home_exists = _scenario_exists_for_source_mode(stored_home_scenario, source_mode=source_mode)
+    effective_home_exists = bool(_scenario_exists_for_source_mode(effective_home_scenario, source_mode=source_mode))
+    current_exists = _scenario_exists_for_source_mode(current_scenario, source_mode=source_mode)
+
+    degraded = False
+    reason = None
+    recommended_action = None
+    if stored_home_scenario and stored_home_exists is False and current_scenario and current_exists is False:
+        degraded = True
+        reason = "current_and_home_scenario_missing"
+        recommended_action = "reload_or_reset"
+    elif current_scenario and current_exists is False:
+        degraded = True
+        reason = "current_scenario_missing"
+        recommended_action = "reload_or_reset"
+    elif stored_home_scenario and stored_home_exists is False:
+        degraded = True
+        reason = "home_scenario_missing"
+        recommended_action = "go_home_or_set_home"
+    elif effective_home_exists is False:
+        degraded = True
+        reason = "effective_home_scenario_missing"
+        recommended_action = "set_home_or_reset"
+
+    return {
+        "stored_home_scenario_exists": stored_home_exists,
+        "home_scenario_exists": effective_home_exists,
+        "current_scenario_exists": current_exists,
+        "degraded": degraded,
+        "validation_reason": reason,
+        "recommended_action": recommended_action,
+    }
+
+
+def _with_webspace_validation(
+    *,
+    source_mode: str,
+    stored_home_scenario: str | None,
+    effective_home_scenario: str,
+    current_scenario: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload.update(
+        _build_webspace_validation(
+            source_mode=source_mode,
+            stored_home_scenario=stored_home_scenario,
+            effective_home_scenario=effective_home_scenario,
+            current_scenario=current_scenario,
+        )
+    )
+    return payload
+
+
+def _preflight_validated_scenario(
+    scenario_id: str | None,
+    *,
+    source_mode: str,
+    resolution: str,
+) -> tuple[str, str, dict[str, Any]]:
+    requested = str(scenario_id or "").strip() or None
+    requested_exists = _scenario_exists_for_source_mode(requested, source_mode=source_mode)
+    if requested and requested_exists:
+        return requested, resolution, {
+            "requested_scenario_id": requested,
+            "resolved_scenario_id": requested,
+            "requested_scenario_exists": True,
+            "fallback_applied": False,
+            "reason": None,
+        }
+
+    fallback = "web_desktop"
+    fallback_exists = bool(_scenario_exists_for_source_mode(fallback, source_mode=source_mode))
+    if requested and fallback_exists:
+        return fallback, f"{resolution}_fallback", {
+            "requested_scenario_id": requested,
+            "resolved_scenario_id": fallback,
+            "requested_scenario_exists": bool(requested_exists),
+            "fallback_applied": True,
+            "reason": "scenario_missing",
+        }
+
+    return str(requested or ""), resolution, {
+        "requested_scenario_id": requested,
+        "resolved_scenario_id": requested,
+        "requested_scenario_exists": bool(requested_exists),
+        "fallback_applied": False,
+        "reason": "scenario_missing" if requested else "scenario_unresolved",
+    }
 
 
 def _scenario_loader_space(source_mode: str) -> str:
@@ -2527,19 +2650,32 @@ def _display_name_for_kind(title: Optional[str], *, webspace_id: str, kind: str)
 def _webspace_listing() -> List[Dict[str, Any]]:
     rows = workspace_index.list_workspaces()
     return [
-        {
-            "id": row.workspace_id,
-            "title": row.title,
-            "created_at": row.created_at,
-            "kind": row.effective_kind,
-            "home_scenario": row.effective_home_scenario,
-            "source_mode": row.effective_source_mode,
-        }
+        _with_webspace_validation(
+            source_mode=row.effective_source_mode,
+            stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+            effective_home_scenario=row.effective_home_scenario,
+            current_scenario=_try_read_live_current_scenario(row.workspace_id),
+            payload={
+                "id": row.workspace_id,
+                "title": row.title,
+                "created_at": row.created_at,
+                "kind": row.effective_kind,
+                "home_scenario": row.effective_home_scenario,
+                "source_mode": row.effective_source_mode,
+            },
+        )
         for row in rows
     ]
 
 
 def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceInfo:
+    current_scenario = _try_read_live_current_scenario(row.workspace_id)
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     return WebspaceInfo(
         id=row.workspace_id,
         title=row.title,
@@ -2548,6 +2684,13 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
         home_scenario=row.effective_home_scenario,
         source_mode=row.effective_source_mode,
         is_dev=row.is_dev,
+        current_scenario=current_scenario,
+        stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+        home_scenario_exists=bool(validation.get("home_scenario_exists")),
+        current_scenario_exists=validation.get("current_scenario_exists"),
+        degraded=bool(validation.get("degraded")),
+        validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+        recommended_action=str(validation.get("recommended_action") or "").strip() or None,
     )
 
 
@@ -2564,6 +2707,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
 
     current_scenario: str | None = _try_read_live_current_scenario(target_webspace_id)
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     if current_scenario is not None:
         return WebspaceOperationalState(
             webspace_id=target_webspace_id,
@@ -2574,6 +2723,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
             stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
             effective_home_scenario=row.effective_home_scenario,
             current_scenario=current_scenario,
+            stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+            home_scenario_exists=bool(validation.get("home_scenario_exists")),
+            current_scenario_exists=validation.get("current_scenario_exists"),
+            degraded=bool(validation.get("degraded")),
+            validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+            recommended_action=str(validation.get("recommended_action") or "").strip() or None,
         )
 
     try:
@@ -2585,6 +2740,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     except Exception:
         current_scenario = None
 
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     return WebspaceOperationalState(
         webspace_id=target_webspace_id,
         title=row.title,
@@ -2594,7 +2755,30 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
         stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
         effective_home_scenario=row.effective_home_scenario,
         current_scenario=current_scenario,
+        stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+        home_scenario_exists=bool(validation.get("home_scenario_exists")),
+        current_scenario_exists=validation.get("current_scenario_exists"),
+        degraded=bool(validation.get("degraded")),
+        validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+        recommended_action=str(validation.get("recommended_action") or "").strip() or None,
     )
+
+
+async def describe_webspace_validation_state(webspace_id: str) -> dict[str, Any]:
+    state = await describe_webspace_operational_state(webspace_id)
+    return {
+        "webspace_id": state.webspace_id,
+        "source_mode": state.source_mode,
+        "stored_home_scenario": state.stored_home_scenario,
+        "home_scenario": state.effective_home_scenario,
+        "current_scenario": state.current_scenario,
+        "stored_home_scenario_exists": state.stored_home_scenario_exists,
+        "home_scenario_exists": state.home_scenario_exists,
+        "current_scenario_exists": state.current_scenario_exists,
+        "degraded": state.degraded,
+        "validation_reason": state.validation_reason,
+        "recommended_action": state.recommended_action,
+    }
 
 
 def describe_webspace_overlay_state(webspace_id: str) -> dict[str, Any]:
@@ -3764,6 +3948,26 @@ async def reload_webspace_from_scenario(
 
     requested_action = "reset" if str(action or "").strip().lower() == "reset" else "reload"
     state, scenario_id, scenario_resolution = await _resolve_reload_scenario_target(webspace_id, scenario_id)
+    scenario_id, scenario_resolution, preflight = _preflight_validated_scenario(
+        scenario_id,
+        source_mode=state.source_mode,
+        resolution=scenario_resolution,
+    )
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": requested_action,
+            "webspace_id": webspace_id,
+            "scenario_id": None,
+            "scenario_resolution": scenario_resolution,
+            "kind": state.kind,
+            "source_mode": state.source_mode,
+            "home_scenario": state.effective_home_scenario,
+            "current_scenario_before": state.current_scenario,
+            "validation": preflight,
+            "error": "scenario_not_found",
+        }
 
     command_trace = _payload_command_trace(event_payload or {})
     recovery_fingerprint = _recovery_request_fingerprint(
@@ -3897,6 +4101,7 @@ async def reload_webspace_from_scenario(
             "source_mode": state.source_mode,
             "home_scenario": state.effective_home_scenario,
             "current_scenario_before": state.current_scenario,
+            "validation": preflight,
         }
     )
     return result
@@ -4326,15 +4531,33 @@ async def go_home_webspace(webspace_id: str, *, wait_for_rebuild: bool = True) -
     if not webspace_id:
         raise ValueError("webspace_id is required")
     state = await describe_webspace_operational_state(webspace_id)
+    scenario_id, scenario_resolution, preflight = _preflight_validated_scenario(
+        state.effective_home_scenario,
+        source_mode=state.source_mode,
+        resolution="manifest_home",
+    )
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": "go_home",
+            "source_of_truth": "manifest_home_scenario",
+            "webspace_id": webspace_id,
+            "scenario_id": None,
+            "scenario_resolution": scenario_resolution,
+            "validation": preflight,
+            "error": "scenario_not_found",
+        }
     result = await switch_webspace_scenario(
         webspace_id,
-        state.effective_home_scenario,
+        scenario_id,
         set_home=False,
         wait_for_rebuild=wait_for_rebuild,
     )
     result["action"] = "go_home"
     result["source_of_truth"] = "manifest_home_scenario"
-    result["scenario_resolution"] = "manifest_home"
+    result["scenario_resolution"] = scenario_resolution
+    result["validation"] = preflight
     return result
 
 
@@ -4607,6 +4830,7 @@ __all__ = [
     "WebspaceResolverOutputs",
     "WebspaceScenarioRuntime",
     "describe_webspace_operational_state",
+    "describe_webspace_validation_state",
     "describe_webspace_overlay_state",
     "describe_webspace_projection_state",
     "describe_webspace_rebuild_state",

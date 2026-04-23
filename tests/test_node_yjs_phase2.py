@@ -847,6 +847,25 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     )
     monkeypatch.setattr(
         node_api_module,
+        "describe_webspace_validation_state",
+        lambda webspace_id: _awaitable(
+            {
+                "webspace_id": webspace_id,
+                "source_mode": "dev",
+                "stored_home_scenario": "prompt_engineer_scenario",
+                "home_scenario": "prompt_engineer_scenario",
+                "current_scenario": "prompt_engineer_runtime",
+                "stored_home_scenario_exists": True,
+                "home_scenario_exists": True,
+                "current_scenario_exists": True,
+                "degraded": False,
+                "validation_reason": None,
+                "recommended_action": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        node_api_module,
         "describe_webspace_overlay_state",
         lambda webspace_id: {
             "webspace_id": webspace_id,
@@ -939,6 +958,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["ok"] is True
     assert result["accepted"] is True
     assert result["webspace"]["webspace_id"] == "dev_prompt"
+    assert result["validation"]["current_scenario_exists"] is True
     assert result["overlay"]["has_pinned_widgets"] is True
     assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
     assert result["overlay"]["topbar"] == []

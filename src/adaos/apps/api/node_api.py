@@ -32,6 +32,7 @@ from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
+    describe_webspace_validation_state,
     describe_webspace_overlay_state,
     describe_webspace_projection_state,
     describe_webspace_rebuild_state,
@@ -1436,6 +1437,13 @@ async def node_yjs_webspaces() -> dict[str, Any]:
             "kind": item.kind,
             "home_scenario": item.home_scenario,
             "source_mode": item.source_mode,
+            "current_scenario": getattr(item, "current_scenario", None),
+            "stored_home_scenario_exists": getattr(item, "stored_home_scenario_exists", None),
+            "home_scenario_exists": getattr(item, "home_scenario_exists", True),
+            "current_scenario_exists": getattr(item, "current_scenario_exists", None),
+            "degraded": getattr(item, "degraded", False),
+            "validation_reason": getattr(item, "validation_reason", None),
+            "recommended_action": getattr(item, "recommended_action", None),
         }
         for item in WebspaceService().list(mode="mixed")
     ]
@@ -1497,6 +1505,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "").strip() or "default"
     state = await describe_webspace_operational_state(target_webspace_id)
+    validation = await describe_webspace_validation_state(target_webspace_id)
     overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
@@ -1506,6 +1515,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
         "ok": True,
         "accepted": True,
         "webspace": state.to_dict(),
+        "validation": validation,
         "overlay": overlay,
         "desktop": desktop,
         "projection": projection,
@@ -1515,6 +1525,17 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
             role=conf.role,
             webspace_id=target_webspace_id,
         ),
+    }
+
+
+@router.get("/yjs/webspaces/{webspace_id}/validation", dependencies=[Depends(require_token)])
+async def node_yjs_webspace_validation_state(webspace_id: str) -> dict[str, Any]:
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "validation": await describe_webspace_validation_state(target_webspace_id),
     }
 
 
