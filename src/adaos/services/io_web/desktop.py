@@ -9,10 +9,29 @@ from typing import Any, Dict, List, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import async_get_ydoc, get_ydoc, mutate_live_room
+from adaos.services.yjs.store import ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
 
 _log = logging.getLogger("adaos.io_web.desktop")
+
+
+def _desktop_async_write_meta():
+    return ystore_write_metadata(
+        root_names=["data", "ui"],
+        source="io_web.desktop",
+        owner="core:desktop",
+        channel="core.desktop.async",
+    )
+
+
+def _desktop_sync_write_meta():
+    return ystore_write_metadata_sync(
+        root_names=["data", "ui"],
+        source="io_web.desktop",
+        owner="core:desktop",
+        channel="core.desktop.sync",
+    )
 
 
 def _coerce_dict(value: Any) -> Dict[str, Any]:
@@ -455,9 +474,10 @@ class WebDesktopService:
         apps = list(dict.fromkeys(installed.apps))
         widgets = list(dict.fromkeys(installed.widgets))
         self._persist_overlay_installed(webspace, WebDesktopInstalled(apps=apps, widgets=widgets))
-        with get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_installed_state(ydoc, txn, WebDesktopInstalled(apps=apps, widgets=widgets))
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_installed_state(ydoc, txn, WebDesktopInstalled(apps=apps, widgets=widgets))
         _log.debug(
             "set installed webspace=%s apps=%s widgets=%s",
             webspace,
@@ -473,9 +493,10 @@ class WebDesktopService:
         apps = list(dict.fromkeys(installed.apps))
         widgets = list(dict.fromkeys(installed.widgets))
         self._persist_overlay_installed(webspace, WebDesktopInstalled(apps=apps, widgets=widgets))
-        async with async_get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_installed_state(ydoc, txn, WebDesktopInstalled(apps=apps, widgets=widgets))
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_installed_state(ydoc, txn, WebDesktopInstalled(apps=apps, widgets=widgets))
         _log.debug(
             "set installed (async) webspace=%s apps=%s widgets=%s",
             webspace,
@@ -487,9 +508,10 @@ class WebDesktopService:
         webspace = self._resolve_webspace(webspace_id)
         next_pinned = _clone_pinned_widgets(pinned_widgets)
         self._persist_overlay_pinned_widgets(webspace, next_pinned)
-        with get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
         _log.debug(
             "set pinned widgets webspace=%s count=%s",
             webspace,
@@ -500,9 +522,10 @@ class WebDesktopService:
         webspace = self._resolve_webspace(webspace_id)
         next_pinned = _clone_pinned_widgets(pinned_widgets)
         self._persist_overlay_pinned_widgets(webspace, next_pinned)
-        async with async_get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_pinned_widgets_state(ydoc, txn, next_pinned)
         _log.debug(
             "set pinned widgets (async) webspace=%s count=%s",
             webspace,
@@ -513,27 +536,30 @@ class WebDesktopService:
         webspace = self._resolve_webspace(webspace_id)
         next_topbar = _clone_json_list(topbar)
         self._persist_overlay_topbar(webspace, next_topbar)
-        with get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_topbar_state(ydoc, txn, next_topbar)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_topbar_state(ydoc, txn, next_topbar)
         _log.debug("set topbar webspace=%s count=%s", webspace, len(next_topbar))
 
     async def set_topbar_async(self, topbar: List[Any], webspace_id: Optional[str] = None) -> None:
         webspace = self._resolve_webspace(webspace_id)
         next_topbar = _clone_json_list(topbar)
         self._persist_overlay_topbar(webspace, next_topbar)
-        async with async_get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_topbar_state(ydoc, txn, next_topbar)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_topbar_state(ydoc, txn, next_topbar)
         _log.debug("set topbar (async) webspace=%s count=%s", webspace, len(next_topbar))
 
     def set_page_schema(self, page_schema: Dict[str, Any], webspace_id: Optional[str] = None) -> None:
         webspace = self._resolve_webspace(webspace_id)
         next_page_schema = _clone_json_dict(page_schema)
         self._persist_overlay_page_schema(webspace, next_page_schema)
-        with get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_page_schema_state(ydoc, txn, next_page_schema)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_page_schema_state(ydoc, txn, next_page_schema)
         _log.debug(
             "set page schema webspace=%s widgets=%s",
             webspace,
@@ -544,9 +570,10 @@ class WebDesktopService:
         webspace = self._resolve_webspace(webspace_id)
         next_page_schema = _clone_json_dict(page_schema)
         self._persist_overlay_page_schema(webspace, next_page_schema)
-        async with async_get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_page_schema_state(ydoc, txn, next_page_schema)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_page_schema_state(ydoc, txn, next_page_schema)
         _log.debug(
             "set page schema (async) webspace=%s widgets=%s",
             webspace,
@@ -559,9 +586,10 @@ class WebDesktopService:
         self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
         self._persist_overlay_topbar(webspace, snapshot.topbar)
         self._persist_overlay_page_schema(webspace, snapshot.page_schema)
-        with get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_snapshot_state(ydoc, txn, snapshot)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_snapshot_state(ydoc, txn, snapshot)
         _log.debug("set desktop snapshot webspace=%s", webspace)
 
     async def set_snapshot_async(self, snapshot: WebDesktopSnapshot, webspace_id: Optional[str] = None) -> None:
@@ -570,9 +598,10 @@ class WebDesktopService:
         self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
         self._persist_overlay_topbar(webspace, snapshot.topbar)
         self._persist_overlay_page_schema(webspace, snapshot.page_schema)
-        async with async_get_ydoc(webspace) as ydoc:
-            with ydoc.begin_transaction() as txn:
-                self._apply_snapshot_state(ydoc, txn, snapshot)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_snapshot_state(ydoc, txn, snapshot)
         _log.debug("set desktop snapshot (async) webspace=%s", webspace)
 
     def toggle_install(self, item_type: str, target_id: str, webspace_id: Optional[str] = None) -> None:

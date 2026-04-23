@@ -28,7 +28,7 @@ from adaos.services.yjs.doc import (
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
-from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.seed import SEED
 from adaos.services.eventbus import emit
@@ -51,6 +51,24 @@ _EFFECTIVE_BRANCH_PATHS = (
     "data.routing",
     "registry.merged",
 )
+
+
+def _webspace_runtime_async_write_meta(*, root_names: list[str], source: str):
+    return ystore_write_metadata(
+        root_names=root_names,
+        source=source,
+        owner="core:webspace_runtime",
+        channel="core.webspace_runtime.async",
+    )
+
+
+def _webspace_runtime_sync_write_meta(*, root_names: list[str], source: str):
+    return ystore_write_metadata_sync(
+        root_names=root_names,
+        source=source,
+        owner="core:webspace_runtime",
+        channel="core.webspace_runtime.sync",
+    )
 _WHOLE_BRANCH_REPLACE_PATHS = frozenset(_EFFECTIVE_BRANCH_PATHS)
 _RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY = "effective_branch_fingerprints"
 _WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
@@ -2415,8 +2433,12 @@ class WebspaceScenarioRuntime:
         rebuilds ui.application/data.catalog/data.installed/registry.merged
         and returns the resulting registry snapshot.
         """
-        with get_ydoc(webspace_id) as ydoc:
-            return self._rebuild_in_doc(ydoc, webspace_id, expected_request_id=request_id)
+        with _webspace_runtime_sync_write_meta(
+            root_names=["ui", "data", "registry"],
+            source="webspace_runtime.rebuild_sync",
+        ):
+            with get_ydoc(webspace_id) as ydoc:
+                return self._rebuild_in_doc(ydoc, webspace_id, expected_request_id=request_id)
 
     async def rebuild_webspace_async(
         self,
@@ -2934,10 +2956,14 @@ async def _sync_webspace_listing() -> None:
     payload = {"items": listing}
     rows = workspace_index.list_workspaces()
     for row in rows:
-        async with async_get_ydoc(row.workspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                _set_map_value_if_changed(data_map, txn, "webspaces", payload)
+        async with _webspace_runtime_async_write_meta(
+            root_names=["data"],
+            source="webspace_runtime.sync_listing",
+        ):
+            async with async_get_ydoc(row.workspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    _set_map_value_if_changed(data_map, txn, "webspaces", payload)
 
 
 class WebspaceService:
@@ -3454,10 +3480,14 @@ async def rebuild_webspace_from_sources(
             raise ValueError("scenario_id is required when reseed_from_scenario is enabled")
         stage_started = time.perf_counter()
         try:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                ui_map = ydoc.get_map("ui")
-                with ydoc.begin_transaction() as txn:
-                    ui_map.set(txn, "current_scenario", target_scenario)
+            async with _webspace_runtime_async_write_meta(
+                root_names=["ui"],
+                source="webspace_runtime.reseed_pointer",
+            ):
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    ui_map = ydoc.get_map("ui")
+                    with ydoc.begin_transaction() as txn:
+                        ui_map.set(txn, "current_scenario", target_scenario)
         except Exception:
             pass
         _record_timing(timings_ms, "reseed_pointer", stage_started)
@@ -4361,13 +4391,17 @@ async def switch_webspace_scenario(
             _record_timing(timings_ms, "write_switch_pointer", stage_started)
         else:
             stage_started = time.perf_counter()
-            async with async_get_ydoc(webspace_id) as ydoc:
-                _record_timing(timings_ms, "open_doc", stage_started)
-                ui_map = ydoc.get_map("ui")
-                stage_started = time.perf_counter()
-                with ydoc.begin_transaction() as txn:
-                    _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
-                _record_timing(timings_ms, "write_switch_pointer", stage_started)
+            async with _webspace_runtime_async_write_meta(
+                root_names=["ui"],
+                source="webspace_runtime.switch_pointer",
+            ):
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    _record_timing(timings_ms, "open_doc", stage_started)
+                    ui_map = ydoc.get_map("ui")
+                    stage_started = time.perf_counter()
+                    with ydoc.begin_transaction() as txn:
+                        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+                    _record_timing(timings_ms, "write_switch_pointer", stage_started)
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
         _set_webspace_rebuild_status(
