@@ -84,11 +84,19 @@ async def ystore_write_metadata(
     *,
     root_names: list[str] | tuple[str, ...] | None = None,
     source: str | None = None,
+    owner: str | None = None,
+    channel: str | None = None,
 ):
-    payload = {
-        "root_names": [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()],
-        "source": str(source or "").strip() or None,
-    }
+    payload = dict(_WRITE_META.get() or {})
+    names = [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()]
+    if names:
+        payload["root_names"] = names
+    if source is not None:
+        payload["source"] = str(source or "").strip() or None
+    if owner is not None:
+        payload["owner"] = str(owner or "").strip() or None
+    if channel is not None:
+        payload["channel"] = str(channel or "").strip() or None
     token = _WRITE_META.set(payload)
     try:
         yield

@@ -9,10 +9,24 @@ from typing import Iterator, AsyncIterator, Awaitable, Optional, TypeVar, Callab
 
 import y_py as Y
 
+from adaos.services.agent_context import get_ctx
 from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
+
+
+def _resolve_yjs_write_owner() -> str:
+    try:
+        current = getattr(get_ctx(), "skill_ctx", None)
+        if current is not None:
+            active = current.get()
+            name = str(getattr(active, "name", "") or "").strip()
+            if name:
+                return f"skill:{name}"
+    except Exception:
+        pass
+    return "core"
 
 
 def _record_doc_timing(timings: dict[str, float] | None, key: str, started_at: float, *, prefix: str = "") -> float:
@@ -254,7 +268,12 @@ def get_ydoc(
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
                     try:
                         stage_started = time.perf_counter()
-                        async with ystore_write_metadata(root_names=tracked_load_mark_roots, source="get_ydoc"):
+                        async with ystore_write_metadata(
+                            root_names=tracked_load_mark_roots,
+                            source="get_ydoc",
+                            owner=_resolve_yjs_write_owner(),
+                            channel="yjs.doc.sync",
+                        ):
                             if update:
                                 await ystore.write_update(update, update_kind="diff")
                             else:
@@ -351,7 +370,12 @@ async def async_get_ydoc(
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
                     try:
                         stage_started = time.perf_counter()
-                        async with ystore_write_metadata(root_names=tracked_load_mark_roots, source="async_get_ydoc"):
+                        async with ystore_write_metadata(
+                            root_names=tracked_load_mark_roots,
+                            source="async_get_ydoc",
+                            owner=_resolve_yjs_write_owner(),
+                            channel="yjs.doc.async",
+                        ):
                             if update:
                                 await ystore.write_update(update, update_kind="diff")
                             else:

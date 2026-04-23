@@ -20,14 +20,20 @@ _HIGH_BPS = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_BPS") or str(32 * 102
 _CRITICAL_BPS = max(_HIGH_BPS + 1, int(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_BPS") or str(128 * 1024)))
 _UNATTRIBUTED_ROOT = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_ROOT") or "_by_initiator/unknown").strip() or "_by_initiator/unknown"
 _UNATTRIBUTED_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_PREFIX") or "_by_initiator/").strip() or "_by_initiator/"
+_OWNER_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_PREFIX") or "_by_owner/").strip() or "_by_owner/"
+_UNKNOWN_OWNER = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNKNOWN_OWNER") or f"{_OWNER_PREFIX}unknown").strip() or f"{_OWNER_PREFIX}unknown"
 _STREAM_RECEIVER = str(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_RECEIVER") or "infrastate.yjs.load_mark").strip() or "infrastate.yjs.load_mark"
 _STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "0.25"))
 _STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "0"))
+_HIGH_WPS = max(1.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_WPS") or "8"))
+_CRITICAL_WPS = max(_HIGH_WPS + 0.1, float(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_WPS") or "32"))
+_OWNER_ALERT_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_MIN_INTERVAL_SEC") or "15"))
 
 _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
 _ACTIVE_STREAM_SUBSCRIPTIONS: dict[str, int] = {}
 _LAST_STREAM_PUBLISH_AT: dict[str, float] = {}
+_OWNER_ALERTS: dict[str, float] = {}
 
 
 def _clone_json(value: Any) -> Any:
@@ -96,7 +102,9 @@ def _ensure_webspace_state(webspace_id: str) -> dict[str, Any]:
             "updated_at": 0.0,
             "tx_total": 0,
             "roots": {},
+            "owners": {},
             "snapshot_sizes": {},
+            "owner_sizes": {},
         }
         _WEBSPACE_STATE[key] = state
     return state
@@ -110,6 +118,16 @@ def _normalize_source_bucket(source: str | None) -> str:
     if not safe:
         return _UNATTRIBUTED_ROOT
     return f"{_UNATTRIBUTED_PREFIX}{safe}"
+
+
+def _normalize_owner_bucket(owner: str | None) -> str:
+    token = str(owner or "").strip().lower()
+    if not token:
+        return _UNKNOWN_OWNER
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in token).strip("._")
+    if not safe:
+        return _UNKNOWN_OWNER
+    return f"{_OWNER_PREFIX}{safe}"
 
 
 def _has_active_stream_subscription_locked(webspace_id: str) -> bool:
@@ -160,13 +178,14 @@ def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = Non
         _log.debug("failed to publish load_mark stream update webspace=%s", key, exc_info=True)
 
 
-def _ensure_root_state(webspace_state: dict[str, Any], root_name: str) -> dict[str, Any]:
-    roots = webspace_state.setdefault("roots", {})
-    entry = roots.get(root_name)
+def _ensure_bucket_state(container: dict[str, Any], bucket_name: str) -> dict[str, Any]:
+    entry = container.get(bucket_name)
     if entry is None:
         entry = {
             "recent": {},
             "recent_bytes": 0,
+            "recent_writes": {},
+            "recent_write_total": 0,
             "lifetime_bytes": 0,
             "sample_total": 0,
             "updated_at": 0.0,
@@ -174,16 +193,16 @@ def _ensure_root_state(webspace_state: dict[str, Any], root_name: str) -> dict[s
             "current_size_bytes": 0,
             "last_source": None,
         }
-        roots[root_name] = entry
+        container[bucket_name] = entry
     return entry
 
 
-def _prune_root_locked(root_state: dict[str, Any], *, now_ts: float) -> None:
-    recent = root_state.get("recent")
+def _prune_bucket_locked(bucket_state: dict[str, Any], *, now_ts: float) -> None:
+    recent = bucket_state.get("recent")
     if not isinstance(recent, dict):
-        root_state["recent"] = {}
-        root_state["recent_bytes"] = 0
-        return
+        bucket_state["recent"] = {}
+        bucket_state["recent_bytes"] = 0
+        recent = {}
     cutoff_bucket = int(now_ts // _BUCKET_SEC) - int(_WINDOW_SEC // _BUCKET_SEC) - 1
     removed = 0
     for raw_bucket in list(recent.keys()):
@@ -197,13 +216,31 @@ def _prune_root_locked(root_state: dict[str, Any], *, now_ts: float) -> None:
                 removed += int(recent.pop(raw_bucket, 0) or 0)
             except Exception:
                 recent.pop(raw_bucket, None)
-    root_state["recent_bytes"] = max(0, int(root_state.get("recent_bytes") or 0) - removed)
+    bucket_state["recent_bytes"] = max(0, int(bucket_state.get("recent_bytes") or 0) - removed)
+    recent_writes = bucket_state.get("recent_writes")
+    if not isinstance(recent_writes, dict):
+        bucket_state["recent_writes"] = {}
+        bucket_state["recent_write_total"] = 0
+        return
+    removed_writes = 0
+    for raw_bucket in list(recent_writes.keys()):
+        try:
+            bucket = int(raw_bucket)
+        except Exception:
+            recent_writes.pop(raw_bucket, None)
+            continue
+        if bucket <= cutoff_bucket:
+            try:
+                removed_writes += int(recent_writes.pop(raw_bucket, 0) or 0)
+            except Exception:
+                recent_writes.pop(raw_bucket, None)
+    bucket_state["recent_write_total"] = max(0, int(bucket_state.get("recent_write_total") or 0) - removed_writes)
 
 
-def _record_root_bytes_locked(
-    webspace_state: dict[str, Any],
+def _record_bucket_bytes_locked(
+    container: dict[str, Any],
     *,
-    root_name: str,
+    bucket_name: str,
     bytes_written: int,
     now_ts: float,
     current_size_bytes: int,
@@ -211,20 +248,21 @@ def _record_root_bytes_locked(
 ) -> None:
     if bytes_written <= 0:
         return
-    root_state = _ensure_root_state(webspace_state, root_name)
-    _prune_root_locked(root_state, now_ts=now_ts)
+    bucket_state = _ensure_bucket_state(container, bucket_name)
+    _prune_bucket_locked(bucket_state, now_ts=now_ts)
     bucket = int(now_ts // _BUCKET_SEC)
-    recent = root_state.setdefault("recent", {})
+    recent = bucket_state.setdefault("recent", {})
     recent[bucket] = int(recent.get(bucket) or 0) + int(bytes_written)
-    root_state["recent_bytes"] = int(root_state.get("recent_bytes") or 0) + int(bytes_written)
-    root_state["lifetime_bytes"] = int(root_state.get("lifetime_bytes") or 0) + int(bytes_written)
-    root_state["sample_total"] = int(root_state.get("sample_total") or 0) + 1
-    root_state["updated_at"] = float(now_ts)
-    root_state["last_changed_at"] = float(now_ts)
-    root_state["current_size_bytes"] = int(current_size_bytes)
-    root_state["last_source"] = str(source or "").strip() or None
-    webspace_state["updated_at"] = float(now_ts)
-    webspace_state["tx_total"] = int(webspace_state.get("tx_total") or 0) + 1
+    recent_writes = bucket_state.setdefault("recent_writes", {})
+    recent_writes[bucket] = int(recent_writes.get(bucket) or 0) + 1
+    bucket_state["recent_bytes"] = int(bucket_state.get("recent_bytes") or 0) + int(bytes_written)
+    bucket_state["recent_write_total"] = int(bucket_state.get("recent_write_total") or 0) + 1
+    bucket_state["lifetime_bytes"] = int(bucket_state.get("lifetime_bytes") or 0) + int(bytes_written)
+    bucket_state["sample_total"] = int(bucket_state.get("sample_total") or 0) + 1
+    bucket_state["updated_at"] = float(now_ts)
+    bucket_state["last_changed_at"] = float(now_ts)
+    bucket_state["current_size_bytes"] = int(current_size_bytes)
+    bucket_state["last_source"] = str(source or "").strip() or None
 
 
 def _record_webspace_activity_locked(
@@ -234,6 +272,53 @@ def _record_webspace_activity_locked(
 ) -> None:
     webspace_state["updated_at"] = float(now_ts)
     webspace_state["tx_total"] = int(webspace_state.get("tx_total") or 0) + 1
+
+
+def _maybe_log_owner_pressure(
+    webspace_id: str,
+    *,
+    owner_bucket: str,
+    owner_state: dict[str, Any],
+    now_ts: float,
+) -> None:
+    _prune_bucket_locked(owner_state, now_ts=now_ts)
+    recent = owner_state.get("recent")
+    recent_writes = owner_state.get("recent_writes")
+    if not isinstance(recent, dict):
+        recent = {}
+    if not isinstance(recent_writes, dict):
+        recent_writes = {}
+    peak_bucket_bytes = max((int(value or 0) for value in recent.values()), default=0)
+    peak_bucket_writes = max((int(value or 0) for value in recent_writes.values()), default=0)
+    avg_bps = round(float(owner_state.get("recent_bytes") or 0) / float(_WINDOW_SEC), 3)
+    peak_bps = round(float(peak_bucket_bytes) / float(_BUCKET_SEC), 3)
+    avg_wps = round(float(owner_state.get("recent_write_total") or 0) / float(_WINDOW_SEC), 3)
+    peak_wps = round(float(peak_bucket_writes) / float(_BUCKET_SEC), 3)
+    severity = None
+    if peak_bps >= float(_CRITICAL_BPS) or avg_bps >= float(_CRITICAL_BPS) or peak_wps >= float(_CRITICAL_WPS) or avg_wps >= float(_CRITICAL_WPS):
+        severity = "critical"
+    elif peak_bps >= float(_HIGH_BPS) or avg_bps >= float(_HIGH_BPS) or peak_wps >= float(_HIGH_WPS) or avg_wps >= float(_HIGH_WPS):
+        severity = "high"
+    if not severity:
+        return
+    alert_key = f"{webspace_id}:{owner_bucket}:{severity}"
+    last_at = float(_OWNER_ALERTS.get(alert_key) or 0.0)
+    if _OWNER_ALERT_MIN_INTERVAL_SEC > 0.0 and last_at > 0.0 and now_ts - last_at < _OWNER_ALERT_MIN_INTERVAL_SEC:
+        return
+    _OWNER_ALERTS[alert_key] = now_ts
+    logging.getLogger(f"adaos.yjs.owner.{owner_bucket.removeprefix(_OWNER_PREFIX)}").warning(
+        "YJS owner flow above threshold webspace=%s owner=%s severity=%s avg_bps=%s peak_bps=%s avg_wps=%s peak_wps=%s recent_bytes=%s recent_writes=%s source=%s",
+        webspace_id,
+        owner_bucket,
+        severity,
+        avg_bps,
+        peak_bps,
+        avg_wps,
+        peak_wps,
+        int(owner_state.get("recent_bytes") or 0),
+        int(owner_state.get("recent_write_total") or 0),
+        owner_state.get("last_source"),
+    )
 
 
 def _distribute_bytes_by_delta(
@@ -285,6 +370,7 @@ def record_root_flow(
     total_bytes: int,
     now_ts: float | None = None,
     source: str | None = None,
+    owner: str | None = None,
 ) -> None:
     key = str(webspace_id or "").strip() or "default"
     before = {str(name): int(size or 0) for name, size in (before_sizes or {}).items() if str(name).strip()}
@@ -294,14 +380,34 @@ def record_root_flow(
     with _LOCK:
         webspace_state = _ensure_webspace_state(key)
         for root_name, current_size, bytes_written in distributed:
-            _record_root_bytes_locked(
-                webspace_state,
-                root_name=root_name,
+            _record_bucket_bytes_locked(
+                webspace_state.setdefault("roots", {}),
+                bucket_name=root_name,
                 bytes_written=bytes_written,
                 now_ts=now,
                 current_size_bytes=current_size,
                 source=source,
             )
+            owner_bucket = _normalize_owner_bucket(owner)
+            owner_sizes = webspace_state.setdefault("owner_sizes", {})
+            owner_previous = int(owner_sizes.get(owner_bucket) or 0)
+            owner_current = max(owner_previous, owner_previous + bytes_written)
+            owner_sizes[owner_bucket] = owner_current
+            _record_bucket_bytes_locked(
+                webspace_state.setdefault("owners", {}),
+                bucket_name=owner_bucket,
+                bytes_written=bytes_written,
+                now_ts=now,
+                current_size_bytes=owner_current,
+                source=source,
+            )
+            _maybe_log_owner_pressure(
+                key,
+                owner_bucket=owner_bucket,
+                owner_state=_ensure_bucket_state(webspace_state.setdefault("owners", {}), owner_bucket),
+                now_ts=now,
+            )
+        _record_webspace_activity_locked(webspace_state, now_ts=now)
         webspace_state["snapshot_sizes"] = dict(after)
         webspace_state["updated_at"] = float(now)
 
@@ -314,6 +420,7 @@ def record_detached_ydoc_update(
     total_bytes: int,
     now_ts: float | None = None,
     source: str | None = None,
+    owner: str | None = None,
 ) -> None:
     try:
         after_sizes = capture_ydoc_root_sizes(ydoc)
@@ -327,6 +434,7 @@ def record_detached_ydoc_update(
         total_bytes=int(total_bytes or 0),
         now_ts=now_ts,
         source=source or "detached_ydoc",
+        owner=owner,
     )
 
 
@@ -337,6 +445,7 @@ def record_detached_root_update(
     total_bytes: int,
     now_ts: float | None = None,
     source: str | None = None,
+    owner: str | None = None,
 ) -> None:
     names = [str(name or "").strip() for name in root_names if str(name or "").strip()]
     if not names:
@@ -360,14 +469,34 @@ def record_detached_root_update(
             previous_size = int(snapshot_sizes.get(root_name) or 0)
             current_size = max(previous_size, previous_size + bytes_written)
             snapshot_sizes[root_name] = current_size
-            _record_root_bytes_locked(
-                webspace_state,
-                root_name=root_name,
+            _record_bucket_bytes_locked(
+                webspace_state.setdefault("roots", {}),
+                bucket_name=root_name,
                 bytes_written=bytes_written,
                 now_ts=now,
                 current_size_bytes=current_size,
                 source=source or "detached_root",
             )
+            owner_bucket = _normalize_owner_bucket(owner)
+            owner_sizes = webspace_state.setdefault("owner_sizes", {})
+            owner_previous = int(owner_sizes.get(owner_bucket) or 0)
+            owner_current = max(owner_previous, owner_previous + bytes_written)
+            owner_sizes[owner_bucket] = owner_current
+            _record_bucket_bytes_locked(
+                webspace_state.setdefault("owners", {}),
+                bucket_name=owner_bucket,
+                bytes_written=bytes_written,
+                now_ts=now,
+                current_size_bytes=owner_current,
+                source=source or "detached_root",
+            )
+            _maybe_log_owner_pressure(
+                str(webspace_id or "").strip() or "default",
+                owner_bucket=owner_bucket,
+                owner_state=_ensure_bucket_state(webspace_state.setdefault("owners", {}), owner_bucket),
+                now_ts=now,
+            )
+        _record_webspace_activity_locked(webspace_state, now_ts=now)
         webspace_state["snapshot_sizes"] = snapshot_sizes
         webspace_state["updated_at"] = float(now)
 
@@ -379,6 +508,7 @@ def record_write_update(
     root_names: list[str] | tuple[str, ...] | None = None,
     now_ts: float | None = None,
     source: str | None = None,
+    owner: str | None = None,
 ) -> None:
     names = [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()]
     if names:
@@ -388,6 +518,7 @@ def record_write_update(
             total_bytes=total_bytes,
             now_ts=now_ts,
             source=source or "ystore_write",
+            owner=owner,
         )
         _maybe_publish_stream_update(webspace_id, now_ts=now_ts)
         return
@@ -407,14 +538,34 @@ def record_write_update(
         previous_size = int(snapshot_sizes.get(bucket_name) or 0)
         current_size = max(previous_size, previous_size + bytes_total)
         snapshot_sizes[bucket_name] = current_size
-        _record_root_bytes_locked(
-            webspace_state,
-            root_name=bucket_name,
+        _record_bucket_bytes_locked(
+            webspace_state.setdefault("roots", {}),
+            bucket_name=bucket_name,
             bytes_written=bytes_total,
             now_ts=now,
             current_size_bytes=current_size,
             source=source or "ystore_write",
         )
+        owner_bucket = _normalize_owner_bucket(owner)
+        owner_sizes = webspace_state.setdefault("owner_sizes", {})
+        owner_previous = int(owner_sizes.get(owner_bucket) or 0)
+        owner_current = max(owner_previous, owner_previous + bytes_total)
+        owner_sizes[owner_bucket] = owner_current
+        _record_bucket_bytes_locked(
+            webspace_state.setdefault("owners", {}),
+            bucket_name=owner_bucket,
+            bytes_written=bytes_total,
+            now_ts=now,
+            current_size_bytes=owner_current,
+            source=source or "ystore_write",
+        )
+        _maybe_log_owner_pressure(
+            str(webspace_id or "").strip() or "default",
+            owner_bucket=owner_bucket,
+            owner_state=_ensure_bucket_state(webspace_state.setdefault("owners", {}), owner_bucket),
+            now_ts=now,
+        )
+        _record_webspace_activity_locked(webspace_state, now_ts=now)
         webspace_state["snapshot_sizes"] = snapshot_sizes
         webspace_state["updated_at"] = float(now)
     _maybe_publish_stream_update(webspace_id, now_ts=now)
@@ -442,23 +593,38 @@ def _status_for_rate(avg_bps: float, peak_bps: float) -> str:
     return "idle"
 
 
-def _snapshot_webspace_locked(key: str, webspace_state: dict[str, Any], *, now_ts: float) -> dict[str, Any]:
+def _status_for_write_rate(avg_wps: float, peak_wps: float) -> str:
+    if peak_wps >= float(_CRITICAL_WPS) or avg_wps >= float(_CRITICAL_WPS):
+        return "critical"
+    if peak_wps >= float(_HIGH_WPS) or avg_wps >= float(_HIGH_WPS):
+        return "high"
+    if peak_wps > 0.0 or avg_wps > 0.0:
+        return "nominal"
+    return "idle"
+
+
+def _snapshot_bucket_collection_locked(collection: dict[str, Any], *, key_name: str, now_ts: float) -> tuple[list[dict[str, Any]], str]:
     items: list[dict[str, Any]] = []
     overall_state = "idle"
-    roots = webspace_state.get("roots")
-    if not isinstance(roots, dict):
-        roots = {}
-    for root_name, root_state in sorted(roots.items()):
-        if not isinstance(root_state, dict):
+    for bucket_name, bucket_state in sorted(collection.items()):
+        if not isinstance(bucket_state, dict):
             continue
-        _prune_root_locked(root_state, now_ts=now_ts)
-        recent = root_state.get("recent")
+        _prune_bucket_locked(bucket_state, now_ts=now_ts)
+        recent = bucket_state.get("recent")
         if not isinstance(recent, dict):
             recent = {}
+        recent_writes = bucket_state.get("recent_writes")
+        if not isinstance(recent_writes, dict):
+            recent_writes = {}
         peak_bucket_bytes = max((int(value or 0) for value in recent.values()), default=0)
-        avg_bps = round(float(root_state.get("recent_bytes") or 0) / float(_WINDOW_SEC), 3)
+        peak_bucket_writes = max((int(value or 0) for value in recent_writes.values()), default=0)
+        avg_bps = round(float(bucket_state.get("recent_bytes") or 0) / float(_WINDOW_SEC), 3)
         peak_bps = round(float(peak_bucket_bytes) / float(_BUCKET_SEC), 3)
-        status = _status_for_rate(avg_bps, peak_bps)
+        avg_wps = round(float(bucket_state.get("recent_write_total") or 0) / float(_WINDOW_SEC), 3)
+        peak_wps = round(float(peak_bucket_writes) / float(_BUCKET_SEC), 3)
+        byte_status = _status_for_rate(avg_bps, peak_bps)
+        write_status = _status_for_write_rate(avg_wps, peak_wps)
+        status = "critical" if "critical" in {byte_status, write_status} else "high" if "high" in {byte_status, write_status} else "nominal" if "nominal" in {byte_status, write_status} else "idle"
         if status == "critical":
             overall_state = "critical"
         elif status == "high" and overall_state != "critical":
@@ -467,22 +633,46 @@ def _snapshot_webspace_locked(key: str, webspace_state: dict[str, Any], *, now_t
             overall_state = "nominal"
         items.append(
             {
-                "root": root_name,
+                key_name: bucket_name,
                 "avg_bps": avg_bps,
                 "peak_bps": peak_bps,
-                "recent_bytes": int(root_state.get("recent_bytes") or 0),
-                "lifetime_bytes": int(root_state.get("lifetime_bytes") or 0),
-                "sample_total": int(root_state.get("sample_total") or 0),
-                "current_size_bytes": int(root_state.get("current_size_bytes") or 0),
+                "avg_wps": avg_wps,
+                "peak_wps": peak_wps,
+                "recent_bytes": int(bucket_state.get("recent_bytes") or 0),
+                "recent_writes": int(bucket_state.get("recent_write_total") or 0),
+                "lifetime_bytes": int(bucket_state.get("lifetime_bytes") or 0),
+                "sample_total": int(bucket_state.get("sample_total") or 0),
+                "write_total": int(bucket_state.get("sample_total") or 0),
+                "current_size_bytes": int(bucket_state.get("current_size_bytes") or 0),
                 "status": status,
-                "last_source": root_state.get("last_source"),
-                "last_changed_at": root_state.get("last_changed_at") or None,
-                "last_changed_ago_s": round(max(0.0, now_ts - float(root_state.get("last_changed_at") or 0.0)), 3)
-                if float(root_state.get("last_changed_at") or 0.0) > 0.0
+                "byte_status": byte_status,
+                "write_status": write_status,
+                "last_source": bucket_state.get("last_source"),
+                "last_changed_at": bucket_state.get("last_changed_at") or None,
+                "last_changed_ago_s": round(max(0.0, now_ts - float(bucket_state.get("last_changed_at") or 0.0)), 3)
+                if float(bucket_state.get("last_changed_at") or 0.0) > 0.0
                 else None,
             }
         )
-    items.sort(key=lambda entry: (-float(entry.get("peak_bps") or 0.0), -float(entry.get("avg_bps") or 0.0), str(entry.get("root") or "")))
+    items.sort(key=lambda entry: (-float(entry.get("peak_bps") or 0.0), -float(entry.get("peak_wps") or 0.0), -float(entry.get("avg_bps") or 0.0), str(entry.get(key_name) or "")))
+    return items, overall_state
+
+
+def _snapshot_webspace_locked(key: str, webspace_state: dict[str, Any], *, now_ts: float) -> dict[str, Any]:
+    roots = webspace_state.get("roots")
+    if not isinstance(roots, dict):
+        roots = {}
+    owners = webspace_state.get("owners")
+    if not isinstance(owners, dict):
+        owners = {}
+    items, overall_state = _snapshot_bucket_collection_locked(roots, key_name="root", now_ts=now_ts)
+    owner_items, owner_state = _snapshot_bucket_collection_locked(owners, key_name="owner", now_ts=now_ts)
+    if owner_state == "critical":
+        overall_state = "critical"
+    elif owner_state == "high" and overall_state != "critical":
+        overall_state = "high"
+    elif owner_state == "nominal" and overall_state not in {"critical", "high"}:
+        overall_state = "nominal"
     return {
         "webspace_id": key,
         "window_sec": int(_WINDOW_SEC),
@@ -508,11 +698,16 @@ def _snapshot_webspace_locked(key: str, webspace_state: dict[str, Any], *, now_t
         if float(webspace_state.get("updated_at") or 0.0) > 0.0
         else None,
         "recent_bytes_total": int(sum(int(item.get("recent_bytes") or 0) for item in items)),
+        "recent_writes_total": int(sum(int(item.get("recent_writes") or 0) for item in items)),
         "tx_total": int(webspace_state.get("tx_total") or 0),
         "root_total": len(items),
         "active_root_total": sum(1 for item in items if float(item.get("peak_bps") or 0.0) > 0.0),
+        "owner_total": len(owner_items),
+        "active_owner_total": sum(1 for item in owner_items if float(item.get("peak_bps") or 0.0) > 0.0 or float(item.get("peak_wps") or 0.0) > 0.0),
         "items": items,
         "roots": {str(item.get("root") or ""): dict(item) for item in items if str(item.get("root") or "").strip()},
+        "owner_items": owner_items,
+        "owners": {str(item.get("owner") or ""): dict(item) for item in owner_items if str(item.get("owner") or "").strip()},
     }
 
 
@@ -550,6 +745,8 @@ def yjs_load_mark_snapshot(*, webspace_id: str | None = None, now_ts: float | No
         "thresholds": {
             "high_bps": int(_HIGH_BPS),
             "critical_bps": int(_CRITICAL_BPS),
+            "high_wps": float(_HIGH_WPS),
+            "critical_wps": float(_CRITICAL_WPS),
         },
         "assessment": {
             "state": overall_state,
@@ -567,6 +764,7 @@ def yjs_load_mark_snapshot(*, webspace_id: str | None = None, now_ts: float | No
         "selected_webspace": dict(selected) if isinstance(selected, dict) else {},
         "webspace_total": len(webspaces),
         "active_root_total": active_root_total,
+        "active_owner_total": sum(int((item or {}).get("active_owner_total") or 0) for item in webspaces.values() if isinstance(item, dict)),
         "webspaces": {str(key): dict(value) for key, value in webspaces.items() if isinstance(value, dict)},
     }
 
@@ -585,6 +783,7 @@ def _load_mark_write_listener(webspace_id: str, update: bytes, meta: dict[str, A
         root_names=root_names,
         now_ts=time.time(),
         source=str(metadata.get("source") or "ystore_write"),
+        owner=str(metadata.get("owner") or "").strip() or None,
     )
 
 
