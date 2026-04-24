@@ -1154,7 +1154,7 @@ async def admin_root_mcp_logs(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown log category: {category}") from exc
 
-    conf = load_config()
+    conf = get_ctx().config
     requested_scope = str(scope or "").strip().lower() or "root_local"
     if requested_scope == "subnet_active":
         subnet_id = str(getattr(conf, "subnet_id", None) or "").strip()

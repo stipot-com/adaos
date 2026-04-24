@@ -188,3 +188,64 @@ def test_promote_active_is_idempotent_for_active_runtime(monkeypatch) -> None:
     assert payload["accepted"] is False
     assert payload["runtime"]["transition_role"] == "active"
     assert payload["runtime"]["admin_mutation_allowed"] is True
+
+
+def test_admin_root_mcp_logs_returns_local_logs_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(api_server, "normalize_log_category", lambda category: "adaos")
+    monkeypatch.setattr(api_server, "get_ctx", lambda: types.SimpleNamespace(config=types.SimpleNamespace(subnet_id="sn_local")))
+    monkeypatch.setattr(
+        api_server,
+        "list_local_logs",
+        lambda **kwargs: {
+            "category": kwargs["category"],
+            "source_mode": kwargs["source_mode"],
+            "items": [{"name": "adaos.log"}],
+        },
+    )
+
+    payload = asyncio.run(api_server.admin_root_mcp_logs("adaos", limit=2, lines=50))
+
+    assert payload["ok"] is True
+    assert payload["logs"]["category"] == "adaos"
+    assert payload["logs"]["source_mode"] == "node_local_logs_dir"
+    assert payload["logs"]["items"][0]["name"] == "adaos.log"
+
+
+def test_admin_root_mcp_logs_aggregates_active_subnet_logs(monkeypatch) -> None:
+    monkeypatch.setattr(api_server, "normalize_log_category", lambda category: "yjs")
+    monkeypatch.setattr(
+        api_server,
+        "get_ctx",
+        lambda: types.SimpleNamespace(config=types.SimpleNamespace(subnet_id="sn_92ffc943")),
+    )
+
+    async def _aggregate_subnet_logs(**kwargs):
+        assert kwargs["category"] == "yjs"
+        assert kwargs["subnet_id"] == "sn_92ffc943"
+        assert kwargs["limit"] == 4
+        assert kwargs["lines"] == 120
+        assert kwargs["contains"] == "desktop"
+        assert kwargs["include_hub"] is False
+        return {
+            "category": "yjs",
+            "scope": "subnet_active",
+            "nodes": [{"node_id": "member:alpha", "ok": True}],
+        }
+
+    monkeypatch.setattr(api_server, "aggregate_subnet_logs", _aggregate_subnet_logs)
+
+    payload = asyncio.run(
+        api_server.admin_root_mcp_logs(
+            "yjs",
+            limit=4,
+            lines=120,
+            contains="desktop",
+            scope="subnet_active",
+            include_hub=False,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["logs"]["category"] == "yjs"
+    assert payload["logs"]["scope"] == "subnet_active"
+    assert payload["logs"]["nodes"][0]["node_id"] == "member:alpha"
