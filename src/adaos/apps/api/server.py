@@ -214,6 +214,7 @@ from adaos.services.runtime_lifecycle import (
     runtime_lifecycle_snapshot,
 )
 from adaos.services.runtime_memory_profile import finish_active_runtime_memory_profile
+from adaos.services.root_mcp.logs import aggregate_subnet_logs, list_local_logs, normalize_log_category
 from adaos.services.supervisor_memory import supervisor_memory_session_artifacts_dir
 from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias, save_subnet_alias
 from adaos.domain import Event as DomainEvent
@@ -1135,6 +1136,54 @@ async def admin_drain(body: DrainRequest):
 @app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
 async def admin_lifecycle():
     return {"ok": True, "lifecycle": runtime_lifecycle_snapshot(), "runtime": _runtime_identity_public_payload()}
+
+
+@app.get("/api/admin/root_mcp/logs/{category}", dependencies=[Depends(require_token)])
+async def admin_root_mcp_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+    scope: str | None = None,
+    include_hub: bool = True,
+):
+    try:
+        category_token = normalize_log_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown log category: {category}") from exc
+
+    conf = load_config()
+    requested_scope = str(scope or "").strip().lower() or "root_local"
+    if requested_scope == "subnet_active":
+        subnet_id = str(getattr(conf, "subnet_id", None) or "").strip()
+        if not subnet_id:
+            raise HTTPException(status_code=400, detail="subnet_active logs require configured subnet_id")
+        logs = await aggregate_subnet_logs(
+            category=category_token,
+            subnet_id=subnet_id,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            include_hub=include_hub,
+        )
+        return {"ok": True, "logs": logs}
+
+    return {
+        "ok": True,
+        "logs": list_local_logs(
+            category=category_token,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            source_mode="node_local_logs_dir",
+        ),
+    }
 
 
 @app.post("/api/admin/update/start", dependencies=[Depends(require_token)])
