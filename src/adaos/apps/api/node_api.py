@@ -48,6 +48,7 @@ from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
 )
+from adaos.services.root_mcp.logs import list_local_logs, normalize_log_category
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.system_model.service import (
     current_inventory_projection,
@@ -1235,6 +1236,34 @@ async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, 
         "error": (snapshot.get("errors") or [None])[0] if isinstance(snapshot, dict) else None,
         "snapshot": snapshot,
     }
+
+
+@router.get("/logs/{category}", dependencies=[Depends(require_token)])
+async def node_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+) -> dict[str, Any]:
+    try:
+        category_token = normalize_log_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown log category: {category}") from exc
+
+    def _load_logs() -> dict[str, Any]:
+        return list_local_logs(
+            category=category_token,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            source_mode="node_local_logs_dir",
+        )
+
+    return {"ok": True, "logs": await anyio.to_thread.run_sync(_load_logs)}
 
 
 @router.post("/infrastate/action", dependencies=[Depends(require_token)])

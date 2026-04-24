@@ -753,6 +753,8 @@ class RootMcpClient:
         contains: str | None = None,
         skill: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": int(limit),
@@ -764,6 +766,10 @@ class RootMcpClient:
             params["skill"] = skill
         if file:
             params["file"] = file
+        if scope:
+            params["scope"] = scope
+        if include_hub is not None:
+            params["include_hub"] = bool(include_hub)
         return dict(self._request("GET", f"/v1/root/mcp/logs/{category}", params=params))
 
     def get_yjs_logs(
@@ -773,8 +779,10 @@ class RootMcpClient:
         lines: int = 200,
         contains: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict[str, Any]:
-        return self.get_logs("yjs", limit=limit, lines=lines, contains=contains, file=file)
+        return self.get_logs("yjs", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
 
     def get_skill_logs(
         self,
@@ -784,8 +792,10 @@ class RootMcpClient:
         skill: str | None = None,
         contains: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict[str, Any]:
-        return self.get_logs("skills", limit=limit, lines=lines, skill=skill, contains=contains, file=file)
+        return self.get_logs("skills", limit=limit, lines=lines, skill=skill, contains=contains, file=file, scope=scope, include_hub=include_hub)
 
     def get_adaos_logs(
         self,
@@ -794,8 +804,10 @@ class RootMcpClient:
         lines: int = 200,
         contains: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict[str, Any]:
-        return self.get_logs("adaos", limit=limit, lines=lines, contains=contains, file=file)
+        return self.get_logs("adaos", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
 
     def get_events_logs(
         self,
@@ -804,8 +816,10 @@ class RootMcpClient:
         lines: int = 200,
         contains: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict[str, Any]:
-        return self.get_logs("events", limit=limit, lines=lines, contains=contains, file=file)
+        return self.get_logs("events", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
 
     def get_subnet_info(
         self,

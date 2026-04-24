@@ -317,6 +317,45 @@ def test_root_mcp_reads_log_categories(monkeypatch, tmp_path) -> None:
     assert yjs_resp.json()["logs"]["items"][0]["name"] == "yjs_load_mark.jsonl"
 
 
+def test_root_mcp_reads_subnet_aggregated_logs(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    client = _make_client()
+    headers = {
+        "X-Owner-Token": "owner-secret",
+        "X-AdaOS-Subnet-Id": "subnet:test-zone",
+        "X-AdaOS-Zone": "lab-a",
+    }
+
+    from adaos.apps.api import root_endpoints
+
+    async def _fake_aggregate(**kwargs):
+        return {
+            "category": kwargs["category"],
+            "source_mode": "hub_active_subnet_nodes",
+            "subnet_id": kwargs["subnet_id"],
+            "aggregation": {"included_total": 2, "ok_total": 1, "error_total": 1},
+            "nodes": [
+                {"node_id": "hub", "ok": True, "source": "hub_local_logs_dir"},
+                {"node_id": "node-2", "ok": False, "source": "member_http_api", "error": "member_base_url_missing"},
+            ],
+        }
+
+    monkeypatch.setattr(root_endpoints, "aggregate_subnet_logs", _fake_aggregate)
+
+    resp = client.get(
+        "/v1/root/mcp/logs/yjs",
+        headers=headers,
+        params={"scope": "subnet_active", "include_hub": "false", "lines": 100},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["scope"]["subnet_id"] == "subnet:test-zone"
+    assert payload["logs"]["source_mode"] == "hub_active_subnet_nodes"
+    assert payload["logs"]["aggregation"]["included_total"] == 2
+    assert payload["logs"]["nodes"][1]["node_id"] == "node-2"
+
+
 def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
     client = _make_client()
@@ -335,7 +374,16 @@ def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
                 {"node_id": "node-2", "subnet_id": "subnet:other", "online": False},
             ]
 
+    class _FakeLinks:
+        def snapshot(self) -> dict[str, object]:
+            return {
+                "member_total": 1,
+                "connected_total": 1,
+                "members": [{"node_id": "node-1", "connected": True}],
+            }
+
     monkeypatch.setattr(root_endpoints, "get_directory", lambda: _FakeDirectory())
+    monkeypatch.setattr(root_endpoints, "get_hub_link_manager", lambda: _FakeLinks())
     monkeypatch.setattr(
         root_endpoints,
         "list_mcp_session_leases",
@@ -357,7 +405,9 @@ def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
     assert payload["scope"]["subnet_id"] == "subnet:test-zone"
     assert payload["subnet"]["target_id"] == "hub:test-zone"
     assert payload["subnet"]["node_summary"]["total_known"] == 1
+    assert payload["subnet"]["node_summary"]["active_known"] == 1
     assert payload["subnet"]["session_summary"]["active_visible"] == 1
+    assert payload["subnet"]["aggregation"]["logs"]["scopes"] == ["root_local", "subnet_active"]
 
 
 def test_descriptor_cache_refresh_records_publish_lifecycle(monkeypatch, tmp_path) -> None:

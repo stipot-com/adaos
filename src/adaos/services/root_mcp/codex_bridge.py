@@ -518,7 +518,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_yjs_logs",
-                "description": "Read bounded YJS log tails captured in the root-visible logs directory.",
+                "description": "Read bounded YJS log tails either from root-local logs or aggregated across active subnet nodes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -526,13 +526,15 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },
             },
             {
                 "name": "get_skill_logs",
-                "description": "Read bounded skill service log tails captured in the root-visible logs directory.",
+                "description": "Read bounded skill service log tails either from root-local logs or aggregated across active subnet nodes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -541,13 +543,15 @@ class CodexRootMcpBridge:
                         "skill": {"type": "string"},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },
             },
             {
                 "name": "get_adaos_logs",
-                "description": "Read bounded adaos.log tails captured in the root-visible logs directory.",
+                "description": "Read bounded adaos.log tails either from root-local logs or aggregated across active subnet nodes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -555,13 +559,15 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },
             },
             {
                 "name": "get_events_logs",
-                "description": "Read bounded events.log tails captured in the root-visible logs directory.",
+                "description": "Read bounded events.log tails either from root-local logs or aggregated across active subnet nodes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -569,6 +575,8 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },
@@ -726,6 +734,8 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
         if tool == "get_skill_logs":
@@ -736,6 +746,8 @@ class CodexRootMcpBridge:
                     skill=_normalize_text(args.get("skill")),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
         if tool == "get_adaos_logs":
@@ -745,6 +757,8 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
         if tool == "get_events_logs":
@@ -754,6 +768,8 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
         if tool == "get_subnet_info":

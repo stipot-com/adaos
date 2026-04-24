@@ -174,8 +174,23 @@ class _FakeRootMcpClient:
         )
         return {"history": {"count": 1, "items": [{"bucket_id": bucket_id or "_by_owner/unknown"}]}}
 
-    def get_yjs_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
-        self.calls.append(("get_yjs_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+    def get_yjs_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict:
+        self.calls.append(
+            (
+                "get_yjs_logs",
+                "",
+                {"limit": limit, "lines": lines, "contains": contains, "file": file, "scope": scope, "include_hub": include_hub},
+            )
+        )
         return {"logs": {"category": "yjs", "items": [{"rel": file or "yjs_load_mark.jsonl"}]}}
 
     def get_skill_logs(
@@ -186,16 +201,54 @@ class _FakeRootMcpClient:
         skill: str | None = None,
         contains: str | None = None,
         file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
     ) -> dict:
-        self.calls.append(("get_skill_logs", skill or "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+        self.calls.append(
+            (
+                "get_skill_logs",
+                skill or "",
+                {"limit": limit, "lines": lines, "contains": contains, "file": file, "scope": scope, "include_hub": include_hub},
+            )
+        )
         return {"logs": {"category": "skills", "items": [{"rel": f"service.{skill or 'infra_access_skill'}.log"}]}}
 
-    def get_adaos_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
-        self.calls.append(("get_adaos_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+    def get_adaos_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict:
+        self.calls.append(
+            (
+                "get_adaos_logs",
+                "",
+                {"limit": limit, "lines": lines, "contains": contains, "file": file, "scope": scope, "include_hub": include_hub},
+            )
+        )
         return {"logs": {"category": "adaos", "items": [{"rel": "adaos.log"}]}}
 
-    def get_events_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
-        self.calls.append(("get_events_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+    def get_events_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict:
+        self.calls.append(
+            (
+                "get_events_logs",
+                "",
+                {"limit": limit, "lines": lines, "contains": contains, "file": file, "scope": scope, "include_hub": include_hub},
+            )
+        )
         return {"logs": {"category": "events", "items": [{"rel": file or "events.log"}]}}
 
     def get_subnet_info(self, *, target_id: str | None = None) -> dict:
@@ -293,7 +346,10 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
             "jsonrpc": "2.0",
             "id": 8,
             "method": "tools/call",
-            "params": {"name": "get_yjs_logs", "arguments": {"limit": 3, "lines": 120, "contains": "load_mark"}},
+            "params": {
+                "name": "get_yjs_logs",
+                "arguments": {"limit": 3, "lines": 120, "contains": "load_mark", "scope": "subnet_active", "include_hub": False},
+            },
         }
     )
     subnet_info = bridge.handle_request(
@@ -342,7 +398,11 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
     assert ("get_profileops_status", "hub:test-subnet", {}) in fake_client.calls
     assert ("start_profileops_session", "hub:test-subnet", {"profile_mode": "trace_profile", "reason": "root_mcp.memory.start", "trigger_source": "root_mcp"}) in fake_client.calls
     assert ("get_yjs_load_mark_history", "desktop", {"limit": 25, "kind": "owner", "bucket_id": "_by_owner/unknown", "display_contains": None, "status": None, "last_source": None, "since_ts": None, "until_ts": None}) in fake_client.calls
-    assert ("get_yjs_logs", "", {"limit": 3, "lines": 120, "contains": "load_mark", "file": None}) in fake_client.calls
+    assert (
+        "get_yjs_logs",
+        "",
+        {"limit": 3, "lines": 120, "contains": "load_mark", "file": None, "scope": "subnet_active", "include_hub": False},
+    ) in fake_client.calls
     assert ("get_subnet_info", "", {}) in fake_client.calls
 
 
