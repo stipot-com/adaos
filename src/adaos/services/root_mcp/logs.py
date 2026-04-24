@@ -9,8 +9,6 @@ from typing import Any
 import requests
 
 from adaos.services.agent_context import get_ctx
-from adaos.services.registry.subnet_directory import get_directory
-from adaos.services.subnet.link_manager import get_hub_link_manager
 
 LOG_CATEGORIES: set[str] = {"adaos", "events", "yjs", "skills"}
 
@@ -28,6 +26,18 @@ def root_logs_dir() -> Path:
     path = Path(raw() if callable(raw) else raw)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _get_directory():
+    from adaos.services.registry.subnet_directory import get_directory
+
+    return get_directory()
+
+
+def _get_hub_link_manager():
+    from adaos.services.subnet.link_manager import get_hub_link_manager
+
+    return get_hub_link_manager()
 
 
 def tail_text_lines(path: Path, *, max_lines: int) -> list[str]:
@@ -195,13 +205,13 @@ async def aggregate_subnet_logs(
     current_subnet_id = str(getattr(conf, "subnet_id", None) or "").strip()
     current_role = str(getattr(conf, "role", None) or "").strip().lower()
     internal_token = str(getattr(conf, "token", None) or os.getenv("ADAOS_TOKEN") or "").strip()
-    directory = get_directory()
+    directory = _get_directory()
     known_nodes = [
         dict(item)
         for item in directory.list_known_nodes()
         if str(item.get("subnet_id") or "").strip() == effective_subnet_id
     ]
-    link_snapshot = get_hub_link_manager().snapshot()
+    link_snapshot = _get_hub_link_manager().snapshot()
     connected_members = {
         str(item.get("node_id") or "").strip(): dict(item)
         for item in list(link_snapshot.get("members") or [])
@@ -329,4 +339,3 @@ async def aggregate_subnet_logs(
         },
         "nodes": nodes,
     }
-

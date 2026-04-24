@@ -34,7 +34,6 @@ from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
 from adaos.services.root_mcp.logs import aggregate_subnet_logs, list_local_logs, normalize_log_category, root_logs_dir, tail_text_lines
-from adaos.services.yjs.load_mark_history import list_history_rows as list_yjs_load_mark_history_rows
 from adaos.services.root_mcp.memory_reports import (
     get_memory_profile_artifact,
     list_memory_profile_artifacts,
@@ -51,8 +50,6 @@ from adaos.services.root_mcp.sessions import (
 )
 from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.root_mcp.tokens import issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
-from adaos.services.registry.subnet_directory import get_directory
-from adaos.services.subnet.link_manager import get_hub_link_manager
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
@@ -61,6 +58,24 @@ subnet_router = APIRouter(prefix="/v1/subnets", tags=["subnets"])
 
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _get_directory():
+    from adaos.services.registry.subnet_directory import get_directory
+
+    return get_directory()
+
+
+def _get_hub_link_manager():
+    from adaos.services.subnet.link_manager import get_hub_link_manager
+
+    return get_hub_link_manager()
+
+
+def _list_yjs_load_mark_history_rows(*args, **kwargs):
+    from adaos.services.yjs.load_mark_history import list_history_rows
+
+    return list_history_rows(*args, **kwargs)
 
 
 def _resolve_owner_id(owner_token: str) -> str:
@@ -348,9 +363,9 @@ def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = Non
     if scope_subnet and inferred_subnet != scope_subnet:
         raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Requested subnet scope does not match access token scope."})
     target = get_managed_target(effective_target_id) if effective_target_id else None
-    directory = get_directory()
+    directory = _get_directory()
     nodes = [item for item in directory.list_known_nodes() if str(item.get("subnet_id") or "").strip() == inferred_subnet]
-    link_snapshot = get_hub_link_manager().snapshot()
+    link_snapshot = _get_hub_link_manager().snapshot()
     connected_members = {
         str(item.get("node_id") or "").strip(): dict(item)
         for item in list(link_snapshot.get("members") or [])
@@ -1205,7 +1220,7 @@ async def root_mcp_yjs_load_mark_history(
     auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
     scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
     _enforce_mcp_capability("audit.read", auth=auth)
-    history = list_yjs_load_mark_history_rows(
+    history = _list_yjs_load_mark_history_rows(
         limit=max(1, min(int(limit), 2000)),
         webspace_id=webspace_id,
         kind=kind,

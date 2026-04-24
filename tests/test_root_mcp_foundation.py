@@ -382,8 +382,8 @@ def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
                 "members": [{"node_id": "node-1", "connected": True}],
             }
 
-    monkeypatch.setattr(root_endpoints, "get_directory", lambda: _FakeDirectory())
-    monkeypatch.setattr(root_endpoints, "get_hub_link_manager", lambda: _FakeLinks())
+    monkeypatch.setattr(root_endpoints, "_get_directory", lambda: _FakeDirectory())
+    monkeypatch.setattr(root_endpoints, "_get_hub_link_manager", lambda: _FakeLinks())
     monkeypatch.setattr(
         root_endpoints,
         "list_mcp_session_leases",
