@@ -2509,9 +2509,11 @@ class SkillManager:
         slot: SkillSlotPaths,
         resolved_manifest: Mapping[str, Any],
         payload: Mapping[str, Any],
+        hooks: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         results: dict[str, Any] = {}
-        for hook_key in ("drain", "dispose", "before_deactivate"):
+        hook_chain = tuple(str(item or "").strip() for item in (hooks or ("drain", "dispose", "before_deactivate")) if str(item or "").strip())
+        for hook_key in hook_chain:
             try:
                 results[hook_key] = self._invoke_slot_lifecycle_hook(
                     env=env,
@@ -2528,6 +2530,101 @@ class SkillManager:
                     "error": str(exc),
                 }
         return results
+
+    def shutdown_active_runtimes(
+        self,
+        *,
+        reason: str = "runtime_shutdown",
+        event_type: str = "subnet.stopping",
+        hooks: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        hook_chain = tuple(str(item or "").strip() for item in (hooks or ("drain", "dispose", "before_deactivate")) if str(item or "").strip())
+        items: list[dict[str, Any]] = []
+        for row in self.reg.list():
+            name = getattr(row, "name", None) or getattr(row, "id", None)
+            if not name or not bool(getattr(row, "installed", True)):
+                continue
+            skill_name = str(name)
+            entry: dict[str, Any] = {
+                "skill": skill_name,
+                "ok": True,
+                "reason": reason,
+                "event_type": event_type,
+                "hooks": list(hook_chain),
+                "active": False,
+                "skipped": False,
+            }
+            try:
+                status = self.runtime_status(skill_name)
+            except Exception as exc:
+                entry["ok"] = False
+                entry["error"] = str(exc)
+                items.append(entry)
+                continue
+            entry["version"] = str(status.get("version") or "")
+            entry["slot"] = str(status.get("active_slot") or "")
+            entry["deactivated"] = bool(status.get("deactivated"))
+            if bool(status.get("deactivated")):
+                entry["skipped"] = True
+                entry["reason_detail"] = str((status.get("deactivation") or {}).get("reason") or "already_deactivated")
+                items.append(entry)
+                continue
+            version = str(status.get("version") or "").strip()
+            slot_name = str(status.get("active_slot") or "").strip()
+            if not version or not slot_name:
+                entry["skipped"] = True
+                entry["reason_detail"] = "inactive_runtime"
+                items.append(entry)
+                continue
+            env = self._runtime_env(skill_name)
+            slot = env.build_slot_paths(version, slot_name)
+            resolved_manifest = self._read_json_dict(slot.resolved_manifest)
+            if not resolved_manifest:
+                entry["skipped"] = True
+                entry["reason_detail"] = "missing_resolved_manifest"
+                items.append(entry)
+                continue
+            metadata = env.read_version_metadata(version)
+            lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=slot_name)
+            shutdown_payload = {
+                "skill": skill_name,
+                "version": version,
+                "slot": slot_name,
+                "reason": reason,
+                "event_type": event_type,
+                "state": "runtime_shutdown",
+            }
+            results = self._invoke_shutdown_hooks(
+                env=env,
+                slot=slot,
+                resolved_manifest=resolved_manifest,
+                payload=shutdown_payload,
+                hooks=hook_chain,
+            )
+            lifecycle.update(results)
+            metadata.setdefault("slots", {}).setdefault(slot_name, {})["lifecycle"] = lifecycle
+            env.write_version_metadata(version, metadata)
+            entry["active"] = True
+            entry["lifecycle"] = lifecycle
+            entry["hooks_result"] = results
+            if any(isinstance(payload, Mapping) and payload.get("ok") is False for payload in results.values()):
+                entry["ok"] = False
+            items.append(entry)
+
+        failed = [item for item in items if not bool(item.get("ok"))]
+        active_total = sum(1 for item in items if bool(item.get("active")))
+        skipped_total = sum(1 for item in items if bool(item.get("skipped")))
+        return {
+            "ok": not failed,
+            "reason": reason,
+            "event_type": event_type,
+            "hooks": list(hook_chain),
+            "total": len(items),
+            "active_total": active_total,
+            "failed_total": len(failed),
+            "skipped_total": skipped_total,
+            "skills": items,
+        }
 
     def _restore_runtime_selection(
         self,

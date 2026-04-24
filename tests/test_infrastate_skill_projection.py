@@ -949,10 +949,11 @@ def test_infrastate_skill_runtime_migration_helpers_report_failures():
                 "skill_runtime_migration": {
                     "total": 2,
                     "failed_total": 1,
+                    "lifecycle_failed_total": 1,
                     "rollback_total": 1,
                     "skills": [
                         {"skill": "weather_skill", "ok": True},
-                        {"skill": "voice_skill", "ok": False, "failed_stage": "tests"},
+                        {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate"},
                     ],
                 }
             }
@@ -962,7 +963,8 @@ def test_infrastate_skill_runtime_migration_helpers_report_failures():
 
     assert report["failed_total"] == 1
     assert "skill_migration=1/2" in note
-    assert "voice_skill:tests" in note
+    assert "voice_skill:lifecycle/rehydrate" in note
+    assert "lifecycle_failed=1" in note
     assert "rollback=1" in note
 
 
@@ -1001,10 +1003,11 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
             "skill_post_commit_checks": {
                 "total": 2,
                 "failed_total": 1,
+                "lifecycle_failed_total": 1,
                 "deactivated_total": 1,
                 "skills": [
                     {"skill": "weather_skill", "ok": True},
-                    {"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True},
+                    {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate", "deactivated": True},
                 ],
             }
         },
@@ -1014,7 +1017,8 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
 
     assert report["deactivated_total"] == 1
     assert "skill_post_commit=1/2" in note
-    assert "voice_skill:tests" in note
+    assert "voice_skill:lifecycle/rehydrate" in note
+    assert "lifecycle_failed=1" in note
     assert "deactivated=1" in note
 
 

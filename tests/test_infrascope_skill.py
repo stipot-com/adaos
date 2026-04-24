@@ -432,10 +432,11 @@ def test_infrascope_adds_skill_migration_operation_row(monkeypatch):
         lambda: {
             "total": 2,
             "failed_total": 1,
+            "lifecycle_failed_total": 1,
             "rollback_total": 1,
             "skills": [
                 {"skill": "weather_skill", "ok": True},
-                {"skill": "voice_skill", "ok": False, "failed_stage": "tests"},
+                {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate"},
             ],
         },
     )
@@ -446,7 +447,8 @@ def test_infrascope_adds_skill_migration_operation_row(monkeypatch):
     assert rows
     assert rows[0]["id"] == "core-update-skill-runtime-migration"
     assert rows[0]["status"] == "offline"
-    assert "voice_skill:tests" in rows[0]["subtitle"]
+    assert "voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
+    assert "lifecycle_failed=1" in rows[0]["subtitle"]
 
 
 def test_infrascope_adds_skill_rollback_operation_row(monkeypatch):
@@ -501,10 +503,11 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
         lambda: {
             "total": 2,
             "failed_total": 1,
+            "lifecycle_failed_total": 1,
             "deactivated_total": 1,
             "skills": [
                 {"skill": "weather_skill", "ok": True},
-                {"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True},
+                {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate", "deactivated": True},
             ],
         },
     )
@@ -515,6 +518,8 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
     assert rows
     assert rows[0]["id"] == "core-update-skill-post-commit-checks"
     assert rows[0]["status"] == "offline"
+    assert "voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
+    assert "lifecycle_failed=1" in rows[0]["subtitle"]
     assert "deactivated=1" in rows[0]["subtitle"]
 
 

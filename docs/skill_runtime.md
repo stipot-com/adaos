@@ -167,6 +167,8 @@ Current behavior:
 - `drain` runs before rollback/deactivate or activation-failure cleanup when declared
 - `dispose` runs after `drain` and before `before_deactivate` when declared
 - `before_deactivate` runs before explicit deactivate or rollback of the current slot
+- global runtime drain now reuses the same contract:
+  `subnet.draining` triggers active-skill `drain`, and `subnet.stopping` triggers `dispose` then `before_deactivate` as best-effort shutdown hooks for active installed runtimes
 
 Lifecycle diagnostics are persisted into slot metadata and surfaced by `adaos skill status --json` through `runtime_status().lifecycle`.
 
@@ -181,6 +183,8 @@ The failed target slot keeps its lifecycle diagnostics so operators can inspect 
 
 Post-commit migration checks now also consume these lifecycle diagnostics.
 That means a skill may be marked failed or selectively deactivated because `rehydrate` / `healthcheck` is already unhealthy even before any explicit post-commit test suite runs.
+
+Operator-facing migration reports also surface lifecycle failures separately from test failures, so a `lifecycle/rehydrate` failure is visible as a first-class shutdown/migration issue rather than only as a generic failed skill.
 
 ## Tool execution and setup
 

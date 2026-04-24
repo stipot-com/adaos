@@ -484,6 +484,8 @@ Current implementation now also hardens the activation-failure path:
 - if pointer cutover succeeds but `rehydrate_runtime` fails, the runtime attempts shutdown hooks on the newly active slot
 - the runtime then restores the previous active version/slot selection, internal-data marker, and deactivation state
 - lifecycle diagnostics for the failed target slot remain persisted for operator inspection
+- runtime-wide drain and stop events now reuse the same skill lifecycle contract:
+  `subnet.draining` fans out `drain` across active installed skills, while `subnet.stopping` fans out `dispose` and `before_deactivate`
 
 ### Runtime hook direction
 
@@ -586,6 +588,7 @@ They should also treat persisted lifecycle diagnostics as first-class health sig
 - shutdown-hook failures that indicate the skill cannot be safely recycled on the next transition
 
 Current implementation now feeds lifecycle diagnostics into the skill runtime migration report and allows post-commit checks to fail and selectively deactivate a skill before test execution when runtime lifecycle health is already known to be bad.
+Operator-facing projections now also distinguish lifecycle failures from plain test failures, so reports can show `lifecycle/rehydrate` instead of collapsing everything into `tests`.
 
 ### Roadmap checklist
 
@@ -598,6 +601,8 @@ Use the checklist below as the migration hardening path for the kernel/runtime l
 - [x] make post-activation rehydration a declared runtime phase instead of an implicit side effect
 - [x] persist per-skill migration diagnostics for `persist`, `migrate`, `rehydrate`, and `healthcheck`, not only `prepare/test/activate`
 - [x] standardize rollback semantics when pointer switch succeeded but rehydration failed
+- [x] connect global runtime drain/shutdown events to skill-level `drain` / `dispose` / `before_deactivate`
+- [x] surface lifecycle-vs-test failure classes in operator-facing migration reports
 - [ ] standardize deactivate semantics when core switch stays committed but one skill cannot complete rehydration
 - [ ] make projection-backed skills document which branches are canonical and which are rebuildable caches
 - [ ] move Yjs-backed stateful skills toward "durable truth + projection rebuild" instead of "projection is the only truth"
