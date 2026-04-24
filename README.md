@@ -158,6 +158,8 @@ runtime_pid = 26718 runtime_process.pid
 
 # Web client debug 
 # https://myinimatic.web.app/?boot_debug=1
+# 
+# https://myinimatic.web.app/?yjs_persist=0
 
 ```
 

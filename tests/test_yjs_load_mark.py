@@ -8,6 +8,8 @@ def _reset_load_mark_state() -> None:
     load_mark_module._ACTIVE_STREAM_SUBSCRIPTIONS.clear()
     load_mark_module._LAST_STREAM_PUBLISH_AT.clear()
     load_mark_module._OWNER_ALERTS.clear()
+    load_mark_module._STREAM_TICKER_STOP.set()
+    load_mark_module._STREAM_TICKER_THREAD = None
 
 
 def test_load_mark_tracks_owner_write_volume_and_rate() -> None:
@@ -84,3 +86,28 @@ def test_load_mark_stream_payload_includes_owner_and_root_rows() -> None:
     assert root_rows
     assert owner_rows[0]["display"] == "_by_owner/skill_adaos_connect"
     assert root_rows[0]["display"] == "data"
+
+
+def test_load_mark_stream_payload_zeroes_stale_rows_between_snapshots() -> None:
+    _reset_load_mark_state()
+
+    load_mark_module.record_write_update(
+        "default",
+        total_bytes=256,
+        root_names=["data"],
+        now_ts=40.0,
+        source="sdk.web.yjs",
+        owner="skill:test_skill",
+    )
+
+    fresh_rows = load_mark_module._stream_payload_items_locked("default", now_ts=40.1, last_published_at=0.0)
+    stale_rows = load_mark_module._stream_payload_items_locked("default", now_ts=41.1, last_published_at=40.1)
+
+    fresh_owner = next(row for row in fresh_rows if row.get("kind") == "owner")
+    stale_owner = next(row for row in stale_rows if row.get("kind") == "owner")
+
+    assert fresh_owner["recent_writes"] == 1
+    assert fresh_owner["status"] != "idle"
+    assert stale_owner["recent_writes"] == 0
+    assert stale_owner["avg_bps"] == 0.0
+    assert stale_owner["status"] == "idle"

@@ -34,6 +34,9 @@ _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
 _ACTIVE_STREAM_SUBSCRIPTIONS: dict[str, int] = {}
 _LAST_STREAM_PUBLISH_AT: dict[str, float] = {}
 _OWNER_ALERTS: dict[str, float] = {}
+_STREAM_TICK_INTERVAL_SEC = max(0.25, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC") or "1.0"))
+_STREAM_TICKER_THREAD: threading.Thread | None = None
+_STREAM_TICKER_STOP = threading.Event()
 
 
 def _clone_json(value: Any) -> Any:
@@ -144,9 +147,25 @@ def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
         else:
             _ACTIVE_STREAM_SUBSCRIPTIONS.pop(key, None)
             _LAST_STREAM_PUBLISH_AT.pop(key, None)
+    if active:
+        _ensure_stream_ticker_running()
 
 
-def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dict[str, Any]]:
+def _zero_stale_row_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    normalized["avg_bps"] = 0.0
+    normalized["peak_bps"] = 0.0
+    normalized["avg_wps"] = 0.0
+    normalized["peak_wps"] = 0.0
+    normalized["recent_bytes"] = 0
+    normalized["recent_writes"] = 0
+    normalized["status"] = "idle"
+    normalized["byte_status"] = "idle"
+    normalized["write_status"] = "idle"
+    return normalized
+
+
+def _stream_payload_items_locked(webspace_id: str, *, now_ts: float, last_published_at: float = 0.0) -> list[dict[str, Any]]:
     state = _ensure_webspace_state(webspace_id)
     snapshot = _snapshot_webspace_locked(str(webspace_id or "").strip() or "default", state, now_ts=now_ts)
     rows: list[dict[str, Any]] = []
@@ -155,6 +174,8 @@ def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dic
             continue
         owner = str(item.get("owner") or "").strip()
         row = dict(item)
+        if last_published_at > 0.0 and float(row.get("last_changed_at") or 0.0) <= last_published_at:
+            row = _zero_stale_row_metrics(row)
         row["kind"] = "owner"
         row["id"] = owner or "unknown"
         row["display"] = owner or "unknown"
@@ -164,6 +185,8 @@ def _stream_payload_items_locked(webspace_id: str, *, now_ts: float) -> list[dic
             continue
         root = str(item.get("root") or "").strip()
         row = dict(item)
+        if last_published_at > 0.0 and float(row.get("last_changed_at") or 0.0) <= last_published_at:
+            row = _zero_stale_row_metrics(row)
         row["kind"] = "root"
         row["id"] = root or "unknown"
         row["display"] = root or "unknown"
@@ -192,7 +215,7 @@ def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = Non
         if _STREAM_PUBLISH_MIN_INTERVAL_SEC > 0.0 and last_published > 0.0:
             if now - last_published < _STREAM_PUBLISH_MIN_INTERVAL_SEC:
                 return
-        payload = _stream_payload_items_locked(key, now_ts=now)
+        payload = _stream_payload_items_locked(key, now_ts=now, last_published_at=last_published)
         _LAST_STREAM_PUBLISH_AT[key] = now
     try:
         stream_publish(
@@ -203,6 +226,28 @@ def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = Non
         )
     except Exception:
         _log.debug("failed to publish load_mark stream update webspace=%s", key, exc_info=True)
+
+
+def _stream_ticker_loop() -> None:
+    while not _STREAM_TICKER_STOP.wait(_STREAM_TICK_INTERVAL_SEC):
+        with _LOCK:
+            keys = [key for key, count in _ACTIVE_STREAM_SUBSCRIPTIONS.items() if int(count or 0) > 0]
+        for key in keys:
+            try:
+                _maybe_publish_stream_update(key, now_ts=time.time())
+            except Exception:
+                _log.debug("load_mark ticker publish failed webspace=%s", key, exc_info=True)
+
+
+def _ensure_stream_ticker_running() -> None:
+    global _STREAM_TICKER_THREAD
+    with _LOCK:
+        if _STREAM_TICKER_THREAD is not None and _STREAM_TICKER_THREAD.is_alive():
+            return
+        _STREAM_TICKER_STOP.clear()
+        thread = threading.Thread(target=_stream_ticker_loop, name="adaos-yjs-load-mark-stream", daemon=True)
+        _STREAM_TICKER_THREAD = thread
+        thread.start()
 
 
 def _ensure_bucket_state(container: dict[str, Any], bucket_name: str) -> dict[str, Any]:
