@@ -1,5 +1,49 @@
 # Codex MCP для test hub
 
+## Рекомендуемое подключение VS Code Codex
+
+Для текущего сценария VS Code Codex предпочтительно прямое remote MCP-подключение к root-published HTTP endpoint:
+
+- MCP URL: `https://<zone>.api.inimatic.com/v1/root/mcp`
+- bearer token env var: `ADAOS_ROOT_MCP_AUTH`
+
+Практический порядок такой:
+
+1. Через `infra_access_skill` выпустите свежий MCP session lease для нужного target.
+2. Возьмите из ответа `mcp_http_url`.
+3. Сохраните `access_token` в переменную окружения ОС `ADAOS_ROOT_MCP_AUTH`.
+4. В настройке MCP сервера для VS Code Codex укажите этот URL и эту env var.
+
+На Windows:
+
+```powershell
+setx ADAOS_ROOT_MCP_AUTH "mcp_..."
+```
+
+Важно:
+
+- `setx` обновляет окружение только для новых процессов
+- уже открытые VS Code, Codex, терминалы и MCP helper-процессы продолжают жить со старым bearer
+- после ротации bearer может понадобиться полный перезапуск VS Code, если Codex продолжает использовать старый токен
+
+Перед подключением Codex bearer удобно проверить вручную:
+
+```powershell
+curl -i https://ru.api.inimatic.com/v1/root/mcp/foundation `
+  -H "Authorization: Bearer $env:ADAOS_ROOT_MCP_AUTH"
+```
+
+и:
+
+```powershell
+curl -i https://ru.api.inimatic.com/v1/root/mcp `
+  -H "Authorization: Bearer $env:ADAOS_ROOT_MCP_AUTH" `
+  -H "Content-Type: application/json" `
+  -d '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+```
+
+## Локальный bridge MVP
+
 Этот документ описывает текущий MVP-сценарий подключения Codex в VS Code к test hub через AdaOS Root MCP.
 
 Текущая реализация намеренно сделана как локальный `stdio` bridge:
