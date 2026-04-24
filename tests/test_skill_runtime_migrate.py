@@ -67,6 +67,8 @@ def test_migrate_installed_skills_runs_tests_and_rolls_back_on_failure(monkeypat
     assert payload["ok"] is False
     assert payload["failed_total"] == 1
     assert payload["rollback_total"] == 1
+    assert payload["tests_failed_total"] == 1
+    assert payload["lifecycle_failed_total"] == 0
     assert payload["run_tests"] is True
     assert payload["skills"][0]["skill"] == "weather_skill"
     assert payload["skills"][0]["ok"] is True
@@ -128,6 +130,8 @@ def test_migrate_installed_skills_can_skip_tests(monkeypatch) -> None:
 
     assert payload["ok"] is True
     assert payload["failed_total"] == 0
+    assert payload["tests_failed_total"] == 0
+    assert payload["lifecycle_failed_total"] == 0
     assert payload["run_tests"] is False
     assert payload["safe_for_core_update"] is True
     assert payload["skills"][0]["tests"] == {}
@@ -172,6 +176,7 @@ def test_migrate_installed_skills_marks_prepare_failures_safe_for_core_update(mo
     assert payload["ok"] is False
     assert payload["failed_total"] == 1
     assert payload["safe_for_core_update"] is True
+    assert payload["skills"][0]["failure_kind"] == "prepare"
     assert payload["skills"][0]["failed_stage"] == "prepare"
 
 
@@ -227,7 +232,70 @@ def test_post_commit_checks_deactivate_failing_skills(monkeypatch) -> None:
     assert payload["ok"] is False
     assert payload["failed_total"] == 1
     assert payload["deactivated_total"] == 1
+    assert payload["tests_failed_total"] == 1
+    assert payload["lifecycle_failed_total"] == 0
     assert payload["skills"][1]["skill"] == "service_skill"
     assert payload["skills"][1]["deactivated"] is True
+    assert payload["skills"][1]["failure_kind"] == "tests"
     assert payload["skills"][1]["failed_stage"] == "tests"
     assert payload["skills"][0]["lifecycle"] == {"persist": {"ok": True}}
+
+
+def test_post_commit_checks_fail_on_lifecycle_health_before_tests(monkeypatch) -> None:
+    import adaos.apps.skill_runtime_migrate as mod
+
+    class _Row:
+        def __init__(self, name: str, installed: bool = True) -> None:
+            self.name = name
+            self.installed = installed
+
+    class _Registry:
+        def __init__(self, _sql) -> None:
+            pass
+
+        def list(self):
+            return [_Row("broken_skill")]
+
+    class _Manager:
+        def runtime_status(self, name: str):
+            return {
+                "version": "1.2.3",
+                "active_slot": "B",
+                "deactivated": False,
+                "lifecycle": {
+                    "rehydrate": {"ok": False, "skipped": False, "error": "projection rebuild failed"},
+                    "healthcheck": {"ok": False, "skipped": False, "error": "service unhealthy"},
+                },
+            }
+
+        def run_skill_tests(self, name: str, source: str = "installed"):
+            raise AssertionError("tests should not run when lifecycle already failed")
+
+        def deactivate_runtime(self, name: str, reason: str = ""):
+            assert name == "broken_skill"
+            assert reason == "post_commit_checks_failed"
+            return {"name": name, "deactivated": True, "reason": reason}
+
+    class _Ctx:
+        sql = object()
+        skills_repo = object()
+        git = object()
+        paths = object()
+        bus = None
+        caps = object()
+
+    monkeypatch.setattr(mod, "init_ctx", lambda: None)
+    monkeypatch.setattr(mod, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", _Registry)
+    monkeypatch.setattr(mod, "_manager", lambda: _Manager())
+
+    payload = mod.post_commit_check_installed_skills(deactivate_on_failure=True)
+
+    assert payload["ok"] is False
+    assert payload["failed_total"] == 1
+    assert payload["deactivated_total"] == 1
+    assert payload["lifecycle_failed_total"] == 1
+    assert payload["tests_failed_total"] == 0
+    assert payload["skills"][0]["failed_stage"] == "rehydrate"
+    assert payload["skills"][0]["failure_kind"] == "lifecycle"
+    assert payload["skills"][0]["deactivated"] is True

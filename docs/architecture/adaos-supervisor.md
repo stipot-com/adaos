@@ -578,6 +578,15 @@ The default target behavior is:
 3. failing skills are selectively deactivated
 4. core update remains committed, but operator surfaces show degraded skill set
 
+Post-commit checks should not rely only on test suites.
+They should also treat persisted lifecycle diagnostics as first-class health signals, especially:
+
+- `rehydrate`
+- `healthcheck`
+- shutdown-hook failures that indicate the skill cannot be safely recycled on the next transition
+
+Current implementation now feeds lifecycle diagnostics into the skill runtime migration report and allows post-commit checks to fail and selectively deactivate a skill before test execution when runtime lifecycle health is already known to be bad.
+
 ### Roadmap checklist
 
 Use the checklist below as the migration hardening path for the kernel/runtime layer:

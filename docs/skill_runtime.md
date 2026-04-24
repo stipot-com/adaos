@@ -179,6 +179,9 @@ If activation already switched to a new version/slot and `rehydrate` then fails,
 
 The failed target slot keeps its lifecycle diagnostics so operators can inspect the failed `rehydrate`, shutdown hooks, and rollback result.
 
+Post-commit migration checks now also consume these lifecycle diagnostics.
+That means a skill may be marked failed or selectively deactivated because `rehydrate` / `healthcheck` is already unhealthy even before any explicit post-commit test suite runs.
+
 ## Tool execution and setup
 
 `adaos skill run <name> [<tool>]` reads the active slot’s `resolved.manifest.json`, adds the staged source directory to `sys.path`, and executes the tool callable with per-invocation timeouts. `adaos skill test <name>` reuses the same active slot to execute `src/skills/<name>/tests` without preparing a new build. If a skill declares a `setup` tool it is available via `adaos skill setup <name>` **only after activation**; attempting to run setup while the version is pending reports a clear error instructing the operator to activate first.
