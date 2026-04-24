@@ -33,6 +33,7 @@ from adaos.services.root_mcp.audit import append_audit_event
 from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
+from adaos.services.yjs.load_mark_history import list_history_rows as list_yjs_load_mark_history_rows
 from adaos.services.root_mcp.memory_reports import (
     get_memory_profile_artifact,
     list_memory_profile_artifacts,
@@ -1075,6 +1076,44 @@ async def root_mcp_audit(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "events": events,
+    }
+
+
+@root_router.get("/mcp/yjs/load-mark/history")
+async def root_mcp_yjs_load_mark_history(
+    limit: int = 100,
+    webspace_id: str | None = None,
+    kind: str | None = None,
+    bucket_id: str | None = None,
+    display_contains: str | None = None,
+    status: str | None = None,
+    last_source: str | None = None,
+    since_ts: float | None = None,
+    until_ts: float | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    history = list_yjs_load_mark_history_rows(
+        limit=max(1, min(int(limit), 2000)),
+        webspace_id=webspace_id,
+        kind=kind,
+        bucket_id=bucket_id,
+        display_contains=display_contains,
+        status=status,
+        last_source=last_source,
+        since_ts=since_ts,
+        until_ts=until_ts,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "history": history,
     }
 
 

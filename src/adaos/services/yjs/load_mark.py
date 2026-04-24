@@ -9,6 +9,7 @@ from typing import Any
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.sdk.io.out import stream_publish
+from adaos.services.yjs.load_mark_history import append_history_snapshot
 from adaos.services.yjs.store import add_ystore_write_listener
 
 _log = logging.getLogger("adaos.yjs.load_mark")
@@ -226,6 +227,15 @@ def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = Non
         )
     except Exception:
         _log.debug("failed to publish load_mark stream update webspace=%s", key, exc_info=True)
+        return
+    try:
+        append_history_snapshot(
+            webspace_id=key,
+            ts=now,
+            rows=payload,
+        )
+    except Exception:
+        _log.debug("failed to append load_mark history webspace=%s", key, exc_info=True)
 
 
 def _stream_ticker_loop() -> None:

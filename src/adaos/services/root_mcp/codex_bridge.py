@@ -497,6 +497,25 @@ class CodexRootMcpBridge:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "get_yjs_load_mark_history",
+                "description": "Read queryable YJS load-mark history captured beside adaos.log.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
+                        "webspace_id": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["owner", "root"]},
+                        "bucket_id": {"type": "string"},
+                        "display_contains": {"type": "string"},
+                        "status": {"type": "string"},
+                        "last_source": {"type": "string"},
+                        "since_ts": {"type": "number"},
+                        "until_ts": {"type": "number"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -616,6 +635,20 @@ class CodexRootMcpBridge:
                     trace_id=_normalize_text(args.get("trace_id")),
                     target_id=self.profile.target_id,
                     subnet_id=self.profile.subnet_id,
+                )
+            )
+        if tool == "get_yjs_load_mark_history":
+            return _tool_text(
+                client.get_yjs_load_mark_history(
+                    limit=int(args.get("limit") or 100),
+                    webspace_id=_normalize_text(args.get("webspace_id")),
+                    kind=_normalize_text(args.get("kind")),
+                    bucket_id=_normalize_text(args.get("bucket_id")),
+                    display_contains=_normalize_text(args.get("display_contains")),
+                    status=_normalize_text(args.get("status")),
+                    last_source=_normalize_text(args.get("last_source")),
+                    since_ts=float(args["since_ts"]) if args.get("since_ts") is not None else None,
+                    until_ts=float(args["until_ts"]) if args.get("until_ts") is not None else None,
                 )
             )
         raise KeyError(tool)

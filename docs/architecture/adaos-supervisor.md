@@ -399,6 +399,120 @@ Installed skills are not automatically valid just because the core slot booted.
 Their runtime dependencies must be prepared against the new core interpreter and surfaced as explicit diagnostics.
 If a skill uses optional `data/internal/a|b`, that data must evolve together with the prepared runtime slot, either by default copy or by an explicit `data_migration_tool`.
 
+### Target migration model
+
+The target AdaOS rule is:
+
+- slot activation is a pointer switch, not a promise of full process-memory migration
+- live in-memory objects are disposable unless a runtime explicitly rebuilds them
+- migration authority belongs to durable and slot-bound state, not to arbitrary Python object graphs
+
+This means AdaOS should not treat "the skill restarted in memory" and "the skill was safely migrated" as the same thing.
+They are separate concerns:
+
+- runtime cutover switches executable code and slot-bound paths
+- state migration upgrades persisted state into a form that the new runtime can accept
+- runtime rehydration rebuilds ephemeral caches, projections, and subscribers after cutover
+
+The target storage classes per skill are:
+
+- canonical durable state:
+  long-lived business state that must survive restart, rollback, and projection rebuild
+- slot-bound schema state:
+  data that evolves together with runtime schema and therefore belongs under `data/internal/a|b`
+- derived runtime state:
+  projections, indexes, caches, thread summaries, embeddings, and similar rebuildable material
+- live process memory:
+  in-flight handlers, imported modules, object instances, background tasks, subscriptions, and local caches that are not durable by default
+
+The target kernel contract is that only the first two classes are migrated.
+Derived runtime state must be rebuilt deterministically, and live memory must be drained and recreated rather than copied forward implicitly.
+
+### Why this matters
+
+The current implementation already follows the first half of this model:
+
+- runtime slot activation switches `active` and `previous` markers atomically
+- optional `data/internal/a|b` is copied or migrated during `prepare`
+- rollback switches both runtime slot and internal-data pointer
+- service skills are explicitly restarted on activate/rollback
+- in-process skills reload code on next invocation by clearing skill modules and re-importing from the active slot
+
+What is still only partial is the second half:
+
+- there is no universal contract for draining long-lived in-process state before cutover
+- there is no explicit rehydrate phase for non-service skills after activation
+- migration diagnostics focus on slot/data preparation but not yet on runtime state rebuild
+
+### Target lifecycle
+
+Per skill, the target lifecycle should become:
+
+1. `prepare_runtime`
+2. `persist_before_switch`
+3. `migrate_durable_state`
+4. `activate_pointer`
+5. `rehydrate_runtime`
+6. `healthcheck`
+7. `rollback` or `deactivate` on failure
+
+The intended semantics are:
+
+1. `prepare_runtime`
+   - stage code, interpreter, dependencies, and resolved manifest in the inactive slot
+   - prepare inactive `data/internal/<a|b>` by copy or migration hook
+2. `persist_before_switch`
+   - flush debounced writes and checkpoint any skill-owned durable stores before mutating slot pointers
+   - stop accepting new local work if the runtime cannot safely overlap old and new state
+3. `migrate_durable_state`
+   - run schema migration only against canonical durable state and slot-bound schema state
+   - never attempt generic object-memory serialization as the platform default
+4. `activate_pointer`
+   - atomically switch active runtime slot and active internal-data slot
+   - record previous slot and migration metadata for rollback
+5. `rehydrate_runtime`
+   - rebuild projections, indexes, caches, subscriptions, and other derived state from durable truth
+   - re-open service endpoints or re-subscribe platform listeners only after the new slot is authoritative
+6. `healthcheck`
+   - validate that the new runtime is operational after rehydration, not merely importable
+7. failure handling
+   - `rollback` if the old slot must be restored
+   - `deactivate` if the core/runtime switch remains committed but this skill must be quarantined
+
+### Runtime hook direction
+
+The platform should remain functional without custom skill hooks, but the target contract should support optional hooks for stateful skills:
+
+- `before_deactivate()`:
+  flush or checkpoint durable state before cutover
+- `migrate_state(payload)`:
+  explicit migration entry point for schema-sensitive state if `data/internal` copy is insufficient
+- `after_activate(payload)`:
+  lightweight post-switch initialization once the new slot is active
+- `rehydrate()`:
+  rebuild derived runtime state from durable truth
+- `dispose()` or `drain()`:
+  stop background work and release subscriptions/resources before rollback or deactivation
+
+These hooks should be treated as bounded lifecycle hooks, not as an invitation to invent ad-hoc migration protocols per skill.
+
+### Yjs and projection rule
+
+For Yjs-backed experiences, the target rule should be explicit:
+
+- Yjs is a live projection and collaboration layer
+- Yjs is not the canonical migration authority for skill business state
+- if a skill keeps canonical durable state elsewhere, Yjs must be rebuilt or reconciled from that durable truth after cutover
+- if Yjs currently carries working state that must survive reloads, the platform should still persist a durable snapshot outside Yjs and rehydrate from that snapshot after rebuild
+
+This is already the direction used by `nlu_teacher`:
+
+- working state is visible under `data.nlu_teacher.*`
+- durable state is also persisted under `.adaos/state/skills/nlu_teacher/<webspace>.json`
+- rehydrate merges durable snapshot and current Yjs content after `scenarios.synced`
+
+That pattern is target-aligned because it treats live projection state as rebuildable rather than as the sole owner of migration truth.
+
 Target lifecycle per installed skill:
 
 1. `prepare`
@@ -457,6 +571,23 @@ The default target behavior is:
 2. supervisor runs post-commit checks for active skill runtimes
 3. failing skills are selectively deactivated
 4. core update remains committed, but operator surfaces show degraded skill set
+
+### Roadmap checklist
+
+Use the checklist below as the migration hardening path for the kernel/runtime layer:
+
+- [ ] document storage classes per skill explicitly in manifests/runtime docs: canonical durable state, slot-bound schema state, derived runtime state, live memory
+- [ ] add an explicit `persist_before_switch` stage to skill/core migration orchestration
+- [ ] require migration logic to operate on durable and slot-bound state only, not generic process memory
+- [ ] define optional lifecycle hooks for `before_deactivate`, `after_activate`, `rehydrate`, and `dispose/drain`
+- [ ] make post-activation rehydration a declared runtime phase instead of an implicit side effect
+- [ ] persist per-skill migration diagnostics for `persist`, `migrate`, `rehydrate`, and `healthcheck`, not only `prepare/test/activate`
+- [ ] standardize rollback semantics when pointer switch succeeded but rehydration failed
+- [ ] standardize deactivate semantics when core switch stays committed but one skill cannot complete rehydration
+- [ ] make projection-backed skills document which branches are canonical and which are rebuildable caches
+- [ ] move Yjs-backed stateful skills toward "durable truth + projection rebuild" instead of "projection is the only truth"
+- [ ] add tests that simulate restart/update/rollback with persisted state present before cutover
+- [ ] add tests that prove derived state can be rebuilt deterministically after activation and rollback
 
 ## Relationship to systemd
 

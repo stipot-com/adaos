@@ -247,6 +247,41 @@ def test_root_mcp_call_records_audit(monkeypatch) -> None:
     assert event["meta"]["trace"]["request"]["argument_keys"] == ["descriptor_id"]
 
 
+def test_root_mcp_reads_yjs_load_mark_history(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    client = _make_client()
+    headers = {
+        "X-Owner-Token": "owner-secret",
+        "X-AdaOS-Subnet-Id": "subnet:test-zone",
+        "X-AdaOS-Zone": "lab-a",
+    }
+
+    from adaos.apps.api import root_endpoints
+
+    monkeypatch.setattr(
+        root_endpoints,
+        "list_yjs_load_mark_history_rows",
+        lambda **kwargs: {
+            "path": "/tmp/yjs_load_mark.jsonl",
+            "count": 1,
+            "items": [{"bucket_id": kwargs.get("bucket_id"), "webspace_id": kwargs.get("webspace_id")}],
+        },
+    )
+
+    resp = client.get(
+        "/v1/root/mcp/yjs/load-mark/history",
+        headers=headers,
+        params={"limit": 25, "webspace_id": "desktop", "kind": "owner", "bucket_id": "_by_owner/unknown", "status": "high"},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["scope"]["subnet_id"] == "subnet:test-zone"
+    assert payload["history"]["count"] == 1
+    assert payload["history"]["items"][0]["bucket_id"] == "_by_owner/unknown"
+
+
 def test_descriptor_cache_refresh_records_publish_lifecycle(monkeypatch, tmp_path) -> None:
     from adaos.services.root_mcp import registry as descriptor_registry
 

@@ -51,6 +51,15 @@ All paths are relative and compatible with Linux/Windows. Slots are created lazi
 
 `adaos skill rollback <name>` rolls back both the runtime slot and the `data/internal/active` pointer.
 
+Important architectural note:
+
+- activation is a slot-pointer switch, not a generic live-memory migration
+- in-process skills typically pick up new code on the next invocation from the active slot
+- service skills are explicitly restarted by the runtime lifecycle
+- durable migration authority belongs to persisted state and `data/internal/<a|b>`, while derived caches/projections should be rebuilt after activation
+
+For the target kernel-facing migration architecture, including rehydrate and rollback semantics for stateful skills, see [AdaOS Supervisor](architecture/adaos-supervisor.md#skill-runtime-migration-lifecycle).
+
 ## Deactivate lifecycle
 
 AdaOS may keep the core switch committed while quarantining a subset of skills.
@@ -114,6 +123,23 @@ Important notes:
 - if the hook is absent, AdaOS falls back to copy
 - the hook is expected to populate `target_internal_dir`
 - on migration failure, AdaOS clears the target internal slot and fails `prepare_runtime`
+
+### Target direction
+
+The target AdaOS migration model separates state classes:
+
+- canonical durable state:
+  must survive restart, rollback, and rebuild
+- slot-bound schema state:
+  belongs under `data/internal/a|b`
+- derived runtime state:
+  caches, indexes, projections, and similar rebuildable material
+- live memory:
+  in-flight objects and subscriptions that should be drained and recreated, not migrated implicitly
+
+This means `data_migration_tool` should be used for schema-sensitive persisted state, not as a platform promise that arbitrary process memory can be moved across activation.
+
+After activation, stateful skills are expected to rebuild derived runtime state from durable truth.
 
 ## Tool execution and setup
 
