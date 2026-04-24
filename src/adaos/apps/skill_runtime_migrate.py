@@ -206,8 +206,13 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
             "skipped": False,
         }
         if bool(status.get("deactivated")):
+            deactivation = dict(status.get("deactivation") or {}) if isinstance(status, dict) else {}
             entry["skipped"] = True
-            entry["reason"] = str((status.get("deactivation") or {}).get("reason") or "already deactivated")
+            entry["reason"] = str(deactivation.get("reason") or "already deactivated")
+            entry["deactivated"] = True
+            entry["deactivation"] = deactivation
+            entry["failure_kind"] = str(deactivation.get("failure_kind") or "")
+            entry["failed_stage"] = str(deactivation.get("failed_stage") or "")
             items.append(entry)
             continue
         try:

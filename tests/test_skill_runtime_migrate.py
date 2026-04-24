@@ -368,3 +368,61 @@ def test_post_commit_checks_persist_deactivation_metadata(monkeypatch) -> None:
     assert deactivation["failed_stage"] == "rehydrate"
     assert deactivation["source"] == "post_commit_check_installed_skills"
     assert deactivation["committed_core_switch"] is True
+
+
+def test_post_commit_checks_preserve_existing_quarantine_metadata(monkeypatch) -> None:
+    import adaos.apps.skill_runtime_migrate as mod
+
+    class _Row:
+        name = "broken_skill"
+        installed = True
+
+    class _Registry:
+        def __init__(self, _sql) -> None:
+            pass
+
+        def list(self):
+            return [_Row()]
+
+    class _Manager:
+        def runtime_status(self, name: str):
+            return {
+                "version": "2.0.0",
+                "active_slot": "B",
+                "deactivated": True,
+                "deactivation": {
+                    "reason": "post_commit_checks_failed",
+                    "failure_kind": "lifecycle",
+                    "failed_stage": "rehydrate",
+                    "source": "post_commit_check_installed_skills",
+                    "committed_core_switch": True,
+                },
+                "lifecycle": {
+                    "rehydrate": {"ok": False, "skipped": False, "error": "projection rebuild failed"},
+                },
+            }
+
+        def run_skill_tests(self, name: str, source: str = "installed"):
+            raise AssertionError("tests should not run for already deactivated skills")
+
+    class _Ctx:
+        sql = object()
+        skills_repo = object()
+        git = object()
+        paths = object()
+        bus = None
+        caps = object()
+
+    monkeypatch.setattr(mod, "init_ctx", lambda: None)
+    monkeypatch.setattr(mod, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", _Registry)
+    monkeypatch.setattr(mod, "_manager", lambda: _Manager())
+
+    payload = mod.post_commit_check_installed_skills(deactivate_on_failure=True)
+
+    entry = payload["skills"][0]
+    assert entry["skipped"] is True
+    assert entry["deactivated"] is True
+    assert entry["failure_kind"] == "lifecycle"
+    assert entry["failed_stage"] == "rehydrate"
+    assert entry["deactivation"]["committed_core_switch"] is True

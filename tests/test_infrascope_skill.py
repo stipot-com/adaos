@@ -535,6 +535,48 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
     assert "quarantine=voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
 
 
+def test_infrascope_adds_existing_quarantine_to_post_commit_row(monkeypatch):
+    mod = _load_infrascope_module()
+
+    monkeypatch.setattr(mod, "get_overview_summary", lambda webspace_id=None: {"label": "scope", "value": "warning"})
+    monkeypatch.setattr(mod, "list_overview_collection", lambda section, webspace_id=None: [])
+    monkeypatch.setattr(mod, "list_inventory", lambda kind, webspace_id=None: [])
+    monkeypatch.setattr(mod, "current_control_plane_objects", lambda webspace_id=None: [])
+    monkeypatch.setattr(mod, "get_object_inspector", lambda object_id, task_goal=None, webspace_id=None: {"object_id": object_id})
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active": [], "active_items": []})
+    monkeypatch.setattr(mod, "_skill_runtime_migration_report", lambda: {})
+    monkeypatch.setattr(mod, "_skill_runtime_rollback_report", lambda: {})
+    monkeypatch.setattr(
+        mod,
+        "_skill_post_commit_checks_report",
+        lambda: {
+            "total": 1,
+            "failed_total": 0,
+            "deactivated_total": 1,
+            "skills": [
+                {
+                    "skill": "voice_skill",
+                    "ok": True,
+                    "skipped": True,
+                    "deactivated": True,
+                    "deactivation": {
+                        "committed_core_switch": True,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                    },
+                }
+            ],
+        },
+    )
+
+    snapshot = mod.get_snapshot()
+
+    rows = snapshot["operations"]["items"]
+    assert rows
+    assert rows[0]["id"] == "core-update-skill-post-commit-checks"
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
+
+
 def test_infrascope_list_inventory_returns_local_fallback_when_empty(monkeypatch):
     mod = _load_infrascope_module()
 

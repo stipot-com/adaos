@@ -1034,6 +1034,34 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
     assert "quarantine=voice_skill:lifecycle/rehydrate" in note
 
 
+def test_infrastate_skill_post_commit_helpers_report_existing_quarantine():
+    mod = _load_infrastate_module()
+
+    note = mod._skill_post_commit_checks_note(
+        {
+            "total": 1,
+            "failed_total": 0,
+            "deactivated_total": 1,
+            "skills": [
+                {
+                    "skill": "voice_skill",
+                    "ok": True,
+                    "skipped": True,
+                    "deactivated": True,
+                    "deactivation": {
+                        "committed_core_switch": True,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "skill_post_commit=1/1" in note
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in note
+
+
 def test_infrastate_core_update_diagnostics_include_required_local_payloads(monkeypatch, tmp_path: Path):
     mod = _load_infrastate_module()
 
