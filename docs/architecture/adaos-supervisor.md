@@ -576,12 +576,12 @@ The default target behavior is:
 
 Use the checklist below as the migration hardening path for the kernel/runtime layer:
 
-- [ ] document storage classes per skill explicitly in manifests/runtime docs: canonical durable state, slot-bound schema state, derived runtime state, live memory
-- [ ] add an explicit `persist_before_switch` stage to skill/core migration orchestration
+- [x] document storage classes per skill explicitly in manifests/runtime docs: canonical durable state, slot-bound schema state, derived runtime state, live memory
+- [x] add an explicit `persist_before_switch` stage to skill/core migration orchestration
 - [ ] require migration logic to operate on durable and slot-bound state only, not generic process memory
-- [ ] define optional lifecycle hooks for `before_deactivate`, `after_activate`, `rehydrate`, and `dispose/drain`
-- [ ] make post-activation rehydration a declared runtime phase instead of an implicit side effect
-- [ ] persist per-skill migration diagnostics for `persist`, `migrate`, `rehydrate`, and `healthcheck`, not only `prepare/test/activate`
+- [x] define optional lifecycle hooks for `before_deactivate`, `after_activate`, `rehydrate`, and `dispose/drain`
+- [x] make post-activation rehydration a declared runtime phase instead of an implicit side effect
+- [x] persist per-skill migration diagnostics for `persist`, `migrate`, `rehydrate`, and `healthcheck`, not only `prepare/test/activate`
 - [ ] standardize rollback semantics when pointer switch succeeded but rehydration failed
 - [ ] standardize deactivate semantics when core switch stays committed but one skill cannot complete rehydration
 - [ ] make projection-backed skills document which branches are canonical and which are rebuildable caches

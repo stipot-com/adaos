@@ -26,7 +26,9 @@ def test_migrate_installed_skills_runs_tests_and_rolls_back_on_failure(monkeypat
 
     class _Manager:
         def runtime_status(self, name: str):
-            return {"version": "1.0.0", "active_slot": "A"} if name == "service_skill" else {}
+            if name == "service_skill":
+                return {"version": "1.0.0", "active_slot": "A", "lifecycle": {"rehydrate": {"ok": True}}}
+            return {"lifecycle": {"rehydrate": {"ok": True}}}
 
         def prepare_runtime(self, name: str, run_tests: bool = False):
             assert run_tests is False
@@ -69,6 +71,7 @@ def test_migrate_installed_skills_runs_tests_and_rolls_back_on_failure(monkeypat
     assert payload["skills"][0]["skill"] == "weather_skill"
     assert payload["skills"][0]["ok"] is True
     assert payload["skills"][0]["tests"] == {"suite": "passed"}
+    assert payload["skills"][0]["lifecycle"] == {"rehydrate": {"ok": True}}
     assert payload["skills"][1]["skill"] == "service_skill"
     assert payload["skills"][1]["ok"] is False
     assert payload["skills"][1]["failed_stage"] == "tests"
@@ -97,7 +100,7 @@ def test_migrate_installed_skills_can_skip_tests(monkeypatch) -> None:
 
     class _Manager:
         def runtime_status(self, name: str):
-            return {}
+            return {"lifecycle": {}}
 
         def prepare_runtime(self, name: str, run_tests: bool = False):
             return _Runtime()
@@ -146,7 +149,7 @@ def test_migrate_installed_skills_marks_prepare_failures_safe_for_core_update(mo
 
     class _Manager:
         def runtime_status(self, name: str):
-            return {"version": "1.0.0", "active_slot": "A"}
+            return {"version": "1.0.0", "active_slot": "A", "lifecycle": {}}
 
         def prepare_runtime(self, name: str, run_tests: bool = False):
             raise RuntimeError("import failed during prepare")
@@ -193,7 +196,7 @@ def test_post_commit_checks_deactivate_failing_skills(monkeypatch) -> None:
 
     class _Manager:
         def runtime_status(self, name: str):
-            return {"version": "1.2.3", "active_slot": "B", "deactivated": False}
+            return {"version": "1.2.3", "active_slot": "B", "deactivated": False, "lifecycle": {"persist": {"ok": True}}}
 
         def run_skill_tests(self, name: str, source: str = "installed"):
             assert source == "installed"
@@ -227,3 +230,4 @@ def test_post_commit_checks_deactivate_failing_skills(monkeypatch) -> None:
     assert payload["skills"][1]["skill"] == "service_skill"
     assert payload["skills"][1]["deactivated"] is True
     assert payload["skills"][1]["failed_stage"] == "tests"
+    assert payload["skills"][0]["lifecycle"] == {"persist": {"ok": True}}

@@ -54,6 +54,7 @@ class RuntimeInstallResult:
     resolved_manifest: Path
     tests: Dict[str, TestResult]
     data_migration: Dict[str, Any] | None = None
+    lifecycle: Dict[str, Any] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1057,6 +1058,7 @@ class SkillManager:
             skill_dir=staged_dir,
         )
         self._write_resolved_manifest(slot, resolved)
+        lifecycle = self._prepared_lifecycle_state()
         data_migration = self._migrate_internal_data(
             env=env,
             slot=slot,
@@ -1064,6 +1066,7 @@ class SkillManager:
             skill_dir=staged_dir,
             python_paths=python_paths,
         )
+        lifecycle["migrate"] = {"ok": True, "mode": str(data_migration.get("mode") or "copy")}
 
         tests: Dict[str, TestResult] = {}
         package_dir = getattr(self.ctx.paths, "package_dir", None)
@@ -1090,6 +1093,11 @@ class SkillManager:
             if any(result.status != "passed" for result in tests.values()):
                 env.cleanup_slot(version, slot_name)
                 raise RuntimeError("skill tests failed")
+        lifecycle["healthcheck"] = {
+            "ok": True,
+            "stage": "prepare",
+            "tests": {name: result.status for name, result in tests.items()},
+        }
 
         metadata = env.read_version_metadata(version)
         slots_meta = metadata.setdefault("slots", {})
@@ -1098,6 +1106,7 @@ class SkillManager:
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "tests": {name: result.status for name, result in tests.items()},
             "data_migration": dict(data_migration),
+            "lifecycle": dict(lifecycle),
         }
         metadata["version"] = version
         history = metadata.setdefault("history", {})
@@ -1114,6 +1123,7 @@ class SkillManager:
             resolved_manifest=slot.resolved_manifest,
             tests=tests,
             data_migration=dict(data_migration),
+            lifecycle=dict(lifecycle),
         )
 
     def activate_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
@@ -1140,6 +1150,7 @@ class SkillManager:
         slot_paths = env.build_slot_paths(target_version, target_slot)
         slot_meta = metadata.get("slots", {}).get(target_slot, {})
         manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+        target_manifest: dict[str, Any] = {}
         if not manifest_path.exists():
             if source_path is None:
                 raise RuntimeError(
@@ -1158,14 +1169,74 @@ class SkillManager:
             manifest_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
             if not manifest_path.exists():
                 raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
+        target_manifest = self._read_json_dict(manifest_path)
+        lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=target_slot)
+        persist_state = self._invoke_persist_before_switch(
+            env=env,
+            name=name,
+            target_version=target_version,
+            metadata=metadata,
+        )
+        lifecycle["persist"] = persist_state
         self._smoke_import(env=env, name=name, version=target_version, slot=target_slot)
         env.set_active_slot(target_version, target_slot)
         env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
         env.clear_deactivation()
+        try:
+            after_activate = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=slot_paths,
+                resolved_manifest=target_manifest,
+                hook_key="after_activate",
+                payload={
+                    "skill": name,
+                    "version": target_version,
+                    "slot": target_slot,
+                    "state": "active",
+                },
+            )
+            lifecycle["after_activate"] = after_activate
+            rehydrate = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=slot_paths,
+                resolved_manifest=target_manifest,
+                hook_key="rehydrate",
+                payload={
+                    "skill": name,
+                    "version": target_version,
+                    "slot": target_slot,
+                    "state": "active",
+                },
+            )
+            lifecycle["rehydrate"] = rehydrate
+            lifecycle["healthcheck"] = {"ok": True, "stage": "activate"}
+        except Exception as exc:
+            lifecycle["healthcheck"] = {
+                "ok": False,
+                "stage": "activate",
+                "error": str(exc),
+            }
+            metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
+            history = metadata.setdefault("history", {})
+            history["last_activation_error"] = str(exc)
+            history["last_activation_error_at"] = datetime.now(timezone.utc).isoformat()
+            env.write_version_metadata(target_version, metadata)
+            try:
+                env.rollback_slot(target_version)
+            except Exception:
+                pass
+            try:
+                env.rollback_internal_slot()
+            except Exception:
+                pass
+            raise RuntimeError(f"activation rehydrate failed: {exc}") from exc
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot
         history["last_active_at"] = datetime.now(timezone.utc).isoformat()
+        history["last_activation_error"] = ""
+        history["last_activation_error_at"] = ""
+        metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
         env.write_version_metadata(target_version, metadata)
         try:
             install_skill_in_capacity(name, target_version, active=True)
@@ -1189,6 +1260,29 @@ class SkillManager:
         if not version:
             raise RuntimeError("no active version")
         env.prepare_version(version)
+        current_slot = env.read_active_slot(version)
+        metadata = env.read_version_metadata(version)
+        current_paths = env.build_slot_paths(version, current_slot)
+        current_manifest = self._read_json_dict(current_paths.resolved_manifest)
+        lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=current_slot)
+        try:
+            lifecycle["before_deactivate"] = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=current_paths,
+                resolved_manifest=current_manifest,
+                hook_key="before_deactivate",
+                payload={
+                    "skill": name,
+                    "version": version,
+                    "slot": current_slot,
+                    "reason": "rollback",
+                    "state": "deactivating",
+                },
+            )
+        except Exception as exc:
+            lifecycle["before_deactivate"] = {"ok": False, "error": str(exc), "hook": "before_deactivate"}
+        metadata.setdefault("slots", {}).setdefault(current_slot, {})["lifecycle"] = dict(lifecycle)
+        env.write_version_metadata(version, metadata)
         restored_slot = env.rollback_slot(version)
         try:
             env.rollback_internal_slot()
@@ -1254,6 +1348,28 @@ class SkillManager:
             raise RuntimeError("no active version")
         env.prepare_version(version)
         active_slot = env.read_active_slot(version)
+        metadata = env.read_version_metadata(version)
+        active_paths = env.build_slot_paths(version, active_slot)
+        active_manifest = self._read_json_dict(active_paths.resolved_manifest)
+        lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=active_slot)
+        try:
+            lifecycle["before_deactivate"] = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=active_paths,
+                resolved_manifest=active_manifest,
+                hook_key="before_deactivate",
+                payload={
+                    "skill": name,
+                    "version": version,
+                    "slot": active_slot,
+                    "reason": str(reason or "post_commit_checks_failed"),
+                    "state": "deactivating",
+                },
+            )
+        except Exception as exc:
+            lifecycle["before_deactivate"] = {"ok": False, "error": str(exc), "hook": "before_deactivate"}
+        metadata.setdefault("slots", {}).setdefault(active_slot, {})["lifecycle"] = dict(lifecycle)
+        env.write_version_metadata(version, metadata)
         payload = {
             "name": name,
             "version": version,
@@ -1309,6 +1425,8 @@ class SkillManager:
             "deactivation": deactivation,
             "tests": slot_meta.get("tests", {}),
             "history": history,
+            "data_migration": slot_meta.get("data_migration", {}),
+            "lifecycle": slot_meta.get("lifecycle", {}),
         }
         if not ready:
             state["pending_slot"] = history.get("last_install_slot")
@@ -1348,6 +1466,8 @@ class SkillManager:
             "deactivation": deactivation,
             "tests": slot_meta.get("tests", {}),
             "history": history,
+            "data_migration": slot_meta.get("data_migration", {}),
+            "lifecycle": slot_meta.get("lifecycle", {}),
         }
         if not ready:
             state["pending_slot"] = history.get("last_install_slot")
@@ -2106,6 +2226,129 @@ class SkillManager:
             return {"tool": tool_name.strip()}
         return {}
 
+    def _lifecycle_config(self, resolved_manifest: Mapping[str, Any]) -> dict[str, str]:
+        config = resolved_manifest.get("lifecycle")
+        out: dict[str, str] = {}
+        if isinstance(config, Mapping):
+            for key in ("persist_before_switch", "after_activate", "rehydrate", "before_deactivate", "dispose", "drain"):
+                value = config.get(key)
+                if isinstance(value, str) and value.strip():
+                    out[key] = value.strip()
+        for key in ("persist_before_switch", "after_activate", "rehydrate", "before_deactivate", "dispose", "drain"):
+            value = resolved_manifest.get(key)
+            if isinstance(value, str) and value.strip() and key not in out:
+                out[key] = value.strip()
+        return out
+
+    def _prepared_lifecycle_state(self) -> dict[str, Any]:
+        return {
+            "persist": {"ok": False, "skipped": True, "reason": "not_activated"},
+            "migrate": {},
+            "after_activate": {"ok": False, "skipped": True, "reason": "not_activated"},
+            "rehydrate": {"ok": False, "skipped": True, "reason": "not_activated"},
+            "before_deactivate": {"ok": False, "skipped": True, "reason": "not_triggered"},
+            "healthcheck": {},
+        }
+
+    def _slot_lifecycle_state(self, *, metadata: Mapping[str, Any], slot: str) -> dict[str, Any]:
+        slots = metadata.get("slots")
+        if isinstance(slots, Mapping):
+            current = slots.get(slot)
+            if isinstance(current, Mapping):
+                value = current.get("lifecycle")
+                if isinstance(value, Mapping):
+                    state = self._prepared_lifecycle_state()
+                    state.update({str(k): v for k, v in value.items()})
+                    return state
+        return self._prepared_lifecycle_state()
+
+    def _read_json_dict(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _run_slot_tool(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        slot: SkillSlotPaths,
+        resolved_manifest: Mapping[str, Any],
+        tool_name: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        tools = resolved_manifest.get("tools") or {}
+        tool_spec = tools.get(tool_name) if isinstance(tools, Mapping) else None
+        if not isinstance(tool_spec, Mapping):
+            raise KeyError(f"lifecycle tool '{tool_name}' not found in resolved manifest")
+        module = tool_spec.get("module")
+        attr = tool_spec.get("callable") or tool_name
+        runtime_cfg = resolved_manifest.get("runtime") if isinstance(resolved_manifest.get("runtime"), Mapping) else {}
+        python_paths = runtime_cfg.get("python_paths") if isinstance(runtime_cfg, Mapping) else []
+        extra_paths = [Path(p) for p in python_paths if isinstance(p, str) and p]
+
+        ctx = self.ctx
+        previous = ctx.skill_ctx.get()
+        prev_env = os.environ.get("ADAOS_SKILL_ENV_PATH")
+        prev_memory = os.environ.get("ADAOS_SKILL_MEMORY_PATH")
+        prev_internal_root = os.environ.get("ADAOS_SKILL_INTERNAL_DATA_ROOT")
+        prev_internal_active = os.environ.get("ADAOS_SKILL_INTERNAL_ACTIVE_PATH")
+        prev_internal_target = os.environ.get("ADAOS_SKILL_INTERNAL_TARGET_PATH")
+        prev_secrets = ctx.secrets
+        ctx.secrets = SecretsService(SkillSecretsBackend(env.data_root() / "files" / "secrets.json"), ctx.caps)
+        skill_dir = slot.src_dir / "skills" / slot.skill_name
+
+        def _call_tool() -> Any:
+            with use_ctx(ctx):
+                return execute_tool(
+                    skill_dir,
+                    module=module,
+                    attr=attr,
+                    payload=payload,
+                    extra_paths=extra_paths,
+                )
+
+        try:
+            if not ctx.skill_ctx.set(slot.skill_name, skill_dir):
+                raise RuntimeError(f"failed to establish context for skill '{slot.skill_name}'")
+            os.environ["ADAOS_SKILL_ENV_PATH"] = str(slot.skill_env_path)
+            os.environ["ADAOS_SKILL_MEMORY_PATH"] = str(slot.skill_memory_path)
+            os.environ["ADAOS_SKILL_INTERNAL_DATA_ROOT"] = str(env.internal_root())
+            os.environ["ADAOS_SKILL_INTERNAL_ACTIVE_PATH"] = str(env.internal_root() / env.read_active_internal_slot())
+            os.environ["ADAOS_SKILL_INTERNAL_TARGET_PATH"] = str(slot.internal_data_dir)
+            result = _call_tool()
+        finally:
+            ctx.secrets = prev_secrets
+            if previous is None:
+                ctx.skill_ctx.clear()
+            else:
+                ctx.skill_ctx.set(previous.name, Path(previous.path))
+            if prev_env is None:
+                os.environ.pop("ADAOS_SKILL_ENV_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_ENV_PATH"] = prev_env
+            if prev_memory is None:
+                os.environ.pop("ADAOS_SKILL_MEMORY_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_MEMORY_PATH"] = prev_memory
+            if prev_internal_root is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_DATA_ROOT", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_DATA_ROOT"] = prev_internal_root
+            if prev_internal_active is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_ACTIVE_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_ACTIVE_PATH"] = prev_internal_active
+            if prev_internal_target is None:
+                os.environ.pop("ADAOS_SKILL_INTERNAL_TARGET_PATH", None)
+            else:
+                os.environ["ADAOS_SKILL_INTERNAL_TARGET_PATH"] = prev_internal_target
+
+        return result if isinstance(result, dict) else {"result": result}
+
     def _run_data_migration_tool(
         self,
         *,
@@ -2182,6 +2425,59 @@ class SkillManager:
                 os.environ["ADAOS_SKILL_INTERNAL_TARGET_PATH"] = prev_internal_target
 
         return result if isinstance(result, dict) else {"result": result}
+
+    def _invoke_slot_lifecycle_hook(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        slot: SkillSlotPaths,
+        resolved_manifest: Mapping[str, Any],
+        hook_key: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        config = self._lifecycle_config(resolved_manifest)
+        tool_name = str(config.get(hook_key) or "").strip()
+        if not tool_name:
+            return {"ok": True, "skipped": True, "hook": hook_key, "tool": ""}
+        result = self._run_slot_tool(
+            env=env,
+            slot=slot,
+            resolved_manifest=resolved_manifest,
+            tool_name=tool_name,
+            payload=payload,
+        )
+        return {"ok": True, "skipped": False, "hook": hook_key, "tool": tool_name, "result": result}
+
+    def _invoke_persist_before_switch(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        name: str,
+        target_version: str,
+        metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        current_version = env.resolve_active_version()
+        if not current_version:
+            return {"ok": True, "skipped": True, "hook": "persist_before_switch", "reason": "no_active_version"}
+        current_slot = env.read_active_slot(current_version)
+        current_paths = env.build_slot_paths(current_version, current_slot)
+        manifest_path = current_paths.resolved_manifest
+        resolved_manifest = self._read_json_dict(manifest_path)
+        if not resolved_manifest:
+            return {"ok": True, "skipped": True, "hook": "persist_before_switch", "reason": "no_resolved_manifest"}
+        return self._invoke_slot_lifecycle_hook(
+            env=env,
+            slot=current_paths,
+            resolved_manifest=resolved_manifest,
+            hook_key="persist_before_switch",
+            payload={
+                "skill": name,
+                "current_version": current_version,
+                "current_slot": current_slot,
+                "target_version": target_version,
+                "state": "persist_before_switch",
+            },
+        )
 
     def _migrate_internal_data(
         self,
@@ -2498,6 +2794,7 @@ class SkillManager:
             skill_dir=staged_dir,
         )
         self._write_resolved_manifest(slot, resolved)
+        lifecycle = self._prepared_lifecycle_state()
         data_migration = self._migrate_internal_data(
             env=env,
             slot=slot,
@@ -2505,6 +2802,7 @@ class SkillManager:
             skill_dir=staged_dir,
             python_paths=python_paths,
         )
+        lifecycle["migrate"] = {"ok": True, "mode": str(data_migration.get("mode") or "copy")}
 
         tests: Dict[str, TestResult] = {}
         if run_tests:
@@ -2522,6 +2820,11 @@ class SkillManager:
             if any(result.status != "passed" for result in tests.values()):
                 env.cleanup_slot(version, slot_name)
                 raise RuntimeError("skill tests failed")
+        lifecycle["healthcheck"] = {
+            "ok": True,
+            "stage": "prepare",
+            "tests": {name: result.status for name, result in tests.items()},
+        }
 
         metadata = env.read_version_metadata(version)
         slots_meta = metadata.setdefault("slots", {})
@@ -2530,6 +2833,7 @@ class SkillManager:
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "tests": {name: result.status for name, result in tests.items()},
             "data_migration": dict(data_migration),
+            "lifecycle": dict(lifecycle),
         }
         metadata["version"] = version
         history = metadata.setdefault("history", {})
@@ -2546,6 +2850,7 @@ class SkillManager:
             resolved_manifest=slot.resolved_manifest,
             tests=tests,
             data_migration=dict(data_migration),
+            lifecycle=dict(lifecycle),
         )
 
     def activate_dev_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
@@ -2584,12 +2889,45 @@ class SkillManager:
             if not manifest_path.exists():
                 raise RuntimeError(f"slot {target_slot} of version {target_version} is not prepared")
 
+        target_manifest = self._read_json_dict(manifest_path)
+        lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=target_slot)
+        lifecycle["persist"] = {"ok": True, "skipped": True, "hook": "persist_before_switch", "reason": "dev_runtime"}
         env.set_active_slot(target_version, target_slot)
         env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
+        try:
+            lifecycle["after_activate"] = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=slot_paths,
+                resolved_manifest=target_manifest,
+                hook_key="after_activate",
+                payload={"skill": name, "version": target_version, "slot": target_slot, "state": "active", "dev": True},
+            )
+            lifecycle["rehydrate"] = self._invoke_slot_lifecycle_hook(
+                env=env,
+                slot=slot_paths,
+                resolved_manifest=target_manifest,
+                hook_key="rehydrate",
+                payload={"skill": name, "version": target_version, "slot": target_slot, "state": "active", "dev": True},
+            )
+            lifecycle["healthcheck"] = {"ok": True, "stage": "activate"}
+        except Exception as exc:
+            lifecycle["healthcheck"] = {"ok": False, "stage": "activate", "error": str(exc)}
+            metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
+            env.write_version_metadata(target_version, metadata)
+            try:
+                env.rollback_slot(target_version)
+            except Exception:
+                pass
+            try:
+                env.rollback_internal_slot()
+            except Exception:
+                pass
+            raise RuntimeError(f"activation rehydrate failed: {exc}") from exc
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot
         history["last_active_at"] = datetime.now(timezone.utc).isoformat()
+        metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
         env.write_version_metadata(target_version, metadata)
         self._smoke_import(env=env, name=name, version=target_version)
         return target_slot

@@ -91,6 +91,7 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
             "active_slot_before": str(before.get("active_slot") or ""),
             "active_slot_after": "",
             "tests": {},
+            "lifecycle": {},
             "rollback_performed": False,
             "deactivated": False,
         }
@@ -109,6 +110,8 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
             )
             activated = True
             entry["active_slot_after"] = str(active_slot or "")
+            after = _runtime_status_safe(mgr, skill_name)
+            entry["lifecycle"] = dict(after.get("lifecycle") or {}) if isinstance(after, dict) else {}
 
             if run_tests:
                 entry["stage"] = "tests"
@@ -169,6 +172,7 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
             "active_version": str(status.get("version") or ""),
             "active_slot": str(status.get("active_slot") or ""),
             "tests": {},
+            "lifecycle": dict(status.get("lifecycle") or {}) if isinstance(status, dict) else {},
             "deactivated": False,
             "skipped": False,
         }

@@ -459,3 +459,125 @@ def test_activate_runtime_does_not_switch_slot_before_smoke_import(monkeypatch) 
         raise AssertionError("expected activation to fail")
 
     assert env.read_active_slot("1.0.0") == "A"
+
+
+def test_activate_runtime_runs_lifecycle_hooks_and_publishes_status(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "lifecycle_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: lifecycle_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+    env.prepare_version("1.0.0")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {
+                "skill_env": str(kwargs["slot"].skill_env_path),
+                "skill_memory": str(kwargs["slot"].skill_memory_path),
+                "python_paths": [],
+            },
+            "tools": {
+                "persist_state": {"module": "skills.lifecycle_skill.handlers.main", "callable": "persist_state"},
+                "after_activate_tool": {"module": "skills.lifecycle_skill.handlers.main", "callable": "after_activate_tool"},
+                "rehydrate_tool": {"module": "skills.lifecycle_skill.handlers.main", "callable": "rehydrate_tool"},
+            },
+            "lifecycle": {
+                "persist_before_switch": "persist_state",
+                "after_activate": "after_activate_tool",
+                "rehydrate": "rehydrate_tool",
+            },
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    calls: list[tuple[str | None, dict[str, object]]] = []
+
+    def _fake_execute_tool(skill_dir_arg, *, module=None, attr=None, payload=None, extra_paths=None):
+        calls.append((attr, dict(payload or {})))
+        return {"ok": True, "attr": attr}
+
+    monkeypatch.setattr(skill_manager_module, "execute_tool", _fake_execute_tool)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="A")
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="B")
+    mgr.activate_runtime(skill_name, version="1.0.0", slot="B")
+
+    status = mgr.runtime_status(skill_name)
+
+    assert [name for name, _payload in calls] == ["persist_state", "after_activate_tool", "rehydrate_tool"]
+    assert status["lifecycle"]["persist"]["ok"] is True
+    assert status["lifecycle"]["persist"]["skipped"] is False
+    assert status["lifecycle"]["after_activate"]["tool"] == "after_activate_tool"
+    assert status["lifecycle"]["rehydrate"]["tool"] == "rehydrate_tool"
+    assert status["lifecycle"]["healthcheck"]["ok"] is True
+
+
+def test_deactivate_runtime_runs_before_deactivate_hook(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "before_deactivate_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: before_deactivate_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {
+                "skill_env": str(kwargs["slot"].skill_env_path),
+                "skill_memory": str(kwargs["slot"].skill_memory_path),
+                "python_paths": [],
+            },
+            "tools": {
+                "before_deactivate_tool": {
+                    "module": "skills.before_deactivate_skill.handlers.main",
+                    "callable": "before_deactivate_tool",
+                }
+            },
+            "lifecycle": {"before_deactivate": "before_deactivate_tool"},
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    calls: list[tuple[str | None, dict[str, object]]] = []
+
+    def _fake_execute_tool(skill_dir_arg, *, module=None, attr=None, payload=None, extra_paths=None):
+        calls.append((attr, dict(payload or {})))
+        return {"ok": True, "attr": attr}
+
+    monkeypatch.setattr(skill_manager_module, "execute_tool", _fake_execute_tool)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="A")
+    mgr.activate_runtime(skill_name, version="1.0.0", slot="A")
+    payload = mgr.deactivate_runtime(skill_name, reason="manual_check")
+    status = mgr.runtime_status(skill_name)
+
+    assert payload["deactivated"] is True
+    assert [name for name, _payload in calls] == ["before_deactivate_tool"]
+    assert status["lifecycle"]["before_deactivate"]["tool"] == "before_deactivate_tool"

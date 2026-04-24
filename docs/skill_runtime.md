@@ -141,6 +141,31 @@ This means `data_migration_tool` should be used for schema-sensitive persisted s
 
 After activation, stateful skills are expected to rebuild derived runtime state from durable truth.
 
+### Runtime lifecycle hooks
+
+AdaOS now supports optional lifecycle hooks in the resolved skill manifest.
+
+Preferred declaration shape:
+
+```yaml
+lifecycle:
+  persist_before_switch: persist_state
+  after_activate: after_activate
+  rehydrate: rehydrate
+  before_deactivate: before_deactivate
+```
+
+The hook names resolve through the ordinary skill `tools` table, just like `data_migration_tool`.
+
+Current behavior:
+
+- `persist_before_switch` runs against the currently active slot before pointer cutover when an active prepared runtime exists
+- `after_activate` runs after the new slot becomes active
+- `rehydrate` runs after activation to rebuild derived runtime state
+- `before_deactivate` runs before explicit deactivate or rollback of the current slot
+
+Lifecycle diagnostics are persisted into slot metadata and surfaced by `adaos skill status --json` through `runtime_status().lifecycle`.
+
 ## Tool execution and setup
 
 `adaos skill run <name> [<tool>]` reads the active slot’s `resolved.manifest.json`, adds the staged source directory to `sys.path`, and executes the tool callable with per-invocation timeouts. `adaos skill test <name>` reuses the same active slot to execute `src/skills/<name>/tests` without preparing a new build. If a skill declares a `setup` tool it is available via `adaos skill setup <name>` **only after activation**; attempting to run setup while the version is pending reports a clear error instructing the operator to activate first.
