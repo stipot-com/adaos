@@ -397,20 +397,33 @@ def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = Non
             "online_known": sum(1 for item in nodes if bool(item.get("online"))),
             "active_known": len(active_nodes),
             "connected_members": sum(1 for item in nodes if str(item.get("node_id") or "").strip() in connected_members),
+            "active_node_ids": [
+                str(item.get("node_id") or "").strip()
+                for item in active_nodes
+                if str(item.get("node_id") or "").strip()
+            ],
         },
         "hub_link": {
             "member_total": int(link_snapshot.get("member_total") or 0),
             "connected_total": int(link_snapshot.get("connected_total") or 0),
+            "connected_node_ids": sorted(connected_members.keys()),
         },
         "visible_sessions": visible_sessions[:25],
         "session_summary": {
             "total_visible": len(visible_sessions),
             "active_visible": sum(1 for item in visible_sessions if str(item.get("status") or "") == "active"),
+            "visible_session_ids": [
+                str(item.get("session_id") or "").strip()
+                for item in visible_sessions[:25]
+                if str(item.get("session_id") or "").strip()
+            ],
         },
         "aggregation": {
             "logs": {
                 "scopes": ["root_local", "subnet_active"],
                 "categories": ["adaos", "events", "yjs", "skills"],
+                "transport": "hub_runtime_local",
+                "admin_route": "/api/admin/root_mcp/logs/{category}",
                 "member_route": "/api/node/logs/{category}",
             }
         },

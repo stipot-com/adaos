@@ -406,8 +406,13 @@ def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
     assert payload["subnet"]["target_id"] == "hub:test-zone"
     assert payload["subnet"]["node_summary"]["total_known"] == 1
     assert payload["subnet"]["node_summary"]["active_known"] == 1
+    assert payload["subnet"]["node_summary"]["active_node_ids"] == ["node-1"]
+    assert payload["subnet"]["hub_link"]["connected_node_ids"] == ["node-1"]
     assert payload["subnet"]["session_summary"]["active_visible"] == 1
+    assert payload["subnet"]["session_summary"]["visible_session_ids"] == ["sess-1"]
     assert payload["subnet"]["aggregation"]["logs"]["scopes"] == ["root_local", "subnet_active"]
+    assert payload["subnet"]["aggregation"]["logs"]["transport"] == "hub_runtime_local"
+    assert payload["subnet"]["aggregation"]["logs"]["admin_route"] == "/api/admin/root_mcp/logs/{category}"
 
 
 def test_descriptor_cache_refresh_records_publish_lifecycle(monkeypatch, tmp_path) -> None:
