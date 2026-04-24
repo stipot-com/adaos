@@ -222,6 +222,43 @@ def test_build_hub_route_ws_bases_prefers_supervisor_active_runtime(monkeypatch)
     ]
 
 
+def test_build_hub_route_ws_bases_prefers_sidecar_route_tunnel_for_matching_path(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.delenv("ADAOS_RUNTIME_PORT", raising=False)
+    monkeypatch.setattr(bootstrap_mod, "_discover_active_runtime_local_base", lambda **_: None)
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "realtime_sidecar_route_tunnel_ws_bases",
+        lambda *, path=None, role=None: ["ws://127.0.0.1:7424"] if str(path or "").startswith("/yws") else [],
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb", role="hub")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg, path="/yws?token=dev")[:3] == [
+        "ws://127.0.0.1:7424",
+        "ws://127.0.0.1:8778",
+        "ws://127.0.0.1:8777",
+    ]
+
+
+def test_build_hub_route_ws_bases_keeps_runtime_bases_for_non_route_tunnel_paths(monkeypatch) -> None:
+    monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
+    monkeypatch.delenv("ADAOS_RUNTIME_PORT", raising=False)
+    monkeypatch.setattr(bootstrap_mod, "_discover_active_runtime_local_base", lambda **_: None)
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "realtime_sidecar_route_tunnel_ws_bases",
+        lambda *, path=None, role=None: [],
+    )
+
+    cfg = SimpleNamespace(hub_url="https://ru.api.inimatic.com/hubs/sn_b249afeb", role="hub")
+
+    assert bootstrap_mod._build_hub_route_ws_bases(cfg=cfg, path="/custom/socket") == [
+        "ws://127.0.0.1:8778",
+        "ws://127.0.0.1:8777",
+    ]
+
+
 def test_build_hub_route_ws_bases_skips_discovery_when_runtime_port_available(monkeypatch) -> None:
     monkeypatch.delenv("ADAOS_SELF_BASE_URL", raising=False)
     monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")

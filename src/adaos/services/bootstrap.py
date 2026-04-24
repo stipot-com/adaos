@@ -77,6 +77,7 @@ from adaos.services.realtime_sidecar import (
     realtime_sidecar_log_path,
     realtime_sidecar_local_url,
     realtime_sidecar_port,
+    realtime_sidecar_route_tunnel_ws_bases,
     resolve_realtime_remote_candidates,
 )
 from adaos.services.node_config import NodeConfig, generate_provisional_subnet_id, load_config, set_role as cfg_set_role
@@ -433,8 +434,10 @@ def _http_base_to_ws_base(base: str) -> str:
     return value
 
 
-def _build_hub_route_ws_bases(*, cfg: Any | None) -> list[str]:
+def _build_hub_route_ws_bases(*, cfg: Any | None, path: str | None = None) -> list[str]:
     bases: list[str] = []
+    role = str(getattr(cfg, "role", None) or "").strip().lower() or None
+    bases.extend(realtime_sidecar_route_tunnel_ws_bases(path=path, role=role))
     env_base = str(os.getenv("ADAOS_SELF_BASE_URL") or "").strip()
     cfg_base = str(getattr(cfg, "hub_url", None) or "").strip()
 
@@ -5516,10 +5519,10 @@ class BootstrapService:
                                         from adaos.services.node_config import load_config
 
                                         cfg = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
-                                        ws_bases = _build_hub_route_ws_bases(cfg=cfg)
+                                        ws_bases = _build_hub_route_ws_bases(cfg=cfg, path=path)
                                         token_local = getattr(cfg, "token", None) or os.getenv("ADAOS_TOKEN", "") or None
                                     except Exception:
-                                        ws_bases = _build_hub_route_ws_bases(cfg=None)
+                                        ws_bases = _build_hub_route_ws_bases(cfg=None, path=path)
                                         token_local = os.getenv("ADAOS_TOKEN", "") or None
                                     route_diag_state["last_open_base_total"] = len(list(ws_bases or []))
                                     _update_route_protocol_runtime()

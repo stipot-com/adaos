@@ -147,7 +147,7 @@ def test_realtime_sidecar_route_tunnel_contract_reflects_enabled_supervisor_mode
     assert contract["ownership_boundary"] == "transport_only"
     assert contract["ws"]["current_owner"] == "runtime"
     assert contract["ws"]["planned_owner"] == "sidecar"
-    assert contract["ws"]["delegation_mode"] == "local_tcp_proxy"
+    assert contract["ws"]["delegation_mode"] == "local_ws_proxy"
     assert contract["ws"]["listener"]["url"].endswith("/ws")
     assert contract["yws"]["planned_owner"] == "sidecar"
     assert contract["yws"]["handoff_ready"] is False
@@ -172,10 +172,10 @@ def test_realtime_sidecar_listener_snapshot_includes_route_tunnel_contract(
     assert snapshot["enablement_policy"]["source"] == "env_override"
     assert snapshot["route_tunnel_contract"]["current_support"] == "planned"
     assert snapshot["route_tunnel_contract"]["ws"]["planned_owner"] == "sidecar"
-    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "local_tcp_proxy"
+    assert snapshot["route_tunnel_contract"]["yws"]["delegation_mode"] == "local_ws_proxy"
 
 
-def test_realtime_sidecar_route_tunnel_contract_marks_local_proxy_listeners_ready(
+def test_realtime_sidecar_route_tunnel_contract_marks_local_websocket_handoffs_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
@@ -190,11 +190,13 @@ def test_realtime_sidecar_route_tunnel_contract_marks_local_proxy_listeners_read
         try:
             contract = realtime_sidecar_mod.realtime_sidecar_route_tunnel_contract()
 
-            assert contract["current_support"] == "proxy_ready"
+            assert contract["current_support"] == "ready"
             assert contract["ws"]["listener_ready"] is True
             assert contract["yws"]["listener_ready"] is True
-            assert contract["ws"]["current_owner"] == "runtime"
-            assert contract["ws"]["handoff_ready"] is False
+            assert contract["ws"]["current_owner"] == "sidecar"
+            assert contract["ws"]["handoff_ready"] is True
+            assert contract["yws"]["current_owner"] == "sidecar"
+            assert contract["yws"]["handoff_ready"] is True
             assert contract["ws"]["listener"]["url"].endswith("/ws")
             assert contract["yws"]["listener"]["url"].endswith("/yws")
         finally:
@@ -203,7 +205,34 @@ def test_realtime_sidecar_route_tunnel_contract_marks_local_proxy_listeners_read
     asyncio.run(_run())
 
 
-def test_realtime_sidecar_route_proxy_relays_local_tcp_payload(
+def test_realtime_sidecar_route_tunnel_ws_bases_return_path_specific_listener_when_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_RUNTIME_PORT", "8777")
+    ws_proxy_port = _free_port()
+    yws_proxy_port = _free_port()
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(ws_proxy_port))
+    monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(yws_proxy_port))
+
+    async def _run() -> None:
+        server = RealtimeSidecarServer(host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            assert realtime_sidecar_mod.realtime_sidecar_route_tunnel_ws_bases(path="/ws?token=x") == [
+                f"ws://127.0.0.1:{ws_proxy_port}"
+            ]
+            assert realtime_sidecar_mod.realtime_sidecar_route_tunnel_ws_bases(path="/yws?token=x") == [
+                f"ws://127.0.0.1:{yws_proxy_port}"
+            ]
+            assert realtime_sidecar_mod.realtime_sidecar_route_tunnel_ws_bases(path="/other") == []
+        finally:
+            await server.close()
+
+    asyncio.run(_run())
+
+
+def test_realtime_sidecar_route_proxy_relays_local_websocket_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_port = _free_port()
@@ -214,30 +243,21 @@ def test_realtime_sidecar_route_proxy_relays_local_tcp_payload(
     monkeypatch.setenv("ADAOS_REALTIME_ROUTE_WS_PORT", str(ws_proxy_port))
     monkeypatch.setenv("ADAOS_REALTIME_ROUTE_YWS_PORT", str(yws_proxy_port))
 
-    async def _echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            while True:
-                chunk = await reader.read(65536)
-                if not chunk:
-                    break
-                writer.write(chunk)
-                await writer.drain()
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
     async def _run() -> None:
-        upstream = await asyncio.start_server(_echo, "127.0.0.1", runtime_port)
+        websockets = pytest.importorskip("websockets")
+
+        async def _echo(websocket, _path=None):
+            async for message in websocket:
+                await websocket.send(message)
+
+        upstream = await websockets.serve(_echo, "127.0.0.1", runtime_port, max_size=None, compression=None)
         server = RealtimeSidecarServer(host="127.0.0.1", port=0)
         await server.start()
         try:
-            reader, writer = await asyncio.open_connection("127.0.0.1", ws_proxy_port)
-            writer.write(b"hello-through-sidecar")
-            await writer.drain()
-            echoed = await asyncio.wait_for(reader.readexactly(len(b"hello-through-sidecar")), timeout=1.0)
-            assert echoed == b"hello-through-sidecar"
-            writer.close()
-            await writer.wait_closed()
+            async with websockets.connect(f"ws://127.0.0.1:{ws_proxy_port}/ws?token=dev", max_size=None) as client:
+                await client.send("hello-through-sidecar")
+                echoed = await asyncio.wait_for(client.recv(), timeout=1.0)
+                assert echoed == "hello-through-sidecar"
         finally:
             await server.close()
             upstream.close()

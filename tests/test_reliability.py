@@ -694,7 +694,7 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
     assert snapshot["progress"]["current_milestone"] is None
 
 
-def test_sidecar_runtime_snapshot_marks_listener_ready_handoffs_as_proxy_ready(
+def test_sidecar_runtime_snapshot_marks_websocket_handoffs_ready_after_cutover(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
@@ -707,30 +707,24 @@ def test_sidecar_runtime_snapshot_marks_listener_ready_handoffs_as_proxy_ready(
             realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 88},
             realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
             realtime_sidecar_route_tunnel_contract=lambda: {
-                "current_support": "proxy_ready",
+                "current_support": "ready",
                 "lifecycle_manager": "supervisor",
                 "ownership_boundary": "transport_only",
                 "ws": {
-                    "current_owner": "runtime",
+                    "current_owner": "sidecar",
                     "planned_owner": "sidecar",
-                    "delegation_mode": "local_tcp_proxy",
+                    "delegation_mode": "local_ws_proxy",
                     "listener_ready": True,
-                    "handoff_ready": False,
-                    "blockers": [
-                        "browser route websocket still terminates in the runtime FastAPI app",
-                        "browser/root ingress is not cut over to the sidecar local proxy listener yet",
-                    ],
+                    "handoff_ready": True,
+                    "blockers": [],
                 },
                 "yws": {
-                    "current_owner": "runtime",
+                    "current_owner": "sidecar",
                     "planned_owner": "sidecar",
-                    "delegation_mode": "local_tcp_proxy",
+                    "delegation_mode": "local_ws_proxy",
                     "listener_ready": True,
-                    "handoff_ready": False,
-                    "blockers": [
-                        "Yjs websocket/session ownership still lives in the runtime gateway",
-                        "browser/root ingress is not cut over to the sidecar local proxy listener yet",
-                    ],
+                    "handoff_ready": True,
+                    "blockers": [],
                 },
             },
         ),
@@ -744,16 +738,17 @@ def test_sidecar_runtime_snapshot_marks_listener_ready_handoffs_as_proxy_ready(
         media_runtime={},
     )
 
-    assert snapshot["route_ready"] == "proxy_ready"
-    assert snapshot["sync_ready"] == "proxy_ready"
+    assert snapshot["route_ready"] == "ready"
+    assert snapshot["sync_ready"] == "ready"
     assert snapshot["route_tunnel_contract"]["ws"]["listener_ready"] is True
     assert snapshot["route_tunnel_contract"]["yws"]["listener_ready"] is True
-    assert snapshot["progress"]["state"] == "in_progress"
-    assert snapshot["progress"]["current_milestone"] == "browser_events_ws_handoff"
-    assert (
-        snapshot["progress"]["milestones"][2]["summary"]
-        == "sidecar local proxy listener is ready, but public ownership cutover is still pending"
-    )
+    assert snapshot["progress"]["state"] == "ready"
+    assert snapshot["progress"]["current_milestone"] is None
+    assert snapshot["scope"]["current_boundaries"] == [
+        "hub_root_transport",
+        "browser_events_ws",
+        "browser_yjs_ws",
+    ]
 
 
 def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> None:

@@ -299,6 +299,10 @@ def _route_tunnel_upstream_url(*, host: str, port: int, path: str) -> str:
     return f"ws://{str(host or '').strip() or '127.0.0.1'}:{int(port)}{path}"
 
 
+def _route_tunnel_listener_base_url(*, host: str, port: int) -> str:
+    return f"ws://{str(host or '').strip() or '127.0.0.1'}:{int(port)}"
+
+
 def _reset_route_tunnel_runtime_state() -> None:
     paths = _route_tunnel_runtime_paths()
     upstream_host = _route_tunnel_upstream_host()
@@ -369,6 +373,36 @@ def realtime_sidecar_route_tunnel_listeners(*, role: str | None = None) -> dict[
     return listeners
 
 
+def realtime_sidecar_route_tunnel_ws_bases(*, path: str | None = None, role: str | None = None) -> list[str]:
+    path_norm = str(path or "").strip().lower()
+    if path_norm.startswith("/yws"):
+        ordered_kinds = ["yws"]
+    elif path_norm.startswith("/ws"):
+        ordered_kinds = ["ws"]
+    else:
+        return []
+    listeners = realtime_sidecar_route_tunnel_listeners(role=role)
+    bases: list[str] = []
+    seen: set[str] = set()
+    for kind in ordered_kinds:
+        listener = listeners.get(kind)
+        if not isinstance(listener, dict):
+            continue
+        if not bool(listener.get("enabled")) or not bool(listener.get("upstream_configured")):
+            continue
+        if not bool(listener.get("listener_ready")):
+            continue
+        base = _route_tunnel_listener_base_url(
+            host=str(listener.get("listener_host") or "127.0.0.1").strip() or "127.0.0.1",
+            port=int(listener.get("listener_port") or 0),
+        )
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    return bases
+
+
 def realtime_sidecar_route_tunnel_contract(*, role: str | None = None) -> dict[str, Any]:
     enabled = bool(realtime_sidecar_enabled(role=role))
     lifecycle_manager = _realtime_sidecar_lifecycle_manager()
@@ -379,27 +413,31 @@ def realtime_sidecar_route_tunnel_contract(*, role: str | None = None) -> dict[s
         listener_ready = bool(listener.get("listener_ready"))
         listener_enabled = bool(listener.get("enabled"))
         upstream_configured = bool(listener.get("upstream_configured"))
-        blockers = [ownership_blocker]
+        handoff_ready = enabled and listener_enabled and upstream_configured and listener_ready
+        blockers: list[str] = []
         if not enabled:
+            blockers.append(ownership_blocker)
             blockers.append("realtime sidecar is disabled")
         elif not listener_enabled:
+            blockers.append(ownership_blocker)
             blockers.append("sidecar local route proxy listeners are disabled")
         elif not upstream_configured:
+            blockers.append(ownership_blocker)
             blockers.append("local runtime websocket proxy target is not configured")
-        elif listener_ready:
-            blockers.append("browser/root ingress is not cut over to the sidecar local proxy listener yet")
         else:
-            blockers.append("sidecar local route proxy listener is not running yet")
-        current_support = "disabled" if not enabled else ("proxy_ready" if listener_ready else "planned")
+            blockers.append(ownership_blocker)
+            blockers.append("sidecar local websocket proxy listener is not running yet")
+        current_owner = "sidecar" if handoff_ready else "runtime"
+        current_support = "disabled" if not enabled else ("ready" if handoff_ready else "planned")
         return {
-            "current_owner": "runtime",
+            "current_owner": current_owner,
             "planned_owner": "sidecar",
             "migration_phase": "phase_2_route_tunnel_ownership",
             "logical_channels": logical_channels,
             "current_support": current_support,
-            "delegation_mode": "local_tcp_proxy",
+            "delegation_mode": "local_ws_proxy",
             "listener_ready": listener_ready,
-            "handoff_ready": False,
+            "handoff_ready": handoff_ready,
             "listener": {
                 "host": listener.get("listener_host"),
                 "port": listener.get("listener_port"),
@@ -432,9 +470,9 @@ def realtime_sidecar_route_tunnel_contract(*, role: str | None = None) -> dict[s
     ready_total = sum(
         1
         for item in (ws_entry, yws_entry)
-        if isinstance(item, dict) and bool(item.get("listener_ready"))
+        if isinstance(item, dict) and bool(item.get("handoff_ready"))
     )
-    current_support = "disabled" if not enabled else ("proxy_ready" if ready_total >= 2 else "planned")
+    current_support = "disabled" if not enabled else ("ready" if ready_total >= 2 else "planned")
     return {
         "current_support": current_support,
         "lifecycle_manager": lifecycle_manager,
@@ -1012,7 +1050,7 @@ class RealtimeSidecarServer:
         self._host = str(host or "127.0.0.1")
         self._port = int(port)
         self._server: asyncio.AbstractServer | None = None
-        self._route_servers: dict[str, asyncio.AbstractServer] = {}
+        self._route_servers: dict[str, Any] = {}
         self._active_task: asyncio.Task[Any] | None = None
         self._diag_task: asyncio.Task[Any] | None = None
         self._stopped = asyncio.Event()
@@ -1186,11 +1224,7 @@ class RealtimeSidecarServer:
             if port <= 0:
                 continue
             try:
-                server = await asyncio.start_server(
-                    lambda reader, writer, proxy_kind=kind: self._handle_route_tunnel_client(proxy_kind, reader, writer),
-                    host,
-                    port,
-                )
+                server = await self._serve_route_tunnel_websocket(kind=kind, host=host, port=port)
             except Exception as exc:
                 self._log(f"{kind} proxy bind failed listen={host}:{port} err={type(exc).__name__}: {exc}")
                 continue
@@ -1205,55 +1239,115 @@ class RealtimeSidecarServer:
                 f"{kind} proxy ready listen={listener.get('listener_url')} upstream={listener.get('upstream_url')}"
             )
 
-    async def _handle_route_tunnel_client(
+    async def _serve_route_tunnel_websocket(self, *, kind: str, host: str, port: int) -> Any:
+        import websockets  # type: ignore
+
+        async def _handler(websocket: Any, path: str | None = None) -> None:
+            await self._handle_route_tunnel_websocket(kind=kind, websocket=websocket, path=path)
+
+        kwargs = {
+            "host": host,
+            "port": port,
+            "max_size": None,
+            "compression": None,
+            "ping_interval": None,
+            "ping_timeout": None,
+        }
+        try:
+            return await websockets.serve(_handler, **kwargs)
+        except TypeError:
+            kwargs.pop("ping_timeout", None)
+            return await websockets.serve(_handler, **kwargs)
+
+    def _route_tunnel_requested_path(self, *, websocket: Any, path: str | None, default_path: str) -> str:
+        request = getattr(websocket, "request", None)
+        raw = str(
+            getattr(websocket, "path", None)
+            or getattr(request, "path", None)
+            or path
+            or default_path
+        ).strip()
+        if not raw:
+            return default_path
+        if raw.startswith("/"):
+            return raw
+        return "/" + raw.lstrip("/")
+
+    async def _connect_route_tunnel_upstream(self, *, target: str) -> Any:
+        import websockets  # type: ignore
+
+        kwargs = {
+            "open_timeout": 2.5,
+            "close_timeout": 2.0,
+            "max_size": None,
+            "compression": None,
+            "ping_interval": None,
+            "ping_timeout": None,
+        }
+        try:
+            return await websockets.connect(target, **kwargs)
+        except TypeError:
+            kwargs.pop("ping_timeout", None)
+            return await websockets.connect(target, **kwargs)
+
+    async def _handle_route_tunnel_websocket(
         self,
+        *,
         kind: str,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
+        websocket: Any,
+        path: str | None,
     ) -> None:
         listeners = realtime_sidecar_route_tunnel_listeners()
         listener = listeners.get(str(kind or "").strip().lower())
         if not isinstance(listener, dict):
-            writer.close()
             with contextlib.suppress(Exception):
-                await writer.wait_closed()
+                await websocket.close(code=1011, reason="listener_unavailable")
             return
         target_host = str(listener.get("upstream_host") or "").strip() or "127.0.0.1"
         target_port = int(listener.get("upstream_port") or 0)
         if target_port <= 0:
-            writer.close()
             with contextlib.suppress(Exception):
-                await writer.wait_closed()
+                await websocket.close(code=1011, reason="upstream_unconfigured")
             return
+        upstream_path = str(listener.get("upstream_path") or "/ws").strip() or "/ws"
+        requested_path = self._route_tunnel_requested_path(
+            websocket=websocket,
+            path=path,
+            default_path=upstream_path,
+        )
+        requested_path_only = str(urlparse(requested_path).path or "").strip() or upstream_path
+        if requested_path_only != upstream_path:
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1008, reason="unexpected_path")
+            return
+        target = f"ws://{target_host}:{target_port}{requested_path}"
         try:
-            upstream_reader, upstream_writer = await asyncio.open_connection(target_host, target_port)
+            upstream_ws = await self._connect_route_tunnel_upstream(target=target)
         except Exception as exc:
             self._log(
-                f"{kind} proxy upstream connect failed target={target_host}:{target_port} err={type(exc).__name__}: {exc}"
+                f"{kind} proxy upstream connect failed target={target} err={type(exc).__name__}: {exc}"
             )
-            writer.close()
             with contextlib.suppress(Exception):
-                await writer.wait_closed()
+                await websocket.close(code=1011, reason="upstream_connect_failed")
             return
 
-        async def _pipe(
-            source_reader: asyncio.StreamReader,
-            dest_writer: asyncio.StreamWriter,
-        ) -> None:
+        async def _pipe_messages(source: Any, dest: Any) -> None:
             try:
-                while True:
-                    chunk = await source_reader.read(65536)
-                    if not chunk:
-                        break
-                    dest_writer.write(chunk)
-                    await dest_writer.drain()
+                async for message in source:
+                    await dest.send(message)
             finally:
                 with contextlib.suppress(Exception):
-                    dest_writer.close()
+                    await dest.close()
 
         tasks = [
-            asyncio.create_task(_pipe(reader, upstream_writer), name=f"adaos-realtime-{kind}-proxy-upstream"),
-            asyncio.create_task(_pipe(upstream_reader, writer), name=f"adaos-realtime-{kind}-proxy-downstream"),
+            asyncio.create_task(
+                _pipe_messages(websocket, upstream_ws),
+                name=f"adaos-realtime-{kind}-proxy-upstream",
+            ),
+            asyncio.create_task(
+                _pipe_messages(upstream_ws, websocket),
+                name=f"adaos-realtime-{kind}-proxy-downstream",
+            ),
         ]
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -1265,13 +1359,9 @@ class RealtimeSidecarServer:
             with contextlib.suppress(BaseException):
                 await task
         with contextlib.suppress(Exception):
-            upstream_writer.close()
+            await upstream_ws.close()
         with contextlib.suppress(Exception):
-            writer.close()
-        with contextlib.suppress(Exception):
-            await upstream_writer.wait_closed()
-        with contextlib.suppress(Exception):
-            await writer.wait_closed()
+            await websocket.close()
 
     def _tagged_remote_url(self, url: str, *, session_id: str) -> str:
         if not _truthy(os.getenv("ADAOS_REALTIME_CONNECT_TAG_QUERY", "1"), default=True):

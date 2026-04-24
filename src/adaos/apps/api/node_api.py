@@ -127,11 +127,11 @@ def _compact_route_tunnel_state(value: Any) -> str:
             return "starting"
         return "degraded"
     if planned_owner == "sidecar":
-        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode in {"local_tcp_proxy", "local_ws_proxy"}:
             return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "planned"
         return "disabled" if current_support == "disabled" else "planned"
     if current_owner == "runtime":
-        if listener_ready or current_support == "proxy_ready" or delegation_mode == "local_tcp_proxy":
+        if listener_ready or current_support == "proxy_ready" or delegation_mode in {"local_tcp_proxy", "local_ws_proxy"}:
             return "proxy_ready" if listener_ready or current_support == "proxy_ready" else "not_owned"
         return "not_owned"
     return "unknown"
