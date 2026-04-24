@@ -209,10 +209,14 @@ def test_post_commit_checks_deactivate_failing_skills(monkeypatch) -> None:
                 return {"suite": _TestResult("failed")}
             return {"suite": _TestResult("passed")}
 
-        def deactivate_runtime(self, name: str, reason: str = ""):
+        def deactivate_runtime(self, name: str, reason: str = "", failure_kind: str = "", failed_stage: str = "", source: str = "", committed_core_switch=None):
             assert name == "service_skill"
             assert reason == "post_commit_checks_failed"
-            return {"name": name, "deactivated": True, "reason": reason}
+            assert failure_kind == "tests"
+            assert failed_stage == "tests"
+            assert source == "post_commit_check_installed_skills"
+            assert committed_core_switch is True
+            return {"name": name, "deactivated": True, "reason": reason, "failure_kind": failure_kind, "failed_stage": failed_stage}
 
     class _Ctx:
         sql = object()
@@ -271,10 +275,14 @@ def test_post_commit_checks_fail_on_lifecycle_health_before_tests(monkeypatch) -
         def run_skill_tests(self, name: str, source: str = "installed"):
             raise AssertionError("tests should not run when lifecycle already failed")
 
-        def deactivate_runtime(self, name: str, reason: str = ""):
+        def deactivate_runtime(self, name: str, reason: str = "", failure_kind: str = "", failed_stage: str = "", source: str = "", committed_core_switch=None):
             assert name == "broken_skill"
             assert reason == "post_commit_checks_failed"
-            return {"name": name, "deactivated": True, "reason": reason}
+            assert failure_kind == "lifecycle"
+            assert failed_stage == "rehydrate"
+            assert source == "post_commit_check_installed_skills"
+            assert committed_core_switch is True
+            return {"name": name, "deactivated": True, "reason": reason, "failure_kind": failure_kind, "failed_stage": failed_stage}
 
     class _Ctx:
         sql = object()
@@ -299,3 +307,64 @@ def test_post_commit_checks_fail_on_lifecycle_health_before_tests(monkeypatch) -
     assert payload["skills"][0]["failed_stage"] == "rehydrate"
     assert payload["skills"][0]["failure_kind"] == "lifecycle"
     assert payload["skills"][0]["deactivated"] is True
+
+
+def test_post_commit_checks_persist_deactivation_metadata(monkeypatch) -> None:
+    import adaos.apps.skill_runtime_migrate as mod
+
+    class _Row:
+        name = "broken_skill"
+        installed = True
+
+    class _Registry:
+        def __init__(self, _sql) -> None:
+            pass
+
+        def list(self):
+            return [_Row()]
+
+    class _Manager:
+        def runtime_status(self, name: str):
+            return {
+                "version": "2.0.0",
+                "active_slot": "B",
+                "deactivated": False,
+                "lifecycle": {
+                    "rehydrate": {"ok": False, "skipped": False, "error": "projection rebuild failed"},
+                },
+            }
+
+        def run_skill_tests(self, name: str, source: str = "installed"):
+            raise AssertionError("tests should not run when lifecycle already failed")
+
+        def deactivate_runtime(self, name: str, reason: str = "", failure_kind: str = "", failed_stage: str = "", source: str = "", committed_core_switch=None):
+            return {
+                "name": name,
+                "deactivated": True,
+                "reason": reason,
+                "failure_kind": failure_kind,
+                "failed_stage": failed_stage,
+                "source": source,
+                "committed_core_switch": committed_core_switch,
+            }
+
+    class _Ctx:
+        sql = object()
+        skills_repo = object()
+        git = object()
+        paths = object()
+        bus = None
+        caps = object()
+
+    monkeypatch.setattr(mod, "init_ctx", lambda: None)
+    monkeypatch.setattr(mod, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", _Registry)
+    monkeypatch.setattr(mod, "_manager", lambda: _Manager())
+
+    payload = mod.post_commit_check_installed_skills(deactivate_on_failure=True)
+
+    deactivation = payload["skills"][0]["deactivation"]
+    assert deactivation["failure_kind"] == "lifecycle"
+    assert deactivation["failed_stage"] == "rehydrate"
+    assert deactivation["source"] == "post_commit_check_installed_skills"
+    assert deactivation["committed_core_switch"] is True

@@ -589,6 +589,7 @@ They should also treat persisted lifecycle diagnostics as first-class health sig
 
 Current implementation now feeds lifecycle diagnostics into the skill runtime migration report and allows post-commit checks to fail and selectively deactivate a skill before test execution when runtime lifecycle health is already known to be bad.
 Operator-facing projections now also distinguish lifecycle failures from plain test failures, so reports can show `lifecycle/rehydrate` instead of collapsing everything into `tests`.
+Selective deactivation now also persists that same failure contract in the skill deactivation marker, so the runtime can distinguish "manually deactivated" from "quarantined after committed core switch because `lifecycle/rehydrate` failed".
 
 ### Roadmap checklist
 
@@ -603,7 +604,7 @@ Use the checklist below as the migration hardening path for the kernel/runtime l
 - [x] standardize rollback semantics when pointer switch succeeded but rehydration failed
 - [x] connect global runtime drain/shutdown events to skill-level `drain` / `dispose` / `before_deactivate`
 - [x] surface lifecycle-vs-test failure classes in operator-facing migration reports
-- [ ] standardize deactivate semantics when core switch stays committed but one skill cannot complete rehydration
+- [x] standardize deactivation metadata when core switch stays committed but one skill cannot complete rehydration
 - [ ] make projection-backed skills document which branches are canonical and which are rebuildable caches
 - [ ] move Yjs-backed stateful skills toward "durable truth + projection rebuild" instead of "projection is the only truth"
 - [ ] add tests that simulate restart/update/rollback with persisted state present before cutover

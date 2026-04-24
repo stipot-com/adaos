@@ -232,7 +232,14 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
             entry["error"] = str(exc)
             if deactivate_on_failure:
                 try:
-                    deactivated = mgr.deactivate_runtime(skill_name, reason="post_commit_checks_failed")
+                    deactivated = mgr.deactivate_runtime(
+                        skill_name,
+                        reason="post_commit_checks_failed",
+                        failure_kind=str(entry["failure_kind"] or ""),
+                        failed_stage=str(entry["failed_stage"] or ""),
+                        source="post_commit_check_installed_skills",
+                        committed_core_switch=True,
+                    )
                     entry["deactivated"] = True
                     entry["deactivation"] = deactivated
                 except Exception as deactivate_exc:

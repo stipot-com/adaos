@@ -72,6 +72,7 @@ For that case the runtime lifecycle now includes explicit deactivation:
 
 This is intended for post-commit checks where rolling back the whole core is unnecessary, but continuing to serve a broken skill would be unsafe.
 Core-update orchestration may trigger this automatically after a successful runtime switch if post-commit skill checks fail.
+When that happens, the deactivation record now persists the failure contract itself, including `failure_kind`, `failed_stage`, `source`, and whether the core switch was already committed.
 
 ## Optional internal data migration
 
@@ -185,6 +186,7 @@ Post-commit migration checks now also consume these lifecycle diagnostics.
 That means a skill may be marked failed or selectively deactivated because `rehydrate` / `healthcheck` is already unhealthy even before any explicit post-commit test suite runs.
 
 Operator-facing migration reports also surface lifecycle failures separately from test failures, so a `lifecycle/rehydrate` failure is visible as a first-class shutdown/migration issue rather than only as a generic failed skill.
+This same metadata is also written into the deactivation marker when a skill is selectively quarantined after a committed core switch.
 
 ## Tool execution and setup
 

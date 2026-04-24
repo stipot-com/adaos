@@ -1363,7 +1363,16 @@ class SkillManager:
             emit(self.bus, "skills.rolledback", payload, "skill.mgr")
         return target
 
-    def deactivate_runtime(self, name: str, *, reason: str = "post_commit_checks_failed") -> dict[str, Any]:
+    def deactivate_runtime(
+        self,
+        name: str,
+        *,
+        reason: str = "post_commit_checks_failed",
+        failure_kind: str = "",
+        failed_stage: str = "",
+        source: str = "",
+        committed_core_switch: bool | None = None,
+    ) -> dict[str, Any]:
         env = self._runtime_env(name)
         version = env.resolve_active_version()
         if not version:
@@ -1384,18 +1393,30 @@ class SkillManager:
                     "version": version,
                     "slot": active_slot,
                     "reason": str(reason or "post_commit_checks_failed"),
+                    "failure_kind": str(failure_kind or "").strip(),
+                    "failed_stage": str(failed_stage or "").strip(),
+                    "source": str(source or "").strip(),
+                    "committed_core_switch": bool(committed_core_switch),
                     "state": "deactivating",
                 },
             )
         )
         metadata.setdefault("slots", {}).setdefault(active_slot, {})["lifecycle"] = dict(lifecycle)
         env.write_version_metadata(version, metadata)
+        deactivation_reason = str(reason or "post_commit_checks_failed")
+        deactivation_failure_kind = str(failure_kind or "").strip()
+        deactivation_failed_stage = str(failed_stage or "").strip()
+        deactivation_source = str(source or "").strip()
         payload = {
             "name": name,
             "version": version,
             "slot": active_slot,
-            "reason": str(reason or "post_commit_checks_failed"),
+            "reason": deactivation_reason,
             "deactivated": True,
+            "failure_kind": deactivation_failure_kind,
+            "failed_stage": deactivation_failed_stage,
+            "source": deactivation_source,
+            "committed_core_switch": bool(committed_core_switch),
         }
         env.write_deactivation(payload)
         try:
@@ -1413,11 +1434,29 @@ class SkillManager:
         space: str = "default",
         webspace_id: str | None = None,
         reason: str = "post_commit_checks_failed",
+        failure_kind: str = "",
+        failed_stage: str = "",
+        source: str = "",
+        committed_core_switch: bool | None = None,
     ) -> dict[str, Any]:
         if space == "dev":
-            return self.deactivate_dev_runtime(name, reason=reason)
+            return self.deactivate_dev_runtime(
+                name,
+                reason=reason,
+                failure_kind=failure_kind,
+                failed_stage=failed_stage,
+                source=source,
+                committed_core_switch=committed_core_switch,
+            )
         else:
-            return self.deactivate_runtime(name, reason=reason)
+            return self.deactivate_runtime(
+                name,
+                reason=reason,
+                failure_kind=failure_kind,
+                failed_stage=failed_stage,
+                source=source,
+                committed_core_switch=committed_core_switch,
+            )
 
     def runtime_status(self, name: str) -> Dict[str, Any]:
         env = self._runtime_env(name)
@@ -1501,7 +1540,16 @@ class SkillManager:
             state["default_tool"] = manifest.get("default_tool")
         return state
 
-    def deactivate_dev_runtime(self, name: str, *, reason: str = "post_commit_checks_failed") -> dict[str, Any]:
+    def deactivate_dev_runtime(
+        self,
+        name: str,
+        *,
+        reason: str = "post_commit_checks_failed",
+        failure_kind: str = "",
+        failed_stage: str = "",
+        source: str = "",
+        committed_core_switch: bool | None = None,
+    ) -> dict[str, Any]:
         env = self._runtime_env_dev(name)
         version = env.resolve_active_version()
         if not version:
@@ -1514,6 +1562,10 @@ class SkillManager:
             "slot": active_slot,
             "reason": str(reason or "post_commit_checks_failed"),
             "deactivated": True,
+            "failure_kind": str(failure_kind or "").strip(),
+            "failed_stage": str(failed_stage or "").strip(),
+            "source": str(source or "").strip(),
+            "committed_core_switch": bool(committed_core_switch),
             "dev": True,
         }
         env.write_deactivation(payload)

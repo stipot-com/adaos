@@ -798,3 +798,58 @@ def test_shutdown_active_runtimes_runs_requested_hook_subset(monkeypatch) -> Non
     assert calls == ["drain_tool"]
     assert status["lifecycle"]["drain"]["tool"] == "drain_tool"
     assert status["lifecycle"]["dispose"]["skipped"] is True
+
+
+def test_deactivate_runtime_persists_committed_switch_metadata(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "deactivation_metadata_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: deactivation_metadata_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {
+                "skill_env": str(kwargs["slot"].skill_env_path),
+                "skill_memory": str(kwargs["slot"].skill_memory_path),
+                "python_paths": [],
+            },
+            "tools": {},
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="A")
+    mgr.activate_runtime(skill_name, version="1.0.0", slot="A")
+
+    payload = mgr.deactivate_runtime(
+        skill_name,
+        reason="post_commit_checks_failed",
+        failure_kind="lifecycle",
+        failed_stage="rehydrate",
+        source="post_commit_check_installed_skills",
+        committed_core_switch=True,
+    )
+    status = mgr.runtime_status(skill_name)
+
+    assert payload["failure_kind"] == "lifecycle"
+    assert payload["failed_stage"] == "rehydrate"
+    assert payload["source"] == "post_commit_check_installed_skills"
+    assert payload["committed_core_switch"] is True
+    assert status["deactivation"]["failure_kind"] == "lifecycle"
+    assert status["deactivation"]["failed_stage"] == "rehydrate"
+    assert status["deactivation"]["source"] == "post_commit_check_installed_skills"
+    assert status["deactivation"]["committed_core_switch"] is True
