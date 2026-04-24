@@ -603,7 +603,14 @@ class HubLinkManager:
         store = get_ystore_for_webspace(webspace_id)
         async with suppress_ystore_write_notifications():
             await store.write(update)
-        apply_update_to_live_room(webspace_id, update)
+        apply_update_to_live_room(
+            webspace_id,
+            update,
+            root_names=["data", "ui"],
+            source="subnet.link_manager",
+            owner="core:subnet_link_manager",
+            channel="core.subnet.link.update",
+        )
         await self.broadcast_yjs_update(webspace_id=webspace_id, update=update, origin_node_id=node_id)
 
     async def ingest_member_bus_event(self, *, node_id: str, event: dict[str, Any]) -> None:

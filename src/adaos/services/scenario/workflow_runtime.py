@@ -13,11 +13,21 @@ import anyio
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.skills.runtime_runner import execute_tool as execute_skill_tool
 
 _log = logging.getLogger("adaos.scenario.workflow")
+
+
+def _workflow_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="scenario.workflow_runtime",
+        owner="core:workflow_runtime",
+        channel="core.workflow_runtime.async",
+    )
 
 
 def _payload(evt: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,42 +83,43 @@ class ScenarioWorkflowRuntime:
         # Compute next_actions for the current state.
         next_actions = self._actions_for_state(states, initial)
 
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                # For desktop Prompt IDE we keep workflow state under data.prompt.*.
-                # For non-desktop/system scenarios we use data.scenarios.<id>.workflow.
-                if scenario_id == "prompt_engineer_scenario":
-                    prompt_section = data_map.get("prompt")
-                    if not isinstance(prompt_section, dict):
-                        prompt_section = {}
-                    wf_obj = dict(prompt_section.get("workflow") or {})
-                    wf_obj["state"] = initial
-                    wf_obj["next_actions"] = json.loads(json.dumps(next_actions))
-                    prompt_section["workflow"] = wf_obj
+        async with _workflow_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    # For desktop Prompt IDE we keep workflow state under data.prompt.*.
+                    # For non-desktop/system scenarios we use data.scenarios.<id>.workflow.
+                    if scenario_id == "prompt_engineer_scenario":
+                        prompt_section = data_map.get("prompt")
+                        if not isinstance(prompt_section, dict):
+                            prompt_section = {}
+                        wf_obj = dict(prompt_section.get("workflow") or {})
+                        wf_obj["state"] = initial
+                        wf_obj["next_actions"] = json.loads(json.dumps(next_actions))
+                        prompt_section["workflow"] = wf_obj
 
-                    # Initialise Prompt IDE-specific sections for the prompt_engineer_scenario.
-                    status_section = dict(prompt_section.get("status") or {})
-                    status_section["buttons"] = self._build_status_buttons(webspace_id, states, initial)
-                    prompt_section["status"] = status_section
-                    # Files and LLM status helpers.
-                    prompt_section.setdefault("files", {})
-                    prompt_section.setdefault("llm_status", {"status": "idle", "message": "LLM: idle"})
+                        # Initialise Prompt IDE-specific sections for the prompt_engineer_scenario.
+                        status_section = dict(prompt_section.get("status") or {})
+                        status_section["buttons"] = self._build_status_buttons(webspace_id, states, initial)
+                        prompt_section["status"] = status_section
+                        # Files and LLM status helpers.
+                        prompt_section.setdefault("files", {})
+                        prompt_section.setdefault("llm_status", {"status": "idle", "message": "LLM: idle"})
 
-                    payload = json.loads(json.dumps(prompt_section))
-                    data_map.set(txn, "prompt", payload)
-                else:
-                    scenarios_section = data_map.get("scenarios")
-                    if not isinstance(scenarios_section, dict):
-                        scenarios_section = {}
-                    scenario_section = dict(scenarios_section.get(scenario_id) or {})
-                    wf_obj = dict(scenario_section.get("workflow") or {})
-                    wf_obj["state"] = initial
-                    wf_obj["next_actions"] = json.loads(json.dumps(next_actions))
-                    scenario_section["workflow"] = wf_obj
-                    scenarios_section[scenario_id] = scenario_section
-                    payload = json.loads(json.dumps(scenarios_section))
-                    data_map.set(txn, "scenarios", payload)
+                        payload = json.loads(json.dumps(prompt_section))
+                        data_map.set(txn, "prompt", payload)
+                    else:
+                        scenarios_section = data_map.get("scenarios")
+                        if not isinstance(scenarios_section, dict):
+                            scenarios_section = {}
+                        scenario_section = dict(scenarios_section.get(scenario_id) or {})
+                        wf_obj = dict(scenario_section.get("workflow") or {})
+                        wf_obj["state"] = initial
+                        wf_obj["next_actions"] = json.loads(json.dumps(next_actions))
+                        scenario_section["workflow"] = wf_obj
+                        scenarios_section[scenario_id] = scenario_section
+                        payload = json.loads(json.dumps(scenarios_section))
+                        data_map.set(txn, "scenarios", payload)
 
     def _actions_for_state(self, states: Dict[str, Any], state_id: str) -> List[Dict[str, Any]]:
         state = states.get(state_id) or {}
@@ -167,86 +178,87 @@ class ScenarioWorkflowRuntime:
         resolved_object_type: Optional[str] = object_type
         resolved_object_id: Optional[str] = object_id
 
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                if scenario_id == "prompt_engineer_scenario":
-                    prompt_section = data_map.get("prompt")
-                    if not isinstance(prompt_section, dict):
-                        prompt_section = {}
-                    wf_obj = dict(prompt_section.get("workflow") or {})
-                    # For Prompt IDE we allow fallback to data.prompt.workflow.state.
-                    current_state = wf_obj.get("state") or self._read_state(ydoc) or initial
-                else:
-                    scenarios_section = data_map.get("scenarios")
-                    if not isinstance(scenarios_section, dict):
-                        scenarios_section = {}
-                    scenario_section = dict(scenarios_section.get(scenario_id) or {})
-                    wf_obj = dict(scenario_section.get("workflow") or {})
-                    # For non-Prompt scenarios rely only on per-scenario workflow state
-                    # and initial_state; avoid leaking prompt workflow state (e.g. "tz").
-                    current_state = wf_obj.get("state") or initial
+        async with _workflow_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    if scenario_id == "prompt_engineer_scenario":
+                        prompt_section = data_map.get("prompt")
+                        if not isinstance(prompt_section, dict):
+                            prompt_section = {}
+                        wf_obj = dict(prompt_section.get("workflow") or {})
+                        # For Prompt IDE we allow fallback to data.prompt.workflow.state.
+                        current_state = wf_obj.get("state") or self._read_state(ydoc) or initial
+                    else:
+                        scenarios_section = data_map.get("scenarios")
+                        if not isinstance(scenarios_section, dict):
+                            scenarios_section = {}
+                        scenario_section = dict(scenarios_section.get(scenario_id) or {})
+                        wf_obj = dict(scenario_section.get("workflow") or {})
+                        # For non-Prompt scenarios rely only on per-scenario workflow state
+                        # and initial_state; avoid leaking prompt workflow state (e.g. "tz").
+                        current_state = wf_obj.get("state") or initial
 
-                if scenario_id != "greet_on_boot":
-                    _log.debug(
-                        "workflow.action.state scenario=%s webspace=%s current_state=%s action=%s",
-                        scenario_id,
-                        webspace_id,
-                        current_state,
-                        action_id,
-                    )
-
-                # If object binding is not passed explicitly, try to reuse the
-                # last known binding stored in the workflow projection.
-                if not resolved_object_type:
-                    value = wf_obj.get("object_type")
-                    if isinstance(value, str) and value:
-                        resolved_object_type = value
-                if not resolved_object_id:
-                    value = wf_obj.get("object_id")
-                    if isinstance(value, str) and value:
-                        resolved_object_id = value
-
-                # Resolve action metadata (including optional tool and next_state).
-                action_meta = self._resolve_action(states, current_state, action_id)
-                if not action_meta:
                     if scenario_id != "greet_on_boot":
                         _log.debug(
-                            "workflow.action.missing_entry scenario=%s webspace=%s state=%s action=%s",
+                            "workflow.action.state scenario=%s webspace=%s current_state=%s action=%s",
                             scenario_id,
                             webspace_id,
                             current_state,
                             action_id,
                         )
-                    return
 
-                next_state = action_meta.get("next_state") or current_state
+                    # If object binding is not passed explicitly, try to reuse the
+                    # last known binding stored in the workflow projection.
+                    if not resolved_object_type:
+                        value = wf_obj.get("object_type")
+                        if isinstance(value, str) and value:
+                            resolved_object_type = value
+                    if not resolved_object_id:
+                        value = wf_obj.get("object_id")
+                        if isinstance(value, str) and value:
+                            resolved_object_id = value
 
-                wf_obj["state"] = next_state
-                wf_obj["next_actions"] = json.loads(json.dumps(self._actions_for_state(states, next_state)))
-                if resolved_object_type:
-                    wf_obj["object_type"] = resolved_object_type
-                if resolved_object_id:
-                    wf_obj["object_id"] = resolved_object_id
+                    # Resolve action metadata (including optional tool and next_state).
+                    action_meta = self._resolve_action(states, current_state, action_id)
+                    if not action_meta:
+                        if scenario_id != "greet_on_boot":
+                            _log.debug(
+                                "workflow.action.missing_entry scenario=%s webspace=%s state=%s action=%s",
+                                scenario_id,
+                                webspace_id,
+                                current_state,
+                                action_id,
+                            )
+                        return
 
-                if scenario_id == "prompt_engineer_scenario":
-                    prompt_section["workflow"] = wf_obj
-                    # Keep status bar buttons in sync for Prompt IDE scenario.
-                    status_section = dict(prompt_section.get("status") or {})
-                    status_section["buttons"] = self._build_status_buttons(
-                        webspace_id,
-                        states,
-                        next_state,
-                        wf_obj.get("object_id"),
-                    )
-                    prompt_section["status"] = status_section
-                    payload = json.loads(json.dumps(prompt_section))
-                    data_map.set(txn, "prompt", payload)
-                else:
-                    scenario_section["workflow"] = wf_obj
-                    scenarios_section[scenario_id] = scenario_section
-                    payload = json.loads(json.dumps(scenarios_section))
-                    data_map.set(txn, "scenarios", payload)
+                    next_state = action_meta.get("next_state") or current_state
+
+                    wf_obj["state"] = next_state
+                    wf_obj["next_actions"] = json.loads(json.dumps(self._actions_for_state(states, next_state)))
+                    if resolved_object_type:
+                        wf_obj["object_type"] = resolved_object_type
+                    if resolved_object_id:
+                        wf_obj["object_id"] = resolved_object_id
+
+                    if scenario_id == "prompt_engineer_scenario":
+                        prompt_section["workflow"] = wf_obj
+                        # Keep status bar buttons in sync for Prompt IDE scenario.
+                        status_section = dict(prompt_section.get("status") or {})
+                        status_section["buttons"] = self._build_status_buttons(
+                            webspace_id,
+                            states,
+                            next_state,
+                            wf_obj.get("object_id"),
+                        )
+                        prompt_section["status"] = status_section
+                        payload = json.loads(json.dumps(prompt_section))
+                        data_map.set(txn, "prompt", payload)
+                    else:
+                        scenario_section["workflow"] = wf_obj
+                        scenarios_section[scenario_id] = scenario_section
+                        payload = json.loads(json.dumps(scenarios_section))
+                        data_map.set(txn, "scenarios", payload)
 
         # Execute associated tool (if any) outside of the YDoc transaction.
         if action_meta is not None:
@@ -300,16 +312,17 @@ class ScenarioWorkflowRuntime:
             # Fallback: ignore unknown state ids.
             return
 
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                prompt_section = data_map.get("prompt")
-                if not isinstance(prompt_section, dict):
-                    prompt_section = {}
-                wf_obj = dict(prompt_section.get("workflow") or {})
-                wf_obj["state"] = state_id
-                if object_type:
-                    wf_obj["object_type"] = object_type
+        async with _workflow_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    prompt_section = data_map.get("prompt")
+                    if not isinstance(prompt_section, dict):
+                        prompt_section = {}
+                    wf_obj = dict(prompt_section.get("workflow") or {})
+                    wf_obj["state"] = state_id
+                    if object_type:
+                        wf_obj["object_type"] = object_type
                     if object_id:
                         wf_obj["object_id"] = object_id
                     wf_obj["next_actions"] = json.loads(json.dumps(self._actions_for_state(states, state_id)))
@@ -338,8 +351,8 @@ class ScenarioWorkflowRuntime:
                             wf_obj.get("object_id"),
                         )
                         prompt_section["status"] = status_section
-                payload = json.loads(json.dumps(prompt_section))
-                data_map.set(txn, "prompt", payload)
+                    payload = json.loads(json.dumps(prompt_section))
+                    data_map.set(txn, "prompt", payload)
 
     def _resolve_next_state(self, states: Dict[str, Any], current_state: str, action_id: str) -> Optional[str]:
         state = states.get(current_state) or {}
@@ -527,64 +540,65 @@ class ScenarioWorkflowRuntime:
 
         output_path = result.get("output_path")
 
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                prompt_section = data_map.get("prompt")
-                if not isinstance(prompt_section, dict):
-                    prompt_section = {}
-                llm_obj = dict(prompt_section.get("llm_artifacts") or {})
-                items = llm_obj.get("items") or []
-                if not isinstance(items, list):
-                    items = []
+        async with _workflow_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    prompt_section = data_map.get("prompt")
+                    if not isinstance(prompt_section, dict):
+                        prompt_section = {}
+                    llm_obj = dict(prompt_section.get("llm_artifacts") or {})
+                    items = llm_obj.get("items") or []
+                    if not isinstance(items, list):
+                        items = []
 
-                entry = {
-                    "id": "ts_draft",
-                    "kind": "ts_draft",
-                    "scenario_id": scenario_id,
-                    "object_type": object_type,
-                    "object_id": object_id,
-                    "title": "TS detailed implementation draft",
-                    "content": output_text,
-                    "updated_at": ts,
-                }
-                # Replace or append ts_draft entry.
-                filtered: List[Dict[str, Any]] = []
-                for it in items:
-                    if isinstance(it, dict) and it.get("id") != "ts_draft":
-                        filtered.append(it)
-                filtered.append(entry)
+                    entry = {
+                        "id": "ts_draft",
+                        "kind": "ts_draft",
+                        "scenario_id": scenario_id,
+                        "object_type": object_type,
+                        "object_id": object_id,
+                        "title": "TS detailed implementation draft",
+                        "content": output_text,
+                        "updated_at": ts,
+                    }
+                    # Replace or append ts_draft entry.
+                    filtered: List[Dict[str, Any]] = []
+                    for it in items:
+                        if isinstance(it, dict) and it.get("id") != "ts_draft":
+                            filtered.append(it)
+                    filtered.append(entry)
 
-                llm_obj["items"] = filtered
-                prompt_section["llm_artifacts"] = json.loads(json.dumps(llm_obj))
+                    llm_obj["items"] = filtered
+                    prompt_section["llm_artifacts"] = json.loads(json.dumps(llm_obj))
 
-                # Also expose a convenience selected file path for the IDE so
-                # that it can focus on the latest TS draft artifact.
-                files_obj = dict(prompt_section.get("files") or {})
-                if isinstance(output_path, str) and output_path:
-                    files_obj["selected"] = output_path
-                    # Refresh file list for the current project so that newly
-                    # created artifacts (such as ts_draft.md) appear in the Files
-                    # panel without requiring a manual snapshot.
-                    if object_type and object_id:
-                        files_obj["object_type"] = object_type
-                        files_obj["object_id"] = object_id
-                        files_obj["list"] = self._build_files_list(object_type, object_id)
-                prompt_section["files"] = json.loads(json.dumps(files_obj))
+                    # Also expose a convenience selected file path for the IDE so
+                    # that it can focus on the latest TS draft artifact.
+                    files_obj = dict(prompt_section.get("files") or {})
+                    if isinstance(output_path, str) and output_path:
+                        files_obj["selected"] = output_path
+                        # Refresh file list for the current project so that newly
+                        # created artifacts (such as ts_draft.md) appear in the Files
+                        # panel without requiring a manual snapshot.
+                        if object_type and object_id:
+                            files_obj["object_type"] = object_type
+                            files_obj["object_id"] = object_id
+                            files_obj["list"] = self._build_files_list(object_type, object_id)
+                    prompt_section["files"] = json.loads(json.dumps(files_obj))
 
-                # Update LLM status snapshot with last request/response for debugging.
-                status_obj = dict(prompt_section.get("llm_status") or {})
-                status_obj["status"] = "idle"
-                status_obj["message"] = "LLM: idle"
-                if isinstance(result, dict):
-                    if "request_prompt" in result:
-                        status_obj["last_request"] = result.get("request_prompt")
-                    if "raw_response" in result:
-                        status_obj["last_response"] = result.get("raw_response")
-                prompt_section["llm_status"] = json.loads(json.dumps(status_obj))
+                    # Update LLM status snapshot with last request/response for debugging.
+                    status_obj = dict(prompt_section.get("llm_status") or {})
+                    status_obj["status"] = "idle"
+                    status_obj["message"] = "LLM: idle"
+                    if isinstance(result, dict):
+                        if "request_prompt" in result:
+                            status_obj["last_request"] = result.get("request_prompt")
+                        if "raw_response" in result:
+                            status_obj["last_response"] = result.get("raw_response")
+                    prompt_section["llm_status"] = json.loads(json.dumps(status_obj))
 
-                payload = json.loads(json.dumps(prompt_section))
-                data_map.set(txn, "prompt", payload)
+                    payload = json.loads(json.dumps(prompt_section))
+                    data_map.set(txn, "prompt", payload)
 
     async def _set_llm_status(
         self,
@@ -596,31 +610,32 @@ class ScenarioWorkflowRuntime:
         Update LLM status snapshot under data/prompt/llm_status and refresh
         the dedicated status bar button (llm-status) title.
         """
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                prompt_section = data_map.get("prompt")
-                if not isinstance(prompt_section, dict):
-                    prompt_section = {}
+        async with _workflow_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    prompt_section = data_map.get("prompt")
+                    if not isinstance(prompt_section, dict):
+                        prompt_section = {}
 
-                status_obj = dict(prompt_section.get("llm_status") or {})
-                status_obj["status"] = status
-                status_obj["message"] = message
-                prompt_section["llm_status"] = json.loads(json.dumps(status_obj))
+                    status_obj = dict(prompt_section.get("llm_status") or {})
+                    status_obj["status"] = status
+                    status_obj["message"] = message
+                    prompt_section["llm_status"] = json.loads(json.dumps(status_obj))
 
-                status_bar = dict(prompt_section.get("status") or {})
-                buttons = list(status_bar.get("buttons") or [])
-                updated_buttons: List[Dict[str, Any]] = []
-                for btn in buttons:
-                    if isinstance(btn, dict) and btn.get("id") == "llm-status":
-                        btn = dict(btn)
-                        btn["title"] = message
-                    updated_buttons.append(btn)
-                status_bar["buttons"] = updated_buttons
-                prompt_section["status"] = json.loads(json.dumps(status_bar))
+                    status_bar = dict(prompt_section.get("status") or {})
+                    buttons = list(status_bar.get("buttons") or [])
+                    updated_buttons: List[Dict[str, Any]] = []
+                    for btn in buttons:
+                        if isinstance(btn, dict) and btn.get("id") == "llm-status":
+                            btn = dict(btn)
+                            btn["title"] = message
+                        updated_buttons.append(btn)
+                    status_bar["buttons"] = updated_buttons
+                    prompt_section["status"] = json.loads(json.dumps(status_bar))
 
-                payload = json.loads(json.dumps(prompt_section))
-                data_map.set(txn, "prompt", payload)
+                    payload = json.loads(json.dumps(prompt_section))
+                    data_map.set(txn, "prompt", payload)
 
     def _project_root(self, object_type: Optional[str], object_id: Optional[str]) -> Optional[Path]:
         kind = (object_type or "").strip().lower()

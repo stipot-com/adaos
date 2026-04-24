@@ -26,6 +26,7 @@ from adaos.services.node_config import load_config
 from adaos.services.scenarios.loader import read_manifest, read_content
 import y_py as Y
 from adaos.services.yjs.doc import get_ydoc, async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.skill.manager import SkillManager
 from adaos.services.semver import bump_version
@@ -34,6 +35,24 @@ from adaos.services.workspace_registry import upsert_workspace_registry_entry
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.scenario.manager")
 _RUNTIME_OWNED_DATA_KEYS = {"catalog", "installed", "desktop", "routing"}
+
+
+def _scenario_manager_async_write_meta():
+    return ystore_write_metadata(
+        root_names=["ui", "registry", "data"],
+        source="scenario.manager",
+        owner="core:scenario_manager",
+        channel="core.scenario_manager.async",
+    )
+
+
+def _scenario_manager_sync_write_meta():
+    return ystore_write_metadata_sync(
+        root_names=["ui", "registry", "data"],
+        source="scenario.manager",
+        owner="core:scenario_manager",
+        channel="core.scenario_manager.sync",
+    )
 
 
 @dataclass(slots=True)
@@ -329,8 +348,9 @@ class ScenarioManager:
         self.caps.require("core", "scenarios.manage")
         ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id, space=space)
 
-        with get_ydoc(target_webspace) as ydoc:
-            self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
+        with _scenario_manager_sync_write_meta():
+            with get_ydoc(target_webspace) as ydoc:
+                self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
 
         if emit_event:
             emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")
@@ -350,8 +370,9 @@ class ScenarioManager:
         self.caps.require("core", "scenarios.manage")
         ui_section, registry_section, catalog_section, data_section = self._ensure_yjs_payload(scenario_id, space=space)
 
-        async with async_get_ydoc(target_webspace) as ydoc:
-            self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
+        async with _scenario_manager_async_write_meta():
+            async with async_get_ydoc(target_webspace) as ydoc:
+                self._project_to_doc(ydoc, scenario_id, ui_section, registry_section, catalog_section, data_section)
 
         if emit_event:
             emit(self.bus, "scenarios.synced", {"scenario_id": scenario_id, "webspace_id": target_webspace}, "scenario.mgr")

@@ -213,7 +213,14 @@ class ProjectionService:
                 return
             root.set(txn, top_key, merged)
 
-        if prefer_live_room and mutate_live_room(ws_id, _mutator):
+        if prefer_live_room and mutate_live_room(
+            ws_id,
+            _mutator,
+            root_names=[root_name],
+            source="projection_service",
+            owner=owner,
+            channel=f"projection.{str(target.backend or 'yjs')}.live_room",
+        ):
             return
         try:
             async with ystore_write_metadata(

@@ -4386,7 +4386,14 @@ async def switch_webspace_scenario(
             ui_map = doc.get_map("ui")
             _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
 
-        live_applied = mutate_live_room(webspace_id, _mutator)
+        live_applied = mutate_live_room(
+            webspace_id,
+            _mutator,
+            root_names=["ui"],
+            source="webspace_runtime.switch_pointer",
+            owner="core:webspace_runtime",
+            channel="core.webspace_runtime.live_room",
+        )
         if live_applied:
             _record_timing(timings_ms, "write_switch_pointer", stage_started)
         else:

@@ -10,7 +10,7 @@ from typing import Iterator, AsyncIterator, Awaitable, Optional, TypeVar, Callab
 import y_py as Y
 
 from adaos.services.agent_context import get_ctx
-from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata
+from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata, ystore_write_metadata_sync
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
@@ -421,7 +421,15 @@ async def async_read_ydoc(
         yield ydoc
 
 
-def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -> bool:
+def mutate_live_room(
+    webspace_id: str,
+    mutator: Callable[[Y.YDoc, Any], None],
+    *,
+    root_names: list[str] | None = None,
+    source: str = "yjs.doc.mutate_live_room",
+    owner: str | None = None,
+    channel: str = "core.yjs.live_room.sync",
+) -> bool:
     """
     Attempt to mutate the active YDoc directly so connected clients receive the change.
     Returns False if the webspace is not currently hosted in-process.
@@ -432,15 +440,29 @@ def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -
 
     def _apply() -> None:
         try:
-            with room.ydoc.begin_transaction() as txn:
-                mutator(room.ydoc, txn)
+            with ystore_write_metadata_sync(
+                root_names=list(root_names or []),
+                source=source,
+                owner=(owner or _resolve_yjs_write_owner()),
+                channel=channel,
+            ):
+                with room.ydoc.begin_transaction() as txn:
+                    mutator(room.ydoc, txn)
         except Exception:
             pass
 
     return _run_on_room_thread(room, _apply)
 
 
-def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
+def apply_update_to_live_room(
+    webspace_id: str,
+    update: bytes,
+    *,
+    root_names: list[str] | None = None,
+    source: str = "yjs.doc.apply_update_to_live_room",
+    owner: str | None = None,
+    channel: str = "core.yjs.live_room.update",
+) -> bool:
     """
     Apply a raw Yjs update to the active in-process room (if any).
     Returns False if the webspace is not currently hosted in-process.
@@ -453,7 +475,13 @@ def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
 
     def _apply() -> None:
         try:
-            Y.apply_update(room.ydoc, update)
+            with ystore_write_metadata_sync(
+                root_names=list(root_names or []),
+                source=source,
+                owner=(owner or _resolve_yjs_write_owner()),
+                channel=channel,
+            ):
+                Y.apply_update(room.ydoc, update)
         except Exception:
             pass
 

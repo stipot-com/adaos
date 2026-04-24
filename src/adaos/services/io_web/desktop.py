@@ -647,7 +647,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_installed_state(doc, txn, next_installed)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug(
                 "mutate_live_room skipped for toggle webspace=%s type=%s target=%s",
@@ -687,7 +694,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_installed_state(doc, txn, next_installed)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug("mutate_live_room skipped for set_installed webspace=%s", webspace)
 
@@ -713,7 +727,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_pinned_widgets_state(doc, txn, next_pinned)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug("mutate_live_room skipped for set_pinned_widgets webspace=%s", webspace)
 
@@ -739,7 +760,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_topbar_state(doc, txn, next_topbar)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug("mutate_live_room skipped for set_topbar webspace=%s", webspace)
 
@@ -765,7 +793,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_page_schema_state(doc, txn, next_page_schema)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug("mutate_live_room skipped for set_page_schema webspace=%s", webspace)
 
@@ -793,7 +828,14 @@ class WebDesktopService:
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_snapshot_state(doc, txn, snapshot)
 
-        live_applied = mutate_live_room(webspace, _mutator)
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
         if not live_applied:
             _log.debug("mutate_live_room skipped for set_snapshot webspace=%s", webspace)
 

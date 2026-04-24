@@ -33,7 +33,7 @@ except ImportError as exc:  # pragma: no cover - import guard for dev envs
 from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
-from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace
+from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace, ystore_write_metadata_sync
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -1903,25 +1903,31 @@ async def _update_device_presence(webspace_id: str, device_id: str) -> None:
     ydoc = room.ydoc
     now_ms = int(time.time() * 1000)
 
-    with ydoc.begin_transaction() as txn:
-        devices = ydoc.get_map("devices")
-        current = devices.get(device_id)
-        node = dict(current or {}) if isinstance(current, dict) else {}
+    with ystore_write_metadata_sync(
+        root_names=["devices"],
+        source="yjs.gateway_ws",
+        owner="core:yjs_gateway",
+        channel="core.yjs.gateway.sync",
+    ):
+        with ydoc.begin_transaction() as txn:
+            devices = ydoc.get_map("devices")
+            current = devices.get(device_id)
+            node = dict(current or {}) if isinstance(current, dict) else {}
 
-        meta = dict(node.get("meta") or {})
-        if "created_at" not in meta:
-            meta["created_at"] = now_ms
-        meta["kind"] = "browser"
+            meta = dict(node.get("meta") or {})
+            if "created_at" not in meta:
+                meta["created_at"] = now_ms
+            meta["kind"] = "browser"
 
-        presence = dict(node.get("presence") or {})
-        presence["online"] = True
-        presence.setdefault("since", now_ms)
-        presence["lastSeen"] = now_ms
+            presence = dict(node.get("presence") or {})
+            presence["online"] = True
+            presence.setdefault("since", now_ms)
+            presence["lastSeen"] = now_ms
 
-        node["meta"] = meta
-        node["presence"] = presence
+            node["meta"] = meta
+            node["presence"] = presence
 
-        devices.set(txn, device_id, node)
+            devices.set(txn, device_id, node)
 
 
 async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
@@ -2095,9 +2101,15 @@ async def process_events_command(
                     room = y_server.rooms.get(captured_ws)
                     if room:
                         listing = _webspace_listing()
-                        with room.ydoc.begin_transaction() as txn:
-                            data_map = room.ydoc.get_map("data")
-                            data_map.set(txn, "webspaces", {"items": listing})
+                        with ystore_write_metadata_sync(
+                            root_names=["data"],
+                            source="yjs.gateway_ws",
+                            owner="core:yjs_gateway",
+                            channel="core.yjs.gateway.sync",
+                        ):
+                            with room.ydoc.begin_transaction() as txn:
+                                data_map = room.ydoc.get_map("data")
+                                data_map.set(txn, "webspaces", {"items": listing})
                         _log.debug("wrote webspaces listing to room webspace=%s items=%d", captured_ws, len(listing))
                 except Exception:
                     _log.debug("webspace listing sync failed", exc_info=True)
