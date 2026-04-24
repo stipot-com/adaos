@@ -482,6 +482,54 @@ def _linux_systemctl_cmd(scope: str, *args: str) -> list[str]:
     return cmd
 
 
+def _linux_restart_wait_timeout(scope: str, service_name: str) -> float:
+    """
+    Give `systemctl restart --no-block` enough time to finish the stop/start cycle.
+
+    The service can legitimately remain in `deactivating` for close to systemd's
+    stop timeout before the new process is spawned. Our CLI should not time out
+    earlier than the service manager itself.
+    """
+    fallback_timeout = 120.0
+    cmd = _linux_systemctl_cmd(
+        scope,
+        "show",
+        service_name,
+        "-p",
+        "TimeoutStopUSec",
+        "-p",
+        "TimeoutStartUSec",
+        "-p",
+        "RestartUSec",
+        "--value",
+    )
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=5, **_text_subprocess_kwargs())
+        if proc.returncode != 0:
+            return fallback_timeout
+        values = [line.strip() for line in str(proc.stdout or "").splitlines()]
+        parsed: list[float] = []
+        for raw in values[:3]:
+            if not raw:
+                continue
+            try:
+                micros = int(raw)
+            except Exception:
+                continue
+            if micros <= 0:
+                continue
+            parsed.append(micros / 1_000_000.0)
+        if not parsed:
+            return fallback_timeout
+        stop_timeout = parsed[0] if len(parsed) >= 1 else 0.0
+        start_timeout = parsed[1] if len(parsed) >= 2 else 0.0
+        restart_delay = parsed[2] if len(parsed) >= 3 else 0.0
+        # Keep some headroom for PID / probe convergence without waiting forever.
+        return max(fallback_timeout, stop_timeout + start_timeout + restart_delay + 15.0)
+    except Exception:
+        return fallback_timeout
+
+
 def _linux_wait_for_restart_ready(
     *,
     scope: str,
@@ -489,10 +537,11 @@ def _linux_wait_for_restart_ready(
     configured_host: str | None,
     configured_port: int | None,
     previous_main_pid: int | None,
-    timeout: float = 45.0,
+    timeout: float | None = None,
     poll_interval: float = 0.5,
 ) -> dict[str, object]:
-    deadline = time.monotonic() + max(timeout, 1.0)
+    effective_timeout = _linux_restart_wait_timeout(scope, service_name) if timeout is None else timeout
+    deadline = time.monotonic() + max(effective_timeout, 1.0)
     last_active = ""
     last_pid: int | None = None
     last_listening = False
