@@ -98,6 +98,7 @@ except Exception:
 
 
 _startup_log = logging.getLogger("adaos.startup")
+_runtime_log = logging.getLogger("adaos.runtime")
 
 
 class _StartupTimer:
@@ -212,6 +213,9 @@ from adaos.services.runtime_lifecycle import (
     reset_runtime_lifecycle,
     runtime_lifecycle_snapshot,
 )
+from adaos.services.runtime_memory_profile import finish_active_runtime_memory_profile
+from adaos.services.root_mcp.logs import aggregate_subnet_logs, list_local_logs, normalize_log_category
+from adaos.services.supervisor_memory import supervisor_memory_session_artifacts_dir
 from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias, save_subnet_alias
 from adaos.domain import Event as DomainEvent
 
@@ -220,6 +224,18 @@ init_ctx()
 _DEFAULT_SHUTDOWN_DRAIN_SEC = 5.0
 _DEFAULT_SHUTDOWN_SIGNAL_DELAY_SEC = 0.2
 _DEFAULT_UPDATE_COUNTDOWN_SEC = 60.0
+
+
+def _write_runtime_profile_shutdown_debug(payload: dict[str, Any]) -> None:
+    session_id = str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID") or "").strip()
+    if not session_id:
+        return
+    try:
+        path = (supervisor_memory_session_artifacts_dir(session_id) / "runtime-admin-shutdown-debug.json").resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        _runtime_log.warning("failed to persist runtime admin shutdown debug payload", exc_info=True)
 
 
 def _runtime_identity_public_payload() -> dict[str, Any]:
@@ -1034,6 +1050,48 @@ async def admin_shutdown(body: ShutdownRequest, background: BackgroundTasks):
     app.state.shutdown_requested = True
     app.state.shutdown_reason = body.reason
     app.state.shutdown_drain_timeout = float(body.drain_timeout_sec)
+    profile_mode = str(os.getenv("ADAOS_SUPERVISOR_PROFILE_MODE") or "normal").strip().lower()
+    shutdown_debug_payload: dict[str, Any] = {
+        "entered_at": time.time(),
+        "reason": body.reason,
+        "drain_timeout_sec": float(body.drain_timeout_sec),
+        "signal_delay_sec": float(body.signal_delay_sec),
+        "profile_mode": profile_mode,
+        "session_id": str(os.getenv("ADAOS_SUPERVISOR_PROFILE_SESSION_ID") or "").strip() or None,
+        "finish_result": None,
+    }
+    _runtime_log.info(
+        "admin shutdown entered reason=%s profile_mode=%s session_id=%s drain_timeout_sec=%s signal_delay_sec=%s",
+        body.reason,
+        profile_mode,
+        shutdown_debug_payload.get("session_id"),
+        body.drain_timeout_sec,
+        body.signal_delay_sec,
+    )
+    _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
+    if profile_mode != "normal":
+        finish_result = finish_active_runtime_memory_profile()
+        shutdown_debug_payload["finish_result"] = finish_result
+        shutdown_debug_payload["finished_at"] = time.time()
+        _write_runtime_profile_shutdown_debug(shutdown_debug_payload)
+        _runtime_log.info(
+            "admin shutdown finish result session_id=%s profile_mode=%s result=%s",
+            shutdown_debug_payload.get("session_id"),
+            profile_mode,
+            finish_result,
+        )
+        if finish_result.get("ok"):
+            _runtime_log.info(
+                "runtime memory profile finalized during admin shutdown session_id=%s profile_mode=%s finished=%s",
+                finish_result.get("session_id"),
+                finish_result.get("profile_mode"),
+                finish_result.get("finished"),
+            )
+        else:
+            _runtime_log.warning(
+                "runtime memory profile finalize during admin shutdown did not complete result=%s",
+                finish_result,
+            )
     stopping_payload = {
         "subnet_id": conf.subnet_id,
         "reason": body.reason,
@@ -1078,6 +1136,54 @@ async def admin_drain(body: DrainRequest):
 @app.get("/api/admin/lifecycle", dependencies=[Depends(require_token)])
 async def admin_lifecycle():
     return {"ok": True, "lifecycle": runtime_lifecycle_snapshot(), "runtime": _runtime_identity_public_payload()}
+
+
+@app.get("/api/admin/root_mcp/logs/{category}", dependencies=[Depends(require_token)])
+async def admin_root_mcp_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+    scope: str | None = None,
+    include_hub: bool = True,
+):
+    try:
+        category_token = normalize_log_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown log category: {category}") from exc
+
+    conf = get_ctx().config
+    requested_scope = str(scope or "").strip().lower() or "root_local"
+    if requested_scope == "subnet_active":
+        subnet_id = str(getattr(conf, "subnet_id", None) or "").strip()
+        if not subnet_id:
+            raise HTTPException(status_code=400, detail="subnet_active logs require configured subnet_id")
+        logs = await aggregate_subnet_logs(
+            category=category_token,
+            subnet_id=subnet_id,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            include_hub=include_hub,
+        )
+        return {"ok": True, "logs": logs}
+
+    return {
+        "ok": True,
+        "logs": list_local_logs(
+            category=category_token,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            source_mode="node_local_logs_dir",
+        ),
+    }
 
 
 @app.post("/api/admin/update/start", dependencies=[Depends(require_token)])

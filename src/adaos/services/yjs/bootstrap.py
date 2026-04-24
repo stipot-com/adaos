@@ -14,7 +14,7 @@ from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.yjs.webspace import default_webspace_id
-from adaos.services.yjs.store import AdaosMemoryYStore, get_ystore_for_webspace
+from adaos.services.yjs.store import AdaosMemoryYStore, get_ystore_for_webspace, ystore_write_metadata
 
 _log = logging.getLogger("adaos.yjs.bootstrap")
 
@@ -134,18 +134,36 @@ async def _persist_bootstrap_seed_update(
     update = _encode_bootstrap_diff(ydoc, before_state_vector)
     if callable(writer) and update:
         try:
-            await writer(update, update_kind="diff", notify=False)
+            async with ystore_write_metadata(
+                root_names=["ui", "registry", "data"],
+                source="yjs.bootstrap",
+                owner="core:yjs_bootstrap",
+                channel="core.yjs.bootstrap",
+            ):
+                await writer(update, update_kind="diff", notify=False)
             return "diff"
         except TypeError:
             try:
-                await writer(update, update_kind="diff")
+                async with ystore_write_metadata(
+                    root_names=["ui", "registry", "data"],
+                    source="yjs.bootstrap",
+                    owner="core:yjs_bootstrap",
+                    channel="core.yjs.bootstrap",
+                ):
+                    await writer(update, update_kind="diff")
                 return "diff"
             except Exception as exc:
                 _log.warning("bootstrap diff write failed for webspace=%s: %s", getattr(ystore, "path", "?"), exc, exc_info=True)
         except Exception as exc:
             _log.warning("bootstrap diff write failed for webspace=%s: %s", getattr(ystore, "path", "?"), exc, exc_info=True)
 
-    await ystore.encode_state_as_update(ydoc)
+    async with ystore_write_metadata(
+        root_names=["ui", "registry", "data"],
+        source="yjs.bootstrap",
+        owner="core:yjs_bootstrap",
+        channel="core.yjs.bootstrap",
+    ):
+        await ystore.encode_state_as_update(ydoc)
     return "snapshot"
 
 

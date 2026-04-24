@@ -13,9 +13,19 @@ from adaos.services.eventbus import emit as bus_emit
 from adaos.services.nlu.teacher_events import append_event, make_event
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.teacher.candidates")
+
+
+def _nlu_candidates_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.candidates_runtime",
+        owner="core:nlu.candidates",
+        channel="core.nlu.candidates.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -163,109 +173,110 @@ async def _on_candidate_apply(evt: Any) -> None:
     request_text: str = ""
 
     try:
-        async with async_get_ydoc(webspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            teacher = _teacher_obj(data_map)
+        async with _nlu_candidates_write_meta():
+            async with async_get_ydoc(webspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                teacher = _teacher_obj(data_map)
 
-            candidate = _find_candidate(teacher, candidate_id)
-            if not candidate:
-                return
+                candidate = _find_candidate(teacher, candidate_id)
+                if not candidate:
+                    return
 
-            request_id = candidate.get("request_id") if isinstance(candidate.get("request_id"), str) else None
-            request_text = candidate.get("text") if isinstance(candidate.get("text"), str) else ""
+                request_id = candidate.get("request_id") if isinstance(candidate.get("request_id"), str) else None
+                request_text = candidate.get("text") if isinstance(candidate.get("text"), str) else ""
 
-            kind = candidate.get("kind")
-            if kind == "regex_rule":
-                rr = candidate.get("regex_rule") if isinstance(candidate.get("regex_rule"), Mapping) else {}
-                intent = rr.get("intent")
-                pattern = rr.get("pattern")
-                if isinstance(intent, str) and intent.strip() and isinstance(pattern, str) and pattern.strip():
-                    target: dict[str, Any] | None = None
-                    # UI override has the highest priority.
-                    if isinstance(payload_target, Mapping):
-                        t_type = payload_target.get("type")
-                        t_id = payload_target.get("id")
-                        if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
-                            target = {"type": t_type.strip(), "id": t_id.strip()}
-
-                    # If the candidate already carries a preferred target, keep it.
-                    if target is None:
-                        cand_target = candidate.get("target") if isinstance(candidate.get("target"), Mapping) else None
-                        if isinstance(cand_target, Mapping):
-                            t_type = cand_target.get("type")
-                            t_id = cand_target.get("id")
+                kind = candidate.get("kind")
+                if kind == "regex_rule":
+                    rr = candidate.get("regex_rule") if isinstance(candidate.get("regex_rule"), Mapping) else {}
+                    intent = rr.get("intent")
+                    pattern = rr.get("pattern")
+                    if isinstance(intent, str) and intent.strip() and isinstance(pattern, str) and pattern.strip():
+                        target: dict[str, Any] | None = None
+                        # UI override has the highest priority.
+                        if isinstance(payload_target, Mapping):
+                            t_type = payload_target.get("type")
+                            t_id = payload_target.get("id")
                             if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
                                 target = {"type": t_type.strip(), "id": t_id.strip()}
 
-                    scenario_id = _read_current_scenario_id(ydoc)
-                    if target is None and scenario_id:
-                        # Prefer attaching regex rules to the skill that actually handles the intent,
-                        # so they survive scenario tweaks and remain reusable.
-                        for call_target in _extract_callskill_targets_for_intent(scenario_id=scenario_id, intent=intent.strip()):
-                            skill = _find_skill_subscribing_to(call_target)
-                            if skill:
-                                target = {"type": "skill", "id": skill}
-                                break
-
-                        # Fallback: scenario itself owns the intent mapping.
+                        # If the candidate already carries a preferred target, keep it.
                         if target is None:
-                            try:
-                                from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
+                            cand_target = candidate.get("target") if isinstance(candidate.get("target"), Mapping) else None
+                            if isinstance(cand_target, Mapping):
+                                t_type = cand_target.get("type")
+                                t_id = cand_target.get("id")
+                                if isinstance(t_type, str) and isinstance(t_id, str) and t_type.strip() and t_id.strip():
+                                    target = {"type": t_type.strip(), "id": t_id.strip()}
 
-                                content = scenarios_loader.read_content(scenario_id)
-                                intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
-                                if isinstance(intents, dict) and intent.strip() in intents:
-                                    target = {"type": "scenario", "id": scenario_id}
-                            except Exception:
-                                target = None
-                    bus_emit(
-                        ctx.bus,
-                        "nlp.teacher.regex_rule.apply",
-                        {
-                            "webspace_id": webspace_id,
-                            "candidate_id": candidate_id,
-                            "intent": intent.strip(),
-                            "pattern": pattern,
-                            **({"target": target} if target else {}),
-                            "_meta": dict(meta),
-                        },
-                        source="nlu.teacher.candidates",
-                    )
-                return
+                        scenario_id = _read_current_scenario_id(ydoc)
+                        if target is None and scenario_id:
+                            # Prefer attaching regex rules to the skill that actually handles the intent,
+                            # so they survive scenario tweaks and remain reusable.
+                            for call_target in _extract_callskill_targets_for_intent(scenario_id=scenario_id, intent=intent.strip()):
+                                skill = _find_skill_subscribing_to(call_target)
+                                if skill:
+                                    target = {"type": "skill", "id": skill}
+                                    break
 
-            if kind not in {"skill", "scenario"}:
-                return
+                            # Fallback: scenario itself owns the intent mapping.
+                            if target is None:
+                                try:
+                                    from adaos.services.scenarios import loader as scenarios_loader  # local import to avoid cycles
 
-            # mark applied
-            next_candidates: list[dict[str, Any]] = []
-            for item in iter_mappings(teacher.get("candidates")):
-                d = dict(item)
-                if d.get("id") == candidate_id:
-                    d["status"] = "applied"
-                    d["applied_at"] = time.time()
-                    d["applied"] = {"type": "plan"}
-                next_candidates.append(d)
-            teacher["candidates"] = next_candidates
+                                    content = scenarios_loader.read_content(scenario_id)
+                                    intents = (content.get("nlu") or {}).get("intents") if isinstance(content, dict) else None
+                                    if isinstance(intents, dict) and intent.strip() in intents:
+                                        target = {"type": "scenario", "id": scenario_id}
+                                except Exception:
+                                    target = None
+                        bus_emit(
+                            ctx.bus,
+                            "nlp.teacher.regex_rule.apply",
+                            {
+                                "webspace_id": webspace_id,
+                                "candidate_id": candidate_id,
+                                "intent": intent.strip(),
+                                "pattern": pattern,
+                                **({"target": target} if target else {}),
+                                "_meta": dict(meta),
+                            },
+                            source="nlu.teacher.candidates",
+                        )
+                    return
 
-            # add to plan
-            plan = teacher.get("plan")
-            plan = [dict(x) for x in iter_mappings(plan)]
-            plan_item = {
-                "id": f"plan.{int(time.time() * 1000)}",
-                "ts": time.time(),
-                "status": "pending",
-                "candidate_id": candidate_id,
-                "kind": kind,
-                "request_id": request_id,
-                "text": request_text,
-                "candidate": coerce_dict(candidate.get("candidate")),
-                "notes": candidate.get("notes"),
-            }
-            plan.append(plan_item)
-            teacher["plan"] = plan[-200:]
+                if kind not in {"skill", "scenario"}:
+                    return
 
-            with ydoc.begin_transaction() as txn:
-                data_map.set(txn, "nlu_teacher", teacher)
+                # mark applied
+                next_candidates: list[dict[str, Any]] = []
+                for item in iter_mappings(teacher.get("candidates")):
+                    d = dict(item)
+                    if d.get("id") == candidate_id:
+                        d["status"] = "applied"
+                        d["applied_at"] = time.time()
+                        d["applied"] = {"type": "plan"}
+                    next_candidates.append(d)
+                teacher["candidates"] = next_candidates
+
+                # add to plan
+                plan = teacher.get("plan")
+                plan = [dict(x) for x in iter_mappings(plan)]
+                plan_item = {
+                    "id": f"plan.{int(time.time() * 1000)}",
+                    "ts": time.time(),
+                    "status": "pending",
+                    "candidate_id": candidate_id,
+                    "kind": kind,
+                    "request_id": request_id,
+                    "text": request_text,
+                    "candidate": coerce_dict(candidate.get("candidate")),
+                    "notes": candidate.get("notes"),
+                }
+                plan.append(plan_item)
+                teacher["plan"] = plan[-200:]
+
+                with ydoc.begin_transaction() as txn:
+                    data_map.set(txn, "nlu_teacher", teacher)
     except Exception:
         _log.warning("failed to apply candidate webspace=%s candidate_id=%s", webspace_id, candidate_id, exc_info=True)
         return

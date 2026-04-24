@@ -87,6 +87,7 @@ def _patch_reload_dependencies(
     emitted: list[tuple[str, dict[str, object], str]],
     *,
     current_scenario: str | None = None,
+    scenario_exists=None,
 ) -> None:
     class _Bus:
         def publish(self, _event) -> None:
@@ -121,6 +122,10 @@ def _patch_reload_dependencies(
     monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "rebuild_webspace_async", _fake_rebuild)
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
     monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: fake_ctx)
+    if scenario_exists is None:
+        monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", lambda scenario_id, *, space: True)
+    else:
+        monkeypatch.setattr(webspace_runtime_module, "_scenario_exists_for_switch", scenario_exists)
     monkeypatch.setattr(
         webspace_runtime_module,
         "emit",
@@ -271,6 +276,36 @@ def test_webspace_reload_falls_back_to_current_scenario_for_legacy_manifest(monk
     assert result["scenario_resolution"] == "current_scenario"
     assert result["current_scenario_before"] == "legacy_prompt_scenario"
     assert emitted[-1][1]["scenario_id"] == "legacy_prompt_scenario"
+
+
+def test_webspace_reload_preflight_falls_back_to_web_desktop_when_manifest_home_missing(monkeypatch) -> None:
+    webspace_id = "ws-home-fallback"
+    ensure_workspace(webspace_id)
+    set_workspace_manifest(
+        webspace_id,
+        display_name="Fallback Space",
+        kind="workspace",
+        source_mode="workspace",
+        home_scenario="infrascope",
+    )
+
+    captured: list[tuple[str, str, bool | None]] = []
+    emitted: list[tuple[str, dict[str, object], str]] = []
+
+    def _scenario_exists(scenario_id: str, *, space: str) -> bool:  # noqa: ARG001
+        return scenario_id == "web_desktop"
+
+    _patch_reload_dependencies(monkeypatch, captured, emitted, scenario_exists=_scenario_exists)
+
+    result = asyncio.run(webspace_runtime_module.reload_webspace_from_scenario(webspace_id))
+
+    assert captured == [(webspace_id, "web_desktop", None)]
+    assert result["scenario_id"] == "web_desktop"
+    assert result["scenario_resolution"] == "manifest_home_fallback"
+    assert result["validation"]["requested_scenario_id"] == "infrascope"
+    assert result["validation"]["resolved_scenario_id"] == "web_desktop"
+    assert result["validation"]["fallback_applied"] is True
+    assert emitted[-1][1]["scenario_id"] == "web_desktop"
 
 
 def test_webspace_reset_deduplicates_recent_identical_recovery(monkeypatch) -> None:

@@ -51,6 +51,15 @@ All paths are relative and compatible with Linux/Windows. Slots are created lazi
 
 `adaos skill rollback <name>` rolls back both the runtime slot and the `data/internal/active` pointer.
 
+Important architectural note:
+
+- activation is a slot-pointer switch, not a generic live-memory migration
+- in-process skills typically pick up new code on the next invocation from the active slot
+- service skills are explicitly restarted by the runtime lifecycle
+- durable migration authority belongs to persisted state and `data/internal/<a|b>`, while derived caches/projections should be rebuilt after activation
+
+For the target kernel-facing migration architecture, including rehydrate and rollback semantics for stateful skills, see [AdaOS Supervisor](architecture/adaos-supervisor.md#skill-runtime-migration-lifecycle).
+
 ## Deactivate lifecycle
 
 AdaOS may keep the core switch committed while quarantining a subset of skills.
@@ -63,6 +72,7 @@ For that case the runtime lifecycle now includes explicit deactivation:
 
 This is intended for post-commit checks where rolling back the whole core is unnecessary, but continuing to serve a broken skill would be unsafe.
 Core-update orchestration may trigger this automatically after a successful runtime switch if post-commit skill checks fail.
+When that happens, the deactivation record now persists the failure contract itself, including `failure_kind`, `failed_stage`, `source`, and whether the core switch was already committed.
 
 ## Optional internal data migration
 
@@ -114,6 +124,70 @@ Important notes:
 - if the hook is absent, AdaOS falls back to copy
 - the hook is expected to populate `target_internal_dir`
 - on migration failure, AdaOS clears the target internal slot and fails `prepare_runtime`
+
+### Target direction
+
+The target AdaOS migration model separates state classes:
+
+- canonical durable state:
+  must survive restart, rollback, and rebuild
+- slot-bound schema state:
+  belongs under `data/internal/a|b`
+- derived runtime state:
+  caches, indexes, projections, and similar rebuildable material
+- live memory:
+  in-flight objects and subscriptions that should be drained and recreated, not migrated implicitly
+
+This means `data_migration_tool` should be used for schema-sensitive persisted state, not as a platform promise that arbitrary process memory can be moved across activation.
+
+After activation, stateful skills are expected to rebuild derived runtime state from durable truth.
+
+### Runtime lifecycle hooks
+
+AdaOS now supports optional lifecycle hooks in the resolved skill manifest.
+
+Preferred declaration shape:
+
+```yaml
+lifecycle:
+  persist_before_switch: persist_state
+  after_activate: after_activate
+  rehydrate: rehydrate
+  drain: drain
+  dispose: dispose
+  before_deactivate: before_deactivate
+```
+
+The hook names resolve through the ordinary skill `tools` table, just like `data_migration_tool`.
+
+Current behavior:
+
+- `persist_before_switch` runs against the currently active slot before pointer cutover when an active prepared runtime exists
+- `after_activate` runs after the new slot becomes active
+- `rehydrate` runs after activation to rebuild derived runtime state
+- `drain` runs before rollback/deactivate or activation-failure cleanup when declared
+- `dispose` runs after `drain` and before `before_deactivate` when declared
+- `before_deactivate` runs before explicit deactivate or rollback of the current slot
+- global runtime drain now reuses the same contract:
+  `subnet.draining` triggers active-skill `drain`, and `subnet.stopping` triggers `dispose` then `before_deactivate` as best-effort shutdown hooks for active installed runtimes
+
+Lifecycle diagnostics are persisted into slot metadata and surfaced by `adaos skill status --json` through `runtime_status().lifecycle`.
+
+If activation already switched to a new version/slot and `rehydrate` then fails, AdaOS now attempts to restore:
+
+- the previous active version marker
+- the previous active slot selection
+- the previous internal data slot marker
+- the previous deactivation state
+
+The failed target slot keeps its lifecycle diagnostics so operators can inspect the failed `rehydrate`, shutdown hooks, and rollback result.
+
+Post-commit migration checks now also consume these lifecycle diagnostics.
+That means a skill may be marked failed or selectively deactivated because `rehydrate` / `healthcheck` is already unhealthy even before any explicit post-commit test suite runs.
+
+Operator-facing migration reports also surface lifecycle failures separately from test failures, so a `lifecycle/rehydrate` failure is visible as a first-class shutdown/migration issue rather than only as a generic failed skill.
+This same metadata is also written into the deactivation marker when a skill is selectively quarantined after a committed core switch.
+Supervisor-facing validation status and operator projections now also surface a compact quarantine summary, so post-commit status can show which skill was quarantined and at which lifecycle/test stage.
 
 ## Tool execution and setup
 

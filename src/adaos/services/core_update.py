@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import requests
 import shutil
 import subprocess
 import sys
@@ -191,6 +192,123 @@ def read_status() -> dict[str, Any]:
 def read_last_result() -> dict[str, Any] | None:
     payload = _read_json(last_result_path())
     return payload if isinstance(payload, dict) else None
+
+
+def _supervisor_public_status_fields(status: dict[str, Any] | None) -> dict[str, Any]:
+    payload = status if isinstance(status, dict) else {}
+    return {
+        "action": str(payload.get("action") or "").strip().lower() or None,
+        "state": str(payload.get("state") or "").strip().lower() or "unknown",
+        "phase": str(payload.get("phase") or "").strip().lower() or "",
+        "message": str(payload.get("message") or "").strip(),
+        "target_rev": str(payload.get("target_rev") or "").strip(),
+        "target_version": str(payload.get("target_version") or "").strip(),
+        "planned_reason": str(payload.get("planned_reason") or "").strip() or None,
+        "min_update_period_sec": payload.get("min_update_period_sec"),
+        "scheduled_for": payload.get("scheduled_for"),
+        "subsequent_transition": bool(payload.get("subsequent_transition")),
+        "subsequent_transition_requested_at": payload.get("subsequent_transition_requested_at"),
+        "candidate_prewarm_state": str(payload.get("candidate_prewarm_state") or "").strip() or None,
+        "candidate_prewarm_message": str(payload.get("candidate_prewarm_message") or "").strip() or None,
+        "candidate_prewarm_ready_at": payload.get("candidate_prewarm_ready_at"),
+        "restart_mode": str(payload.get("restart_mode") or "").strip() or None,
+        "restart_requested_at": payload.get("restart_requested_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def _supervisor_public_attempt_fields(status: dict[str, Any] | None) -> dict[str, Any]:
+    payload = status if isinstance(status, dict) else {}
+    state = str(payload.get("state") or "").strip().lower()
+    return {
+        "contract_version": "runtime_fallback.v1",
+        "authority": "supervisor",
+        "action": str(payload.get("action") or "").strip().lower() or None,
+        "state": state or None,
+        "awaiting_restart": bool(
+            state in {"restarting", "succeeded"} and str(payload.get("phase") or "").strip().lower() in {"shutdown", "root_promoted"}
+        ),
+        "planned_reason": str(payload.get("planned_reason") or "").strip() or None,
+        "scheduled_for": payload.get("scheduled_for"),
+        "subsequent_transition": bool(payload.get("subsequent_transition")),
+        "subsequent_transition_requested_at": payload.get("subsequent_transition_requested_at"),
+        "candidate_prewarm_state": str(payload.get("candidate_prewarm_state") or "").strip() or None,
+        "candidate_prewarm_message": str(payload.get("candidate_prewarm_message") or "").strip() or None,
+        "restart_mode": str(payload.get("restart_mode") or "").strip() or None,
+        "restart_requested_at": payload.get("restart_requested_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def build_public_update_status_payload(
+    status: dict[str, Any] | None,
+    *,
+    served_by: str = "runtime_fallback",
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "status": _supervisor_public_status_fields(status),
+        "attempt": _supervisor_public_attempt_fields(status),
+        "runtime": {},
+        "_served_by": str(served_by or "runtime_fallback").strip() or "runtime_fallback",
+    }
+
+
+def _supervisor_public_base_candidates() -> list[str]:
+    bases: list[str] = []
+    explicit = str(os.getenv("ADAOS_SUPERVISOR_URL") or "").strip()
+    if explicit:
+        bases.append(explicit.rstrip("/"))
+    host = str(os.getenv("ADAOS_SUPERVISOR_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    port = str(os.getenv("ADAOS_SUPERVISOR_PORT") or "8776").strip() or "8776"
+    bases.append(f"http://{host}:{port}")
+    if host not in {"localhost", "127.0.0.1"}:
+        bases.append(f"http://127.0.0.1:{port}")
+        bases.append(f"http://localhost:{port}")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in bases:
+        token = str(item or "").strip().rstrip("/")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+def read_public_update_status(*, timeout_sec: float = 0.75) -> dict[str, Any]:
+    fallback = build_public_update_status_payload(read_status(), served_by="runtime_fallback")
+    if not (
+        str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+        or str(os.getenv("ADAOS_SUPERVISOR_URL") or "").strip()
+    ):
+        return fallback
+    headers = {"Accept": "application/json"}
+    token = str(os.getenv("ADAOS_TOKEN") or "").strip()
+    if token:
+        headers["X-AdaOS-Token"] = token
+    for base in _supervisor_public_base_candidates():
+        session = requests.Session()
+        try:
+            try:
+                session.trust_env = False
+            except Exception:
+                pass
+            response = session.get(
+                f"{base}/api/supervisor/public/update-status",
+                headers=headers,
+                timeout=max(0.1, float(timeout_sec)),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            continue
+        finally:
+            with contextlib.suppress(Exception):
+                session.close()
+    return fallback
 
 
 _ROLLOUT_STATUS_KEYS = (
@@ -417,10 +535,19 @@ def write_status(payload: dict[str, Any]) -> dict[str, Any]:
     if _is_terminal_status(merged):
         _write_json(last_result_path(), merged)
     try:
+        public_payload = build_public_update_status_payload(merged, served_by="runtime_fallback")
         get_ctx().bus.publish(
             DomainEvent(
                 type="core.update.status",
                 payload=dict(merged),
+                source="core.update",
+                ts=float(merged.get("updated_at") or time.time()),
+            )
+        )
+        get_ctx().bus.publish(
+            DomainEvent(
+                type="supervisor.update.status.raw",
+                payload=public_payload,
                 source="core.update",
                 ts=float(merged.get("updated_at") or time.time()),
             )
@@ -463,6 +590,7 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         payload["candidate_prewarm_ready_at"] = None
     payload["validated_at"] = now
     payload["finished_at"] = float(payload.get("finished_at") or now)
+    payload["scheduled_for"] = None
     if slot:
         payload["target_slot"] = slot
     if isinstance(manifest, dict) and manifest:
@@ -478,9 +606,18 @@ def finalize_runtime_boot_status() -> dict[str, Any] | None:
         )
         payload["root_promotion_required"] = True
         payload["bootstrap_update"] = bootstrap_update
+        payload["candidate_prewarm_state"] = None
+        payload["candidate_prewarm_message"] = None
+        payload["candidate_prewarm_ready_at"] = None
     elif root_restart_pending:
         payload["root_promotion_required"] = False
-    return write_status(payload)
+    else:
+        payload["candidate_prewarm_state"] = None
+        payload["candidate_prewarm_message"] = None
+        payload["candidate_prewarm_ready_at"] = None
+    finalized = write_status(payload)
+    clear_plan()
+    return finalized
 
 
 def _repo_root() -> Path | None:

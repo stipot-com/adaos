@@ -1,6 +1,50 @@
 # Codex Test-Hub MCP
 
-This document describes the current MVP flow for connecting Codex in VS Code to a test hub through AdaOS Root MCP.
+This document describes the current flow for connecting Codex in VS Code to a test hub through AdaOS Root MCP.
+
+## Recommended VS Code Setup
+
+For the current VS Code Codex workflow, prefer direct remote MCP over the root-published HTTP endpoint:
+
+- MCP URL: `https://<zone>.api.inimatic.com/v1/root/mcp`
+- bearer token env var: `ADAOS_ROOT_MCP_AUTH`
+
+In practice:
+
+1. Use `infra_access_skill` to issue a fresh MCP session lease for the target.
+2. Copy the returned `mcp_http_url`.
+3. Store the returned `access_token` in the OS environment as `ADAOS_ROOT_MCP_AUTH`.
+4. Point the VS Code Codex MCP server config at that URL and env var.
+
+On Windows:
+
+```powershell
+setx ADAOS_ROOT_MCP_AUTH "mcp_..."
+```
+
+Important:
+
+- `setx` updates the user environment for new processes only.
+- already running VS Code, Codex, terminals, and MCP helper processes keep the old bearer
+- after rotating the bearer, fully restart VS Code if Codex keeps using the previous token
+
+If you want to verify the issued bearer before wiring Codex, test it directly:
+
+```powershell
+curl -i https://ru.api.inimatic.com/v1/root/mcp/foundation `
+  -H "Authorization: Bearer $env:ADAOS_ROOT_MCP_AUTH"
+```
+
+and:
+
+```powershell
+curl -i https://ru.api.inimatic.com/v1/root/mcp `
+  -H "Authorization: Bearer $env:ADAOS_ROOT_MCP_AUTH" `
+  -H "Content-Type: application/json" `
+  -d '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+```
+
+## Local Bridge MVP
 
 The current implementation is intentionally a local `stdio` bridge:
 
@@ -46,7 +90,7 @@ Before setup, make sure:
 
 For `get_logs` and `run_healthchecks`, the target must currently publish `infra_access_skill` with `execution_mode=local_process`.
 
-## Recommended Setup
+## Local Bridge Setup
 
 ### 1. Prepare the Codex bridge profile
 

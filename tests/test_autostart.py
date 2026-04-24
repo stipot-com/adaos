@@ -154,10 +154,13 @@ def test_restart_service_uses_unit_name_on_linux(monkeypatch, tmp_path: Path) ->
         lambda ctx: {
             "scope": "system",
             "service": "/etc/systemd/system/adaos.service",
+            "host": "127.0.0.1",
+            "port": 8778,
+            "service_main_pid": 111,
         },
     )
 
-    captured: dict[str, object] = {}
+    captured_calls: list[dict[str, object]] = []
 
     class _Proc:
         returncode = 0
@@ -165,23 +168,63 @@ def test_restart_service_uses_unit_name_on_linux(monkeypatch, tmp_path: Path) ->
         stderr = ""
 
     def _run(cmd, capture_output, text, timeout, encoding=None, errors=None):
-        captured["cmd"] = cmd
-        captured["capture_output"] = capture_output
-        captured["text"] = text
-        captured["timeout"] = timeout
-        captured["encoding"] = encoding
-        captured["errors"] = errors
+        captured_calls.append(
+            {
+                "cmd": cmd,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+                "encoding": encoding,
+                "errors": errors,
+            }
+        )
         return _Proc()
 
     monkeypatch.setattr(autostart.subprocess, "run", _run)
+    active_calls = {"count": 0}
+
+    class _RunProc:
+        def __init__(self, *, returncode=0, stdout="", stderr="") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(cmd: list[str]):
+        if cmd == ["systemctl", "is-active", "adaos.service"]:
+            active_calls["count"] += 1
+            if active_calls["count"] == 1:
+                return _RunProc(returncode=3, stdout="activating")
+            return _RunProc(returncode=0, stdout="active")
+        raise AssertionError(f"unexpected _run command: {cmd}")
+
+    monkeypatch.setattr(autostart, "_run", _fake_run)
+    pid_values = iter([111, 222])
+    monkeypatch.setattr(autostart, "_linux_service_main_pid", lambda scope: next(pid_values))
+    monkeypatch.setattr(autostart, "_discover_live_control_bind", lambda host, port: ("127.0.0.1", 8778))
+    monkeypatch.setattr(autostart.time, "sleep", lambda _: None)
 
     payload = autostart.restart_service(_FakeCtx(tmp_path))
 
-    assert captured["cmd"] == ["systemctl", "restart", "adaos.service"]
+    assert captured_calls[0]["cmd"] == ["systemctl", "restart", "adaos.service", "--no-block"]
+    assert captured_calls[1]["cmd"] == [
+        "systemctl",
+        "show",
+        "adaos.service",
+        "-p",
+        "TimeoutStopUSec",
+        "-p",
+        "TimeoutStartUSec",
+        "-p",
+        "RestartUSec",
+        "--value",
+    ]
     assert payload["service"] == "adaos.service"
     assert payload["service_ref"] == "/etc/systemd/system/adaos.service"
-    assert captured["encoding"] == "utf-8"
-    assert captured["errors"] == "replace"
+    assert captured_calls[0]["encoding"] == "utf-8"
+    assert captured_calls[0]["errors"] == "replace"
+    assert payload["service_main_pid"] == 222
+    assert payload["listening"] is True
+    assert payload["url"] == "http://127.0.0.1:8778"
 
 
 def test_linux_enable_without_user_bus_raises_helpful_error(monkeypatch, tmp_path: Path) -> None:

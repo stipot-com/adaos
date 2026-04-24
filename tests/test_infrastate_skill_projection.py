@@ -666,6 +666,7 @@ def test_infrastate_project_async_skips_snapshot_with_only_timestamp_changes(mon
 
     monkeypatch.setattr(mod, "ctx_subnet", SimpleNamespace(set_async=_fake_set_async))
     monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+    monkeypatch.setattr(mod, "_publish_snapshot_streams", lambda snapshot, webspace_id=None: None)
 
     first = {
         "summary": {"value": "ready", "updated_at": 10.0},
@@ -686,6 +687,192 @@ def test_infrastate_project_async_skips_snapshot_with_only_timestamp_changes(mon
     assert applied == [("default", "ready")]
     assert mod._projection_diag["apply_total"] == 1
     assert mod._projection_diag["skip_total"] == 1
+
+
+def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch):
+    mod = _load_infrastate_module()
+    projected: list[dict[str, object]] = []
+    published: list[tuple[str, object, str | None]] = []
+    mod._projection_fingerprints.clear()
+    mod._projection_diag.update({"apply_total": 0, "skip_total": 0, "cache_hit_total": 0})
+
+    async def _fake_set_async(slot, value, *, user_id=None, webspace_id=None):
+        projected.append(value)
+
+    monkeypatch.setattr(mod, "ctx_subnet", SimpleNamespace(set_async=_fake_set_async))
+    monkeypatch.setattr(mod, "_projection_webspace_ids", lambda webspace_id=None: ["default"])
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    snapshot = {
+        "summary": {"value": "ready"},
+        "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
+        "logs": [{"id": "log-1"}],
+        "events": [{"id": "evt-1"}],
+        "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "data"}]}}},
+    }
+
+    asyncio.run(mod._project_async(snapshot, webspace_id="default"))
+
+    assert projected == [
+        {
+            "summary": {"value": "ready"},
+            "operations": {"active": [{"id": "op-1"}]},
+        }
+    ]
+    assert published == [
+        ("infrastate.operations.active", [{"id": "op-1"}], "default"),
+        ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
+        ("infrastate.events.recent", [{"id": "evt-1"}], "default"),
+        ("infrastate.yjs.load_mark", [{"root": "data"}], "default"),
+    ]
+
+
+def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+    cache_flags: list[bool] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: (
+            cache_flags.append(bool(allow_cache)),
+            {
+                "operations": {"items": [{"id": "op-1"}], "active": [{"id": "op-1"}]},
+                "logs": [{"id": "log-1"}],
+                "events": [{"id": "evt-1"}],
+                "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "data"}]}}},
+            },
+        )[1],
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.logs.recent",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
+    ]
+    assert cache_flags == [False]
+
+
+def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: {
+            "yjs_runtime": {"load_mark": {"selected_webspace": {"items": [{"root": "ui", "peak_bps": 12.0}]}}},
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.yjs.load_mark",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.yjs.load_mark", [{"root": "ui", "peak_bps": 12.0}], "default"),
+    ]
+
+
+def test_infrastate_stream_snapshot_request_supports_yjs_load_mark_from_reliability_runtime(monkeypatch):
+    mod = _load_infrastate_module()
+    published: list[tuple[str, object, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda webspace_id=None, allow_cache=True: {
+            "reliability": {
+                "runtime": {
+                    "sync_runtime": {
+                        "load_mark": {
+                            "selected_webspace": {
+                                "items": [{"root": "registry", "avg_bps": 7.0}],
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_publish_stream_payload",
+        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+    )
+
+    mod.on_webio_stream_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "receiver": "infrastate.yjs.load_mark",
+                "webspace_id": "default",
+            }
+        )
+    )
+
+    assert published == [
+        ("infrastate.yjs.load_mark", [{"root": "registry", "avg_bps": 7.0}], "default"),
+    ]
+
+
+def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):
+    mod = _load_infrastate_module()
+    invalidated: list[str | None] = []
+    refreshed: list[tuple[str | None, str]] = []
+    appended: list[str] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_invalidate_runtime_caches",
+        lambda *, webspace_id=None, marketplace=False: invalidated.append(webspace_id),
+    )
+    monkeypatch.setattr(mod, "_append_event", lambda event_type, payload: appended.append(event_type))
+    monkeypatch.setattr(
+        mod,
+        "_schedule_snapshot_refresh",
+        lambda *, webspace_id=None, reason="runtime.event": refreshed.append((webspace_id, reason)),
+    )
+
+    mod.on_runtime_event(
+        SimpleNamespace(
+            type="core.update.status",
+            payload={
+                "state": "succeeded",
+                "webspace_id": "default",
+            },
+        )
+    )
+
+    assert invalidated == ["default"]
+    assert appended == ["core.update.status"]
+    assert refreshed == [("default", "core.update.status")]
 
 
 def test_infrastate_marketplace_hides_skills_installed_via_scenario_dependencies(monkeypatch):
@@ -762,10 +949,11 @@ def test_infrastate_skill_runtime_migration_helpers_report_failures():
                 "skill_runtime_migration": {
                     "total": 2,
                     "failed_total": 1,
+                    "lifecycle_failed_total": 1,
                     "rollback_total": 1,
                     "skills": [
                         {"skill": "weather_skill", "ok": True},
-                        {"skill": "voice_skill", "ok": False, "failed_stage": "tests"},
+                        {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate"},
                     ],
                 }
             }
@@ -775,7 +963,8 @@ def test_infrastate_skill_runtime_migration_helpers_report_failures():
 
     assert report["failed_total"] == 1
     assert "skill_migration=1/2" in note
-    assert "voice_skill:tests" in note
+    assert "voice_skill:lifecycle/rehydrate" in note
+    assert "lifecycle_failed=1" in note
     assert "rollback=1" in note
 
 
@@ -814,10 +1003,22 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
             "skill_post_commit_checks": {
                 "total": 2,
                 "failed_total": 1,
+                "lifecycle_failed_total": 1,
                 "deactivated_total": 1,
                 "skills": [
                     {"skill": "weather_skill", "ok": True},
-                    {"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True},
+                    {
+                        "skill": "voice_skill",
+                        "ok": False,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                        "deactivated": True,
+                        "deactivation": {
+                            "committed_core_switch": True,
+                            "failure_kind": "lifecycle",
+                            "failed_stage": "rehydrate",
+                        },
+                    },
                 ],
             }
         },
@@ -827,8 +1028,38 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
 
     assert report["deactivated_total"] == 1
     assert "skill_post_commit=1/2" in note
-    assert "voice_skill:tests" in note
+    assert "voice_skill:lifecycle/rehydrate" in note
+    assert "lifecycle_failed=1" in note
     assert "deactivated=1" in note
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in note
+
+
+def test_infrastate_skill_post_commit_helpers_report_existing_quarantine():
+    mod = _load_infrastate_module()
+
+    note = mod._skill_post_commit_checks_note(
+        {
+            "total": 1,
+            "failed_total": 0,
+            "deactivated_total": 1,
+            "skills": [
+                {
+                    "skill": "voice_skill",
+                    "ok": True,
+                    "skipped": True,
+                    "deactivated": True,
+                    "deactivation": {
+                        "committed_core_switch": True,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "skill_post_commit=1/1" in note
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in note
 
 
 def test_infrastate_core_update_diagnostics_include_required_local_payloads(monkeypatch, tmp_path: Path):

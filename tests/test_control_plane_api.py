@@ -47,6 +47,51 @@ def test_node_control_plane_object_self_returns_canonical_payload(monkeypatch) -
     assert payload["object"]["status"] == "online"
 
 
+def test_node_logs_returns_local_category_tail(monkeypatch) -> None:
+    sys.modules.setdefault("nats", types.SimpleNamespace())
+    fake_y_py = types.SimpleNamespace(
+        YDoc=type("YDoc", (), {}),
+        apply_update=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("y_py", fake_y_py)
+    fake_ystore_module = types.ModuleType("ypy_websocket.ystore")
+    fake_ystore_module.BaseYStore = object
+    fake_ystore_module.YDocNotFound = RuntimeError
+    fake_ypy_websocket = types.ModuleType("ypy_websocket")
+    fake_ypy_websocket.ystore = fake_ystore_module
+    sys.modules.setdefault("ypy_websocket", fake_ypy_websocket)
+    sys.modules.setdefault("ypy_websocket.ystore", fake_ystore_module)
+    from adaos.apps.api import node_api
+
+    app = FastAPI()
+    app.include_router(node_api.router, prefix="/api/node")
+    app.dependency_overrides[require_token] = lambda: None
+
+    monkeypatch.setattr(node_api, "normalize_log_category", lambda category: "yjs")
+    monkeypatch.setattr(
+        node_api,
+        "list_local_logs",
+        lambda **kwargs: {
+            "category": kwargs["category"],
+            "source_mode": kwargs["source_mode"],
+            "available": True,
+            "query": {"limit": kwargs["limit"], "lines": kwargs["lines"]},
+            "items": [{"name": "yjs_load_mark.jsonl", "tail": ['{"ts":1}']}],
+        },
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/node/logs/yjs", params={"limit": 3, "lines": 25})
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["logs"]["category"] == "yjs"
+    assert payload["logs"]["source_mode"] == "node_local_logs_dir"
+    assert payload["logs"]["query"] == {"limit": 3, "lines": 25}
+    assert payload["logs"]["items"][0]["name"] == "yjs_load_mark.jsonl"
+
+
 def test_node_sidecar_status_proxies_to_supervisor_when_enabled(monkeypatch) -> None:
     sys.modules.setdefault("nats", types.SimpleNamespace())
     fake_y_py = types.SimpleNamespace(

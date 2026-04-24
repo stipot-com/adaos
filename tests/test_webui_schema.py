@@ -65,6 +65,36 @@ def test_webui_schema_accepts_staged_load_hints() -> None:
     Draft202012Validator(schema).validate(payload)
 
 
+def test_webui_schema_accepts_stream_receivers_and_stream_data_sources() -> None:
+    schema = _load_schema()
+    payload = {
+        "webio": {
+            "receivers": {
+                "telemetry_feed": {
+                    "mode": "append",
+                    "collectionKey": "items",
+                    "dedupeBy": "id",
+                    "maxItems": 120,
+                    "initialState": {"items": []},
+                }
+            }
+        },
+        "widgets": [
+            {
+                "id": "telemetry_widget",
+                "type": "ui.jsonViewer",
+                "area": "main",
+                "dataSource": {
+                    "kind": "stream",
+                    "receiver": "telemetry_feed",
+                },
+            }
+        ],
+    }
+
+    Draft202012Validator(schema).validate(payload)
+
+
 def test_webui_schema_rejects_scheduler_specific_load_details() -> None:
     schema = _load_schema()
     payload = {
@@ -75,6 +105,22 @@ def test_webui_schema_rejects_scheduler_specific_load_details() -> None:
                 "load": {"structure": "visible", "scheduler": "critical_path"},
             }
         ]
+    }
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate(payload)
+
+
+def test_webui_schema_rejects_stream_receiver_without_mode() -> None:
+    schema = _load_schema()
+    payload = {
+        "webio": {
+            "receivers": {
+                "telemetry_feed": {
+                    "collectionKey": "items",
+                }
+            }
+        }
     }
 
     with pytest.raises(ValidationError):

@@ -32,6 +32,7 @@ from adaos.services.operations import submit_install_operation
 from adaos.services.scenario.webspace_runtime import (
     WebspaceService,
     describe_webspace_operational_state,
+    describe_webspace_validation_state,
     describe_webspace_overlay_state,
     describe_webspace_projection_state,
     describe_webspace_rebuild_state,
@@ -47,6 +48,7 @@ from adaos.services.realtime_sidecar import (
     realtime_sidecar_listener_snapshot,
     restart_realtime_sidecar_subprocess,
 )
+from adaos.services.root_mcp.logs import list_local_logs, normalize_log_category
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.system_model.service import (
     current_inventory_projection,
@@ -1261,6 +1263,34 @@ async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, 
     }
 
 
+@router.get("/logs/{category}", dependencies=[Depends(require_token)])
+async def node_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+) -> dict[str, Any]:
+    try:
+        category_token = normalize_log_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown log category: {category}") from exc
+
+    def _load_logs() -> dict[str, Any]:
+        return list_local_logs(
+            category=category_token,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            source_mode="node_local_logs_dir",
+        )
+
+    return {"ok": True, "logs": await anyio.to_thread.run_sync(_load_logs)}
+
+
 @router.post("/infrastate/action", dependencies=[Depends(require_token)])
 async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, Any]:
     conf = load_config()
@@ -1461,6 +1491,13 @@ async def node_yjs_webspaces() -> dict[str, Any]:
             "kind": item.kind,
             "home_scenario": item.home_scenario,
             "source_mode": item.source_mode,
+            "current_scenario": getattr(item, "current_scenario", None),
+            "stored_home_scenario_exists": getattr(item, "stored_home_scenario_exists", None),
+            "home_scenario_exists": getattr(item, "home_scenario_exists", True),
+            "current_scenario_exists": getattr(item, "current_scenario_exists", None),
+            "degraded": getattr(item, "degraded", False),
+            "validation_reason": getattr(item, "validation_reason", None),
+            "recommended_action": getattr(item, "recommended_action", None),
         }
         for item in WebspaceService().list(mode="mixed")
     ]
@@ -1522,6 +1559,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
     target_webspace_id = str(webspace_id or "").strip() or "default"
     state = await describe_webspace_operational_state(target_webspace_id)
+    validation = await describe_webspace_validation_state(target_webspace_id)
     overlay = describe_webspace_overlay_state(target_webspace_id)
     projection = await describe_webspace_projection_state(target_webspace_id)
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
@@ -1531,6 +1569,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
         "ok": True,
         "accepted": True,
         "webspace": state.to_dict(),
+        "validation": validation,
         "overlay": overlay,
         "desktop": desktop,
         "projection": projection,
@@ -1540,6 +1579,17 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
             role=conf.role,
             webspace_id=target_webspace_id,
         ),
+    }
+
+
+@router.get("/yjs/webspaces/{webspace_id}/validation", dependencies=[Depends(require_token)])
+async def node_yjs_webspace_validation_state(webspace_id: str) -> dict[str, Any]:
+    target_webspace_id = str(webspace_id or "").strip() or "default"
+    return {
+        "ok": True,
+        "accepted": True,
+        "webspace_id": target_webspace_id,
+        "validation": await describe_webspace_validation_state(target_webspace_id),
     }
 
 

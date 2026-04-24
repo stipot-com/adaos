@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import signal
 import types
 from pathlib import Path
 
 from adaos.apps import autostart_runner
+from adaos.services import runtime_memory_profile
 from adaos.services.supervisor_memory import read_memory_session_summary, supervisor_memory_session_artifacts_dir
 
 
@@ -186,6 +188,100 @@ def test_runtime_trace_profile_session_writes_trace_artifacts(monkeypatch, tmp_p
     assert trace_payload["top_tracebacks"][0]["traceback"][0] == "app.py:10"
 
 
+def test_runtime_profile_signal_handler_finishes_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    installed: dict[int, object] = {}
+    restored: dict[int, object] = {}
+
+    monkeypatch.setattr(autostart_runner.signal, "getsignal", lambda sig: f"previous-{sig}")
+    monkeypatch.setattr(
+        autostart_runner.signal,
+        "signal",
+        lambda sig, handler: installed.setdefault(int(sig), handler) if callable(handler) else restored.setdefault(int(sig), handler),
+    )
+
+    calls: list[str] = []
+
+    class _Session:
+        def finish(self) -> None:
+            calls.append("finish")
+
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
+    restore = autostart_runner._install_runtime_profile_signal_handlers(_Session())  # type: ignore[arg-type]
+
+    assert int(signal.SIGTERM) in installed
+    handler = installed[int(signal.SIGTERM)]
+    try:
+        handler(signal.SIGTERM, None)  # type: ignore[misc]
+    except SystemExit as exc:
+        assert exc.code == 128 + int(signal.SIGTERM)
+
+    assert calls == ["finish"]
+    restore()
+    runtime_memory_profile.register_active_runtime_memory_profile(None)
+    assert restored[int(signal.SIGTERM)] == f"previous-{int(signal.SIGTERM)}"
+
+
+def test_finish_active_runtime_memory_profile_reports_missing_session() -> None:
+    runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    result = runtime_memory_profile.finish_active_runtime_memory_profile()
+
+    assert result == {"ok": False, "found": False, "reason": "no_active_session"}
+
+
+def test_finish_active_runtime_memory_profile_reports_finish_error() -> None:
+    class _Session:
+        session_id = "mem-oops"
+        profile_mode = "sampled_profile"
+        started = True
+        _finished = False
+
+        def finish(self) -> None:
+            raise RuntimeError("boom")
+
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
+    try:
+        result = runtime_memory_profile.finish_active_runtime_memory_profile()
+    finally:
+        runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    assert result["ok"] is False
+    assert result["found"] is True
+    assert result["session_id"] == "mem-oops"
+    assert result["profile_mode"] == "sampled_profile"
+    assert result["error_type"] == "RuntimeError"
+    assert result["error"] == "boom"
+    assert "RuntimeError: boom" in result["traceback"]
+
+
+def test_finish_active_runtime_memory_profile_writes_debug_artifact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+
+    class _Session:
+        session_id = "mem-debug"
+        profile_mode = "sampled_profile"
+        started = True
+        _finished = False
+
+        def finish(self) -> None:
+            self._finished = True
+
+    runtime_memory_profile.register_active_runtime_memory_profile(_Session())  # type: ignore[arg-type]
+    try:
+        result = runtime_memory_profile.finish_active_runtime_memory_profile()
+    finally:
+        runtime_memory_profile.register_active_runtime_memory_profile(None)
+
+    artifacts_dir = supervisor_memory_session_artifacts_dir("mem-debug")
+    summary = read_memory_session_summary("mem-debug")
+
+    assert result["ok"] is True
+    assert (artifacts_dir / "runtime-profile-finalize-debug.json").exists()
+    assert summary is not None
+    assert any(item.get("kind") == "runtime_profile_finalize_debug" for item in summary.get("artifact_refs", []))
+
+
 def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
     monkeypatch.setattr(
@@ -216,7 +312,25 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(
         autostart_runner,
         "_run_post_commit_skill_checks",
-        lambda: {"ok": False, "failed_total": 1, "deactivated_total": 1, "skills": [{"skill": "voice_skill", "ok": False, "failed_stage": "tests", "deactivated": True}]},
+        lambda: {
+            "ok": False,
+            "failed_total": 1,
+            "deactivated_total": 1,
+            "skills": [
+                {
+                    "skill": "voice_skill",
+                    "ok": False,
+                    "failure_kind": "lifecycle",
+                    "failed_stage": "rehydrate",
+                    "deactivated": True,
+                    "deactivation": {
+                        "committed_core_switch": True,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                    },
+                }
+            ],
+        },
     )
     captured: list[dict] = []
     clear_calls: list[str] = []
@@ -237,6 +351,7 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
     assert captured[-1]["phase"] == "validate"
     assert captured[-1]["skill_post_commit_checks"]["deactivated_total"] == 1
     assert "skills degraded after commit" in captured[-1]["message"]
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in captured[-1]["message"]
 
 
 def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None:

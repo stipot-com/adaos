@@ -28,20 +28,177 @@ For the target architecture and the agreed evolutionary path, see
 4. **Event mesh** - UI commands travel over `/ws` (`events_ws`). Each command
    becomes a domain event (`desktop.*`) with metadata containing the current
    `webspace_id`. Skills subscribe to these events and mutate the associated
-   YDoc. The same control channel now also carries lightweight hub status
-   pushes such as `node.status` and `core.update.status`, so browser shell
-   badges can stay mostly push-driven and use HTTP polling only as a stale
-   fallback when the control path goes quiet.
-5. **Frontend** - the Angular/Ionic runtime consumes Yjs data through
-   `YDocService`. It renders apps/widgets from the merged runtime state and
-   exposes CRUD for switching or managing webspaces.
+   YDoc. The same semantic event channel now also carries lightweight runtime
+   pushes such as `node.status`, `core.update.status`,
+   `supervisor.update.status.raw`, and `webio.stream.*`.
+5. **Frontend** - the Angular/Ionic runtime consumes shared state through
+   `YDocService` and transport-independent stream receivers through
+   `WebIoStreamService`. It renders apps/widgets from the merged runtime state
+   and exposes CRUD for switching or managing webspaces.
 
 ```text
 Browser <--y-websocket--> Hub y_gateway <--YDoc--> SQLiteYStore
-            events_ws             ^               ^
+            events/ws             ^               ^
               |                   |               |
-         (desktop.*)      WebspaceScenarioRuntime + skills
+    (desktop.*, webio.stream.*)   |      WebspaceScenarioRuntime + skills
+              |                   |
+         WebIoStreamService <-----+
 ```
+
+## State vs Stream
+
+AdaOS now treats Yjs and browser streams as different contracts:
+
+* **Yjs** is for collaborative or reconnect-stable shared state.
+  Keep here the compact state that should survive reconnect, page reload, or
+  later semantic rebuild.
+* **`dataSource.kind = "stream"`** is for transport-independent live data.
+  Use it for telemetry, active operations, rolling event tails, log fragments,
+  and other high-churn arrays that do not need CRDT merge semantics.
+* **Control events** on the semantic event channel stay separate again:
+  they carry commands and small runtime notifications, not large client state.
+
+Recommended rule of thumb:
+
+* put `summary`, `latest`, selected object ids, compact diagnostics, and other
+  "what is currently true" facts into Yjs
+* put samples, append-heavy tails, active operation rows, live log lines, and
+  rolling event feeds into stream receivers
+* if a widget must show a recent bounded history instead of only live events,
+  build that bounded history explicitly in the skill/runtime and publish it as
+  the receiver snapshot rather than expecting Yjs to preserve the tail for free
+
+## Stream Receivers
+
+`webui.json` can now declare transport-independent browser receivers:
+
+```json
+{
+  "webio": {
+    "receivers": {
+      "infrastate.operations.active": {
+        "mode": "replace",
+        "initialState": []
+      },
+      "chat.tail": {
+        "mode": "append",
+        "collectionKey": "items",
+        "dedupeBy": "id",
+        "maxItems": 100,
+        "initialState": { "items": [] }
+      }
+    }
+  }
+}
+```
+
+Widgets bind them through `dataSource.kind = "stream"`:
+
+```json
+{
+  "id": "infrastate-operations",
+  "type": "ui.list",
+  "dataSource": {
+    "kind": "stream",
+    "receiver": "infrastate.operations.active"
+  }
+}
+```
+
+Current client behavior:
+
+* `replace` means each incoming payload replaces the local receiver state
+* `append` means the client appends into a local collection, with optional
+  `dedupeBy` and `maxItems`
+* the receiver state is local to the current browser session and is not stored
+  back into Yjs
+
+## Publishing Stream Data
+
+Skills publish browser stream data via `io.out.stream.publish`:
+
+```python
+from adaos.sdk.io import stream_publish
+
+stream_publish(
+    "infrastate.operations.active",
+    operations_rows,
+    _meta={"webspace_id": "default"},
+)
+```
+
+The hub router resolves targets from `_meta` and emits semantic browser events
+of the form `webio.stream.<webspace_id>.<receiver>`. The browser runtime then
+reduces those events into the receiver's local state.
+
+Targeting rules:
+
+* `_meta.webspace_id` targets one webspace
+* `_meta.webspace_ids` fans out to several webspaces
+* `_meta.route_id` resolves through `data.routing.routes[route_id]`
+* if no target metadata is present, the router falls back to `default`
+
+## Snapshot-on-Subscribe
+
+Streams are live transports, not implicit persistent state. To avoid blank
+widgets on first subscribe, the browser now requests an initial snapshot when
+it subscribes to `webio.stream.*`.
+
+The server emits `webio.stream.snapshot.requested` with:
+
+* `receiver`
+* `webspace_id`
+* `transport`
+
+Skills that own a stream receiver should answer that request by publishing the
+current bounded state for the receiver. This is the recommended way to provide
+"recent history" for stream widgets.
+
+Practical guidance:
+
+* for pure live telemetry, a receiver snapshot may be just the latest sample
+  or a small rolling ring buffer
+* for logs or event history, keep an explicit bounded buffer in memory or on
+  disk and publish that buffer on subscribe
+* do not rely on previous Yjs projection contents as an accidental history
+  mechanism
+
+## Member Skills and Delivery
+
+Member skills do not need to manage delivery transport themselves, but they do
+need to scope stream output correctly.
+
+Current path for member-originated stream events:
+
+```text
+member skill
+  -> io.out.stream.publish
+  -> member local bus
+  -> subnet member link
+  -> hub local bus
+  -> RouterService
+  -> webio.stream.<webspace>.<receiver>
+  -> browser event channel (ws / webrtc events)
+```
+
+Important implications:
+
+* transport is handled by the runtime, member link, and router
+* the skill is still responsible for `_meta.webspace_id` or `_meta.route_id`
+* if a tool/subscription already runs under `io_meta`, `io.out.*` helpers
+  inherit `_meta` automatically
+* background tasks and observers should pass `_meta` explicitly unless they are
+  sure the current execution context already carries it
+
+Recommended skill-authoring rules:
+
+* use Yjs projections when the value should be shared durable state
+* use `stream_publish` when the value is high-churn or append-heavy
+* always define the receiver's initial subscribe snapshot if the widget should
+  not appear empty on first open
+* keep stream payloads bounded; publish fragments, not unbounded logs
+* if the UI needs both "latest summary" and "recent tail", put the summary in
+  Yjs and the tail in a stream receiver
 
 ## Webspaces in Detail
 

@@ -336,6 +336,58 @@ def test_skill_list_prefers_workspace_version_over_runtime_version(tmp_base_dir,
     assert '"version": "1.1.0"' in result.stdout
 
 
+def test_skill_list_shows_dirty_flag_and_json_flags(tmp_base_dir, monkeypatch):
+    skill_root = tmp_base_dir / "workspace" / "skills" / "demo_skill"
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "skill.yaml").write_text("id: demo_skill\nversion: '1.1.0'\n", encoding="utf-8")
+
+    class _Paths:
+        def workspace_dir(self):
+            return tmp_base_dir / "workspace"
+
+        def skills_workspace_dir(self):
+            return tmp_base_dir / "workspace" / "skills"
+
+        def dev_skills_dir(self):
+            return tmp_base_dir / "skills-dev"
+
+    class _Ctx:
+        paths = _Paths()
+        sql = object()
+
+    class _Row:
+        name = "demo_skill"
+        installed = True
+        active_version = "1.0.0"
+
+    class _Mgr:
+        @staticmethod
+        def list_installed():
+            return [_Row()]
+
+    def _dirty_status(**kwargs):
+        status = _fake_path_status("skills/demo_skill")
+        status.dirty = True
+        return status
+
+    monkeypatch.setattr(skill_cmd, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(skill_cmd, "_mgr", lambda: _Mgr())
+    monkeypatch.setattr(skill_cmd, "compute_path_status", _dirty_status)
+    monkeypatch.setattr(
+        skill_cmd,
+        "list_workspace_registry_entries",
+        lambda *args, **kwargs: [{"name": "demo_skill", "version": "1.1.0"}],
+    )
+
+    text_result = CliRunner().invoke(skill_cmd.app, ["list", "--local"])
+    assert text_result.exit_code == 0
+    assert "[dirty]" in text_result.stdout
+
+    json_result = CliRunner().invoke(skill_cmd.app, ["list", "--local", "--json"])
+    assert json_result.exit_code == 0
+    assert '"flags": ["dirty"]' in json_result.stdout
+
+
 def test_scenario_status_reports_empty_when_registry_and_workspace_are_empty(tmp_path, monkeypatch):
     class _Paths:
         def workspace_dir(self):

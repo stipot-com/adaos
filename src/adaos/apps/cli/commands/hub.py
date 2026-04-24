@@ -985,6 +985,8 @@ def hub_root_sidecar_status(
         return
     runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
     process = data.get("process") if isinstance(data.get("process"), dict) else {}
+    health = process.get("health") if isinstance(process.get("health"), dict) else {}
+    code = process.get("code") if isinstance(process.get("code"), dict) else {}
     scope = runtime.get("scope") if isinstance(runtime.get("scope"), dict) else {}
     continuity = runtime.get("continuity_contract") if isinstance(runtime.get("continuity_contract"), dict) else {}
     progress = runtime.get("progress") if isinstance(runtime.get("progress"), dict) else {}
@@ -1007,8 +1009,23 @@ def hub_root_sidecar_status(
         f"next={planned_next or '-'} "
         f"listener_pid={process.get('listener_pid') or '-'} "
         f"managed_pid={process.get('managed_pid') or '-'} "
-        f"adopted={'yes' if process.get('adopted_listener') else 'no'}"
+        f"adopted={'yes' if process.get('adopted_listener') else 'no'} "
+        f"probe={'ok' if health.get('last_probe_ok') else ('fail' if health.get('last_probe_ok') is False else '-')}"
+        f"/{health.get('consecutive_failures') if health.get('consecutive_failures') is not None else '-'} "
+        f"rev={(str(code.get('active_fingerprint') or '-')[:12])}"
     )
+    if process.get("last_restart_reason"):
+        typer.echo(f"restart_reason={process.get('last_restart_reason')}")
+    if process.get("launch_cwd"):
+        typer.echo(f"launch_cwd={process.get('launch_cwd')}")
+    if health.get("last_probe_error"):
+        typer.echo(f"health_error={health.get('last_probe_error')}")
+    sync = process.get("sync") if isinstance(process.get("sync"), dict) else {}
+    if sync.get("last_sync_changed_paths"):
+        typer.echo(
+            "sync_changed_paths="
+            + ",".join(str(item) for item in (sync.get("last_sync_changed_paths") or []) if item)
+        )
     if progress:
         typer.echo(
             f"progress={progress.get('completed_milestones') or 0}/{progress.get('milestone_total') or 0} "

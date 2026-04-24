@@ -4164,6 +4164,11 @@ def sidecar_runtime_snapshot(
 
     status = "disabled"
     summary = "realtime sidecar is disabled"
+    session_state = "disabled"
+    status_reason = str(enablement.get("reason") or "").strip() or summary
+    diag_fresh = False
+    last_connect_error_class = None
+    last_connect_error_message = None
     diag_age_s = None
     local_listener_state = "disabled" if not enabled else "unknown"
     remote_session_state = "disabled" if not enabled else "unknown"
@@ -4217,36 +4222,61 @@ def sidecar_runtime_snapshot(
     if enabled:
         status = "unknown"
         summary = "realtime sidecar is enabled but has no diagnostics yet"
+        session_state = "starting"
+        if bool(process_snapshot.get("listener_running")) or bool(process_snapshot.get("managed_alive")):
+            status_reason = "sidecar process is running but has not emitted diagnostics yet"
+        else:
+            status_reason = "sidecar is enabled but has not started emitting diagnostics yet"
     if isinstance(record, dict):
         last_error = str(record.get("last_error") or "").strip()
+        last_connect_error_message = str(record.get("last_remote_connect_error") or last_error or "").strip() or None
+        if last_connect_error_message:
+            last_connect_error_class = last_connect_error_message.split(":", 1)[0].strip() or None
         remote_connected_ago_s = record.get("remote_connected_ago_s")
         local_connected_ago_s = record.get("local_connected_ago_s")
         ts = record.get("ts")
         if isinstance(ts, (int, float)):
             diag_age_s = round(max(0.0, now_ts - float(ts)), 3)
-        fresh_diag = not isinstance(diag_age_s, (int, float)) or float(diag_age_s) <= 10.0
-        local_listener_state = "ready" if fresh_diag else "stale"
-        if isinstance(remote_connected_ago_s, (int, float)) and fresh_diag and not last_error:
+        diag_fresh = not isinstance(diag_age_s, (int, float)) or float(diag_age_s) <= 10.0
+        local_listener_state = "ready" if diag_fresh else "stale"
+        if isinstance(remote_connected_ago_s, (int, float)) and diag_fresh and not last_error:
             remote_session_state = "ready"
-        elif isinstance(remote_connected_ago_s, (int, float)) and not fresh_diag:
+        elif isinstance(remote_connected_ago_s, (int, float)) and not diag_fresh:
             remote_session_state = "stale"
         else:
             remote_session_state = "down"
         if last_error:
             status = "degraded"
             summary = f"sidecar reports transport error: {last_error}"
-        elif not fresh_diag:
+            session_state = "remote_connect_failed"
+            status_reason = last_error
+        elif not diag_fresh:
             status = "degraded"
             summary = "sidecar diagnostics are stale"
+            session_state = "stale_diag"
+            status_reason = "sidecar diagnostics are stale"
         elif isinstance(remote_connected_ago_s, (int, float)):
             status = "ready"
             summary = "sidecar remote session is connected"
+            session_state = "remote_ready"
+            status_reason = "remote session is connected"
         elif isinstance(local_connected_ago_s, (int, float)):
             status = "degraded"
             summary = "sidecar local listener is active but remote session is not connected"
+            session_state = "local_only"
+            status_reason = "local listener is active but remote session is not connected"
         else:
             status = "unknown" if enabled else "disabled"
             summary = "sidecar diagnostics do not show an active session"
+            if int(record.get("remote_connect_fail_total") or 0) > 0 and last_connect_error_message:
+                session_state = "remote_connect_failed"
+                status_reason = last_connect_error_message
+            elif bool(record.get("active_session")) or int(record.get("session_open_total") or 0) > int(record.get("session_close_total") or 0):
+                session_state = "remote_connecting"
+                status_reason = "sidecar session is opening but no remote readiness has been observed yet"
+            else:
+                session_state = "starting"
+                status_reason = "sidecar diagnostics do not show an active session yet"
         transport_ready = bool(status == "ready")
         control_authority = hub_root_protocol.get("control_authority") if isinstance(hub_root_protocol.get("control_authority"), dict) else {}
         control_authority_state = str(control_authority.get("state") or "").strip().lower()
@@ -4275,6 +4305,8 @@ def sidecar_runtime_snapshot(
                 "last_remote_connect_error": record.get("last_remote_connect_error"),
                 "last_remote_connect_error_ago_s": record.get("last_remote_connect_error_ago_s"),
                 "last_remote_disconnect_ago_s": record.get("last_remote_disconnect_ago_s"),
+                "last_connect_error_class": last_connect_error_class,
+                "last_connect_error_message": last_connect_error_message,
             }
         )
         return {
@@ -4292,9 +4324,12 @@ def sidecar_runtime_snapshot(
             "route_tunnel_contract": route_tunnel_contract,
             "status": status,
             "summary": summary,
+            "session_state": session_state,
+            "status_reason": status_reason,
             "local_url": realtime_sidecar_local_url(),
             "diag_path": str(diag_path),
             "diag_age_s": diag_age_s,
+            "diag_fresh": diag_fresh,
             "local_listener_state": local_listener_state,
             "remote_session_state": remote_session_state,
             "transport_ready": transport_ready,
@@ -4322,9 +4357,12 @@ def sidecar_runtime_snapshot(
         "route_tunnel_contract": route_tunnel_contract,
         "status": status,
         "summary": summary,
+        "session_state": session_state,
+        "status_reason": status_reason,
         "local_url": realtime_sidecar_local_url(),
         "diag_path": str(diag_path),
         "diag_age_s": None,
+        "diag_fresh": diag_fresh,
         "local_listener_state": local_listener_state,
         "remote_session_state": remote_session_state,
         "transport_ready": transport_ready,
@@ -4417,6 +4455,31 @@ def yjs_sync_runtime_snapshot(
         weather_observer = weather_observer_snapshot(webspace_id=selected_webspace_id or None)
     except Exception:
         weather_observer = {}
+    try:
+        from adaos.services.yjs.load_mark import yjs_load_mark_snapshot
+
+        load_mark = yjs_load_mark_snapshot(
+            webspace_id=selected_webspace_id or None,
+            now_ts=now,
+        )
+    except Exception:
+        load_mark = {
+            "window_sec": 60,
+            "bucket_sec": 1,
+            "thresholds": {
+                "high_bps": 32 * 1024,
+                "critical_bps": 128 * 1024,
+            },
+            "assessment": {
+                "state": "unavailable",
+                "reason": "failed_to_load_yjs_load_mark",
+            },
+            "selected_webspace_id": selected_webspace_id or None,
+            "selected_webspace": {},
+            "webspace_total": 0,
+            "active_root_total": 0,
+            "webspaces": {},
+        }
     transports = gateway.get("transports") if isinstance(gateway.get("transports"), dict) else {}
     ownership = gateway.get("ownership") if isinstance(gateway.get("ownership"), dict) else {}
     yws_transport = transports.get("yws") if isinstance(transports.get("yws"), dict) else {}
@@ -4446,9 +4509,12 @@ def yjs_sync_runtime_snapshot(
     backup_skipped_total = 0
     state_vector_fast_path_total = 0
     state_vector_compute_total = 0
-    for item in webspaces.values():
+    for ws_id, item in list(webspaces.items()):
         if not isinstance(item, dict):
             continue
+        ws_load_mark = load_mark.get("webspaces", {}).get(str(ws_id)) if isinstance(load_mark.get("webspaces"), dict) else {}
+        if isinstance(ws_load_mark, dict):
+            item["load_mark"] = dict(ws_load_mark)
         update_entries = int(item.get("update_log_entries") or 0)
         max_entries = int(item.get("max_update_log_entries") or 0)
         replay_window_total += int(item.get("replay_window_entries") or 0)
@@ -4492,6 +4558,7 @@ def yjs_sync_runtime_snapshot(
             selected_webspace_id = sorted(str(key) for key in webspaces.keys())[0]
     selected_entry = webspaces.get(selected_webspace_id) if isinstance(webspaces.get(selected_webspace_id), dict) else {}
     selected_webspace = _build_yjs_selected_webspace_snapshot(selected_webspace_id)
+    selected_load_mark = load_mark.get("selected_webspace") if isinstance(load_mark.get("selected_webspace"), dict) else {}
     last_reload = (
         dict(gateway_commands.get("last_reload") or {})
         if isinstance(gateway_commands.get("last_reload"), dict)
@@ -4595,8 +4662,10 @@ def yjs_sync_runtime_snapshot(
         "action_overrides": action_overrides,
         "recovery_playbook": recovery_playbook,
         "recovery_guidance": recovery_guidance,
+        "load_mark": load_mark,
         "selected_webspace": {
             **selected_webspace,
+            "load_mark": dict(selected_load_mark),
             "gateway_room": dict(gateway_rooms.get(selected_webspace_id) or {})
             if isinstance(gateway_rooms.get(selected_webspace_id), dict)
             else {},
@@ -4929,7 +4998,7 @@ def _routed_browser_supervisor_surface(
             blockers.append(last_error)
     if source in {"supervisor_public_status", "cache", "supervisor_runtime"}:
         selection_mode = "supervisor_active_runtime"
-    elif source == "runtime_port_env":
+    elif source in {"runtime_port_env", "runtime_port_probe"}:
         selection_mode = "runtime_port_env"
     else:
         selection_mode = None
@@ -4956,7 +5025,7 @@ def _routed_browser_supervisor_surface(
     }
 
 
-def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 0.35) -> dict[str, Any]:
+def supervisor_transition_runtime_snapshot(*, timeout_sec: float = 1.0) -> dict[str, Any]:
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED", "0") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         payload = {
             "available": False,

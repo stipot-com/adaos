@@ -11,6 +11,7 @@ from .store import (
     ystore_path_for_webspace,
 )
 from .webspace import default_webspace_id, dev_webspace_id
+from . import load_mark as _load_mark  # ensure load-mark listeners/subscriptions are registered
 
 __all__ = [
     "get_ydoc",

@@ -109,7 +109,8 @@ systemctl --user restart adaos.service
 # Проверить
 systemctl --user status adaos.service --no-pager
 journalctl --user -u adaos.service -n 120 --no-pager
-curl http://127.0.0.1:8777/api/node/status (с X-AdaOS-Token, если требуется)
+ADAOS_TOKEN=********
+curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8777/api/node/status
 adaos autostart enable
 adaos autostart status
 adaos autostart update-complete
@@ -119,6 +120,7 @@ adaos autostart disable
 
 
 adaos autostart update-status
+export ADAOS_TOKEN='********'
 adaos autostart update-start
 # Checkup
 cat ~/adaos/.adaos/state/core_update/status.json
@@ -156,6 +158,8 @@ runtime_pid = 26718 runtime_process.pid
 
 # Web client debug 
 # https://myinimatic.web.app/?boot_debug=1
+# 
+# https://myinimatic.web.app/?yjs_persist=0
 
 ```
 

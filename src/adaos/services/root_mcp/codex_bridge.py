@@ -497,6 +497,101 @@ class CodexRootMcpBridge:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "get_yjs_load_mark_history",
+                "description": "Read queryable YJS load-mark history captured beside adaos.log.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
+                        "webspace_id": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["owner", "root"]},
+                        "bucket_id": {"type": "string"},
+                        "display_contains": {"type": "string"},
+                        "status": {"type": "string"},
+                        "last_source": {"type": "string"},
+                        "since_ts": {"type": "number"},
+                        "until_ts": {"type": "number"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_yjs_logs",
+                "description": "Read bounded YJS log tails either from root-local logs or aggregated across active subnet nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_skill_logs",
+                "description": "Read bounded skill service log tails either from root-local logs or aggregated across active subnet nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "skill": {"type": "string"},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_adaos_logs",
+                "description": "Read bounded adaos.log tails either from root-local logs or aggregated across active subnet nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_events_logs",
+                "description": "Read bounded events.log tails either from root-local logs or aggregated across active subnet nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_info",
+                "description": "Read the currently scoped root-known subnet information and visible sessions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -618,6 +713,67 @@ class CodexRootMcpBridge:
                     subnet_id=self.profile.subnet_id,
                 )
             )
+        if tool == "get_yjs_load_mark_history":
+            return _tool_text(
+                client.get_yjs_load_mark_history(
+                    limit=int(args.get("limit") or 100),
+                    webspace_id=_normalize_text(args.get("webspace_id")),
+                    kind=_normalize_text(args.get("kind")),
+                    bucket_id=_normalize_text(args.get("bucket_id")),
+                    display_contains=_normalize_text(args.get("display_contains")),
+                    status=_normalize_text(args.get("status")),
+                    last_source=_normalize_text(args.get("last_source")),
+                    since_ts=float(args["since_ts"]) if args.get("since_ts") is not None else None,
+                    until_ts=float(args["until_ts"]) if args.get("until_ts") is not None else None,
+                )
+            )
+        if tool == "get_yjs_logs":
+            return _tool_text(
+                client.get_yjs_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
+                )
+            )
+        if tool == "get_skill_logs":
+            return _tool_text(
+                client.get_skill_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    skill=_normalize_text(args.get("skill")),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
+                )
+            )
+        if tool == "get_adaos_logs":
+            return _tool_text(
+                client.get_adaos_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
+                )
+            )
+        if tool == "get_events_logs":
+            return _tool_text(
+                client.get_events_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                    scope=_normalize_text(args.get("scope")),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
+                )
+            )
+        if tool == "get_subnet_info":
+            return _tool_text(client.get_subnet_info(target_id=_normalize_text(args.get("target_id"))))
         raise KeyError(tool)
 
     def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:

@@ -12,6 +12,8 @@ def _sidecar_runtime_payload() -> dict:
     return {
         "runtime": {
             "status": "ready",
+            "session_state": "remote_ready",
+            "status_reason": "remote session is connected",
             "phase": "nats_transport_sidecar",
             "transport_owner": "sidecar",
             "lifecycle_manager": "supervisor",

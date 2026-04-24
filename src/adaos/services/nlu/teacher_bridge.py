@@ -9,6 +9,7 @@ from typing import Any, Dict, Mapping
 from adaos.sdk.core.decorators import subscribe
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as bus_emit
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.nlu.teacher_events import append_event, make_event
 from adaos.services.nlu.ycoerce import coerce_dict, iter_mappings
@@ -17,6 +18,15 @@ _log = logging.getLogger("adaos.nlu.teacher")
 
 _MAX_ITEMS = int(os.getenv("ADAOS_NLU_TEACHER_MAX", "200") or "200")
 _ENABLED = os.getenv("ADAOS_NLU_TEACHER") == "1"
+
+
+def _nlu_teacher_bridge_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.teacher_bridge",
+        owner="core:nlu.teacher_bridge",
+        channel="core.nlu.teacher_bridge.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -45,17 +55,18 @@ def _list_of_dicts(value: Any) -> list[dict]:
 async def _append_teacher_item(webspace_id: str, item: dict) -> None:
     from adaos.services.yjs.doc import async_get_ydoc
 
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        current = data_map.get("nlu_teacher")
-        teacher: dict = coerce_dict(current)
-        items = _list_of_dicts(teacher.get("items"))
-        items.append(item)
-        if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
-            items = items[-_MAX_ITEMS:]
-        with ydoc.begin_transaction() as txn:
-            teacher["items"] = items
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_teacher_bridge_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            current = data_map.get("nlu_teacher")
+            teacher: dict = coerce_dict(current)
+            items = _list_of_dicts(teacher.get("items"))
+            items.append(item)
+            if _MAX_ITEMS > 0 and len(items) > _MAX_ITEMS:
+                items = items[-_MAX_ITEMS:]
+            with ydoc.begin_transaction() as txn:
+                teacher["items"] = items
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 @subscribe("nlp.intent.not_obtained")

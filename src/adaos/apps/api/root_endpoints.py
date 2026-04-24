@@ -33,6 +33,7 @@ from adaos.services.root_mcp.audit import append_audit_event
 from adaos.services.root_mcp.model import RootMcpAuditEvent, RootMcpSurface
 from adaos.services.root_mcp.policy import evaluate_direct_access
 from adaos.services.root_mcp.reports import ingest_control_report, list_control_reports
+from adaos.services.root_mcp.logs import aggregate_subnet_logs, list_local_logs, normalize_log_category, root_logs_dir, tail_text_lines
 from adaos.services.root_mcp.memory_reports import (
     get_memory_profile_artifact,
     list_memory_profile_artifacts,
@@ -57,6 +58,24 @@ subnet_router = APIRouter(prefix="/v1/subnets", tags=["subnets"])
 
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _get_directory():
+    from adaos.services.registry.subnet_directory import get_directory
+
+    return get_directory()
+
+
+def _get_hub_link_manager():
+    from adaos.services.subnet.link_manager import get_hub_link_manager
+
+    return get_hub_link_manager()
+
+
+def _list_yjs_load_mark_history_rows(*args, **kwargs):
+    from adaos.services.yjs.load_mark_history import list_history_rows
+
+    return list_history_rows(*args, **kwargs)
 
 
 def _resolve_owner_id(owner_token: str) -> str:
@@ -292,6 +311,123 @@ def _allowed_target_ids(auth: dict[str, Any]) -> list[str]:
         if token and token not in out:
             out.append(token)
     return out
+
+
+def _root_logs_dir():
+    return root_logs_dir()
+
+
+def _tail_text_lines(path, *, max_lines: int) -> list[str]:
+    return tail_text_lines(path, max_lines=max_lines)
+
+
+def _list_root_local_logs(
+    *,
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+) -> dict[str, Any]:
+    payload = list_local_logs(
+        category=category,
+        limit=limit,
+        lines=lines,
+        contains=contains,
+        skill=skill,
+        file=file,
+        logs_dir=_root_logs_dir(),
+        source_mode="root_local_logs_dir",
+    )
+    for item in list(payload.get("items") or []):
+        if isinstance(item, dict) and item.get("modified_at") is not None:
+            item["modified_at"] = _iso_utc(item["modified_at"])
+    return payload
+
+
+def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = None, target_id: str | None = None) -> dict[str, Any]:
+    scope_subnet = str(auth.get("subnet_id") or "").strip()
+    allowed_target_ids = _allowed_target_ids(auth)
+    requested_target_id = str(target_id or "").strip()
+    if requested_target_id and allowed_target_ids and requested_target_id not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
+    effective_target_id = requested_target_id or (allowed_target_ids[0] if allowed_target_ids else "")
+    inferred_subnet = (
+        str(subnet_id or "").strip()
+        or (effective_target_id[len("hub:") :] if effective_target_id.startswith("hub:") else "")
+        or scope_subnet
+    )
+    if not inferred_subnet:
+        raise HTTPException(status_code=400, detail={"code": "missing_params", "message": "subnet_id or target_id is required."})
+    if scope_subnet and inferred_subnet != scope_subnet:
+        raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Requested subnet scope does not match access token scope."})
+    target = get_managed_target(effective_target_id) if effective_target_id else None
+    directory = _get_directory()
+    nodes = [item for item in directory.list_known_nodes() if str(item.get("subnet_id") or "").strip() == inferred_subnet]
+    link_snapshot = _get_hub_link_manager().snapshot()
+    connected_members = {
+        str(item.get("node_id") or "").strip(): dict(item)
+        for item in list(link_snapshot.get("members") or [])
+        if str(item.get("node_id") or "").strip()
+    }
+    active_nodes = [
+        item
+        for item in nodes
+        if bool(item.get("online")) or str(item.get("node_id") or "").strip() in connected_members
+    ]
+    sessions = list_mcp_session_leases(limit=200, target_id=effective_target_id or None, active_only=False)
+    visible_sessions = [
+        item
+        for item in sessions
+        if str(item.get("subnet_id") or "").strip() == inferred_subnet
+        or (effective_target_id and effective_target_id in list(item.get("target_ids") or []))
+    ]
+    return {
+        "source_mode": "root_known_subnet_state",
+        "subnet_id": inferred_subnet,
+        "zone": str(auth.get("zone") or "").strip() or None,
+        "target_id": effective_target_id or None,
+        "allowed_target_ids": allowed_target_ids,
+        "managed_target": target,
+        "known_nodes": nodes,
+        "active_nodes": active_nodes,
+        "node_summary": {
+            "total_known": len(nodes),
+            "online_known": sum(1 for item in nodes if bool(item.get("online"))),
+            "active_known": len(active_nodes),
+            "connected_members": sum(1 for item in nodes if str(item.get("node_id") or "").strip() in connected_members),
+            "active_node_ids": [
+                str(item.get("node_id") or "").strip()
+                for item in active_nodes
+                if str(item.get("node_id") or "").strip()
+            ],
+        },
+        "hub_link": {
+            "member_total": int(link_snapshot.get("member_total") or 0),
+            "connected_total": int(link_snapshot.get("connected_total") or 0),
+            "connected_node_ids": sorted(connected_members.keys()),
+        },
+        "visible_sessions": visible_sessions[:25],
+        "session_summary": {
+            "total_visible": len(visible_sessions),
+            "active_visible": sum(1 for item in visible_sessions if str(item.get("status") or "") == "active"),
+            "visible_session_ids": [
+                str(item.get("session_id") or "").strip()
+                for item in visible_sessions[:25]
+                if str(item.get("session_id") or "").strip()
+            ],
+        },
+        "aggregation": {
+            "logs": {
+                "scopes": ["root_local", "subnet_active"],
+                "categories": ["adaos", "events", "yjs", "skills"],
+                "transport": "hub_runtime_local",
+                "admin_route": "/api/admin/root_mcp/logs/{category}",
+                "member_route": "/api/node/logs/{category}",
+            }
+        },
+    }
 
 
 def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
@@ -1075,6 +1211,117 @@ async def root_mcp_audit(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "events": events,
+    }
+
+
+@root_router.get("/mcp/yjs/load-mark/history")
+async def root_mcp_yjs_load_mark_history(
+    limit: int = 100,
+    webspace_id: str | None = None,
+    kind: str | None = None,
+    bucket_id: str | None = None,
+    display_contains: str | None = None,
+    status: str | None = None,
+    last_source: str | None = None,
+    since_ts: float | None = None,
+    until_ts: float | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    history = _list_yjs_load_mark_history_rows(
+        limit=max(1, min(int(limit), 2000)),
+        webspace_id=webspace_id,
+        kind=kind,
+        bucket_id=bucket_id,
+        display_contains=display_contains,
+        status=status,
+        last_source=last_source,
+        since_ts=since_ts,
+        until_ts=until_ts,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "history": history,
+    }
+
+
+@root_router.get("/mcp/logs/{category}")
+async def root_mcp_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+    scope: str | None = None,
+    include_hub: bool = True,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    try:
+        category_token = normalize_log_category(category)
+    except ValueError:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Unknown log category."})
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    effective_scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    requested_scope = str(scope or "").strip().lower() or "root_local"
+    if requested_scope == "subnet_active":
+        if not effective_scope.get("subnet_id"):
+            raise HTTPException(status_code=400, detail={"code": "missing_scope", "message": "subnet_active logs require subnet scope."})
+        payload = await aggregate_subnet_logs(
+            category=category_token,
+            subnet_id=str(effective_scope.get("subnet_id") or ""),
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+            include_hub=include_hub,
+        )
+    else:
+        payload = _list_root_local_logs(
+            category=category_token,
+            limit=limit,
+            lines=lines,
+            contains=contains,
+            skill=skill,
+            file=file,
+        )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": effective_scope,
+        "logs": payload,
+    }
+
+
+@root_router.get("/mcp/subnet/info")
+async def root_mcp_subnet_info(
+    target_id: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    info = _build_root_subnet_info(auth=auth, subnet_id=scope.get("subnet_id"), target_id=target_id)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "subnet": info,
     }
 
 

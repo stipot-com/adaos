@@ -847,6 +847,25 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     )
     monkeypatch.setattr(
         node_api_module,
+        "describe_webspace_validation_state",
+        lambda webspace_id: _awaitable(
+            {
+                "webspace_id": webspace_id,
+                "source_mode": "dev",
+                "stored_home_scenario": "prompt_engineer_scenario",
+                "home_scenario": "prompt_engineer_scenario",
+                "current_scenario": "prompt_engineer_runtime",
+                "stored_home_scenario_exists": True,
+                "home_scenario_exists": True,
+                "current_scenario_exists": True,
+                "degraded": False,
+                "validation_reason": None,
+                "recommended_action": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        node_api_module,
         "describe_webspace_overlay_state",
         lambda webspace_id: {
             "webspace_id": webspace_id,
@@ -939,6 +958,7 @@ def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypat
     assert result["ok"] is True
     assert result["accepted"] is True
     assert result["webspace"]["webspace_id"] == "dev_prompt"
+    assert result["validation"]["current_scenario_exists"] is True
     assert result["overlay"]["has_pinned_widgets"] is True
     assert result["overlay"]["pinned_widgets"][0]["id"] == "infra-status"
     assert result["overlay"]["topbar"] == []
@@ -2864,26 +2884,24 @@ def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(mon
     ydoc = _TrackingDoc(
         {
             "ui": _TrackingMap(
-                {"application": {"stale": True}},
-                forbidden_get_keys={"application"},
+                {"application": resolved.application},
             ),
             "data": _TrackingMap(
                 {
-                    "catalog": {"stale": True},
-                    "installed": {"stale": True},
-                    "desktop": {"stale": True},
-                    "routing": {"stale": True},
+                    "catalog": resolved.catalog,
+                    "installed": resolved.installed,
+                    "desktop": resolved.desktop,
+                    "webio": resolved.webio,
+                    "routing": resolved.routing,
                 },
-                forbidden_get_keys={"catalog", "installed", "desktop", "routing"},
             ),
             "registry": _TrackingMap(
                 {
-                    "merged": {"stale": True},
+                    "merged": resolved.registry,
                     "runtime_meta": {
                         webspace_runtime_module._RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY: dict(fingerprints)
                     },
                 },
-                forbidden_get_keys={"merged"},
             ),
         }
     )
@@ -2911,9 +2929,9 @@ def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(mon
     runtime._apply_resolved_state_in_doc(ydoc, "default", resolved, inputs=inputs)
 
     assert runtime._last_apply_summary == {
-        "branch_count": 6,
+        "branch_count": 7,
         "changed_branches": 0,
-        "unchanged_branches": 6,
+        "unchanged_branches": 7,
         "failed_branches": 0,
         "changed_paths": [],
         "defaults_failed": False,
@@ -2929,30 +2947,132 @@ def test_webspace_runtime_apply_uses_effective_branch_fingerprints_fast_path(mon
                 "fingerprint_unchanged_paths": ["ui.application", "registry.merged"],
             },
             "interactive": {
-                "branch_count": 4,
+                "branch_count": 5,
                 "changed_branches": 0,
-                "unchanged_branches": 4,
+                "unchanged_branches": 5,
                 "failed_branches": 0,
                 "changed_paths": [],
-                "fingerprint_unchanged_branches": 4,
+                "fingerprint_unchanged_branches": 5,
                 "fingerprint_unchanged_paths": [
                     "data.catalog",
                     "data.installed",
                     "data.desktop",
+                    "data.webio",
                     "data.routing",
                 ],
             },
         },
-        "fingerprint_unchanged_branches": 6,
+        "fingerprint_unchanged_branches": 7,
         "fingerprint_unchanged_paths": [
             "ui.application",
             "registry.merged",
             "data.catalog",
             "data.installed",
             "data.desktop",
+            "data.webio",
             "data.routing",
         ],
     }
+
+
+def test_webspace_runtime_apply_rewrites_missing_effective_branch_even_when_fingerprint_matches(monkeypatch) -> None:
+    class _Txn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class _TrackingMap(dict):
+        def set(self, txn, key, value):
+            self[key] = value
+
+    class _TrackingDoc:
+        def __init__(self, state: dict[str, _TrackingMap]) -> None:
+            self._state = state
+
+        def get_map(self, name: str) -> _TrackingMap:
+            return self._state[name]
+
+        def begin_transaction(self):
+            return _Txn()
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(ctx=SimpleNamespace())
+    monkeypatch.setattr(runtime, "_apply_ydoc_defaults_in_txn", lambda ydoc, txn, skill_decls: None)
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "describe_webspace_rebuild_state",
+        lambda webspace_id: {"webspace_id": webspace_id, "status": "ready", "pending": False},
+    )
+
+    resolved = webspace_runtime_module.WebspaceResolverOutputs(
+        webspace_id="default",
+        scenario_id="web_desktop",
+        source_mode="workspace",
+        application={
+            "desktop": {"topbar": [], "pageSchema": {"widgets": []}, "pinnedWidgets": []},
+            "modals": {"apps_catalog": {}, "widgets_catalog": {}},
+        },
+        catalog={"apps": [], "widgets": []},
+        registry={"modals": [], "widgets": []},
+        installed={"apps": [], "widgets": []},
+        desktop={"installed": {"apps": [], "widgets": []}, "topbar": [], "pageSchema": {"widgets": []}, "pinnedWidgets": []},
+        routing={"routes": {}},
+        skill_decls=[],
+    )
+    fingerprints = webspace_runtime_module._resolved_output_branch_fingerprints(resolved)
+    ydoc = _TrackingDoc(
+        {
+            "ui": _TrackingMap(
+                {
+                    "application": resolved.application,
+                }
+            ),
+            "data": _TrackingMap(
+                {
+                    "installed": resolved.installed,
+                    "desktop": resolved.desktop,
+                    "routing": resolved.routing,
+                }
+            ),
+            "registry": _TrackingMap(
+                {
+                    "merged": resolved.registry,
+                    "runtime_meta": {
+                        webspace_runtime_module._RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY: dict(fingerprints)
+                    },
+                }
+            ),
+        }
+    )
+    inputs = webspace_runtime_module.WebspaceResolverInputs(
+        webspace_id="default",
+        scenario_id="web_desktop",
+        source_mode="workspace",
+        metadata={},
+        scenario_application={},
+        scenario_catalog={},
+        scenario_registry={},
+        overlay_snapshot={},
+        live_state={"desktop": {}, "routing": {}},
+        compatibility_cache_presence={
+            "scenario_ui_application": False,
+            "scenario_registry_entry": False,
+            "scenario_catalog": False,
+        },
+        skill_decls=[],
+        desktop_scenarios=[],
+        scenario_source="loader:workspace",
+        legacy_scenario_fallback=False,
+    )
+
+    runtime._apply_resolved_state_in_doc(ydoc, "default", resolved, inputs=inputs)
+
+    assert ydoc.get_map("data")["catalog"] == {"apps": [], "widgets": []}
+    assert runtime._last_apply_summary["changed_paths"] == ["data.catalog", "data.webio"]
+    interactive = runtime._last_apply_summary["phases"]["interactive"]
+    assert interactive["changed_paths"] == ["data.catalog", "data.webio"]
+    assert "data.catalog" not in interactive.get("fingerprint_unchanged_paths", [])
 
 
 def test_node_cli_ensure_dev_posts_requested_id_and_title(monkeypatch) -> None:

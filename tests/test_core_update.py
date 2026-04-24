@@ -104,8 +104,10 @@ def test_core_update_status_publishes_bus_event(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr("adaos.services.core_update.get_ctx", lambda: _Ctx())
     write_status({"state": "countdown", "message": "scheduled"})
-    assert published
-    assert getattr(published[0], "type", "") == "core.update.status"
+    assert [getattr(evt, "type", "") for evt in published] == [
+        "core.update.status",
+        "supervisor.update.status.raw",
+    ]
 
 
 def test_execute_pending_update_activates_target_slot(monkeypatch, tmp_path) -> None:
@@ -281,6 +283,9 @@ def test_finalize_runtime_boot_status_marks_root_promotion_pending(monkeypatch, 
     assert payload["root_promotion_required"] is True
     assert "src/adaos/apps/supervisor.py" in payload["bootstrap_update"]["changed_paths"]
     assert read_last_result()["phase"] == "root_promotion_pending"
+    assert read_plan() is None
+    assert payload["scheduled_for"] is None
+    assert payload["candidate_prewarm_state"] is None
 
 
 def test_finalize_runtime_boot_status_marks_root_restart_completed_after_root_promoted(monkeypatch, tmp_path) -> None:
@@ -297,6 +302,7 @@ def test_finalize_runtime_boot_status_marks_root_restart_completed_after_root_pr
         },
     )
     activate_slot("B")
+    write_plan({"state": "prepared_restart", "action": "update", "target_slot": "B", "expires_at": 9999999999.0})
     write_status(
         {
             "state": "succeeded",
@@ -319,6 +325,43 @@ def test_finalize_runtime_boot_status_marks_root_restart_completed_after_root_pr
     assert payload["candidate_prewarm_state"] is None
     assert payload["candidate_prewarm_message"] is None
     assert payload["candidate_prewarm_ready_at"] is None
+    assert read_plan() is None
+
+
+def test_finalize_runtime_boot_status_clears_candidate_prewarm_after_successful_validate(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    write_slot_manifest(
+        "B",
+        {
+            "slot": "B",
+            "argv": ["python", "-m", "adaos.apps.autostart_runner"],
+            "bootstrap_update": {"required": False, "changed_paths": []},
+        },
+    )
+    activate_slot("B")
+    write_plan({"state": "prepared_restart", "action": "update", "target_slot": "B", "expires_at": 9999999999.0})
+    write_status(
+        {
+            "state": "restarting",
+            "phase": "launch",
+            "target_slot": "B",
+            "scheduled_for": 123.0,
+            "candidate_prewarm_state": "starting",
+            "candidate_prewarm_message": "passive candidate runtime is still warming on http://127.0.0.1:8778",
+            "candidate_prewarm_ready_at": 124.0,
+        }
+    )
+
+    payload = finalize_runtime_boot_status()
+
+    assert payload is not None
+    assert payload["state"] == "succeeded"
+    assert payload["phase"] == "validate"
+    assert payload["scheduled_for"] is None
+    assert payload["candidate_prewarm_state"] is None
+    assert payload["candidate_prewarm_message"] is None
+    assert payload["candidate_prewarm_ready_at"] is None
+    assert read_plan() is None
 
 
 def test_promote_root_from_slot_copies_changed_bootstrap_files(monkeypatch, tmp_path) -> None:

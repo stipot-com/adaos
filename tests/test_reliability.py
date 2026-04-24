@@ -688,10 +688,81 @@ def test_sidecar_runtime_snapshot_promotes_route_tunnel_readiness_into_scope_and
         "browser_events_ws",
         "browser_yjs_ws",
     ]
+
+
+def test_sidecar_runtime_snapshot_reports_starting_when_enabled_without_diag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: tmp_path / "realtime_sidecar.jsonl",
+            realtime_sidecar_enabled=lambda **kwargs: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {
+                "listener_running": True,
+                "listener_pid": 42,
+                "managed_alive": True,
+            },
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {},
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        role="hub",
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+        media_runtime={},
+    )
+
+    assert snapshot["status"] == "unknown"
+    assert snapshot["session_state"] == "starting"
+    assert snapshot["status_reason"] == "sidecar process is running but has not emitted diagnostics yet"
+    assert snapshot["diag_fresh"] is False
+
+
+def test_sidecar_runtime_snapshot_reports_local_only_and_connect_error_details(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_SUPERVISOR_ENABLED", "1")
+    diag_path = tmp_path / "realtime_sidecar.jsonl"
+    diag_path.write_text(
+        (
+            '{"ts": 100.0, "local_connected_ago_s": 0.2, "remote_connect_fail_total": 2, '
+            '"last_remote_connect_error": "ConnectError: dial tcp timeout"}\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("adaos.services.reliability.time.time", lambda: 105.0)
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.realtime_sidecar",
+        SimpleNamespace(
+            realtime_sidecar_diag_path=lambda: diag_path,
+            realtime_sidecar_enabled=lambda **kwargs: True,
+            realtime_sidecar_listener_snapshot=lambda proc=None: {"listener_running": True, "listener_pid": 77},
+            realtime_sidecar_local_url=lambda: "nats://127.0.0.1:7422",
+            realtime_sidecar_route_tunnel_contract=lambda: {},
+        ),
+    )
+
+    snapshot = sidecar_runtime_snapshot(
+        role="hub",
+        readiness_tree={},
+        hub_root_protocol={},
+        transport_strategy={},
+        media_runtime={},
+    )
+
+    assert snapshot["status"] == "degraded"
+    assert snapshot["session_state"] == "local_only"
+    assert snapshot["status_reason"] == "local listener is active but remote session is not connected"
+    assert snapshot["diag_fresh"] is True
+    assert snapshot["transport_provenance"]["last_connect_error_class"] == "ConnectError"
+    assert snapshot["transport_provenance"]["last_connect_error_message"] == "ConnectError: dial tcp timeout"
     assert snapshot["continuity_contract"]["pending_boundaries"] == []
-    assert snapshot["progress"]["state"] == "ready"
-    assert snapshot["progress"]["completed_milestones"] == 4
-    assert snapshot["progress"]["current_milestone"] is None
+    assert snapshot["progress"]["state"] == "in_progress"
+    assert snapshot["progress"]["completed_milestones"] == 2
+    assert snapshot["progress"]["current_milestone"] == "browser_events_ws_handoff"
 
 
 def test_sidecar_runtime_snapshot_marks_websocket_handoffs_ready_after_cutover(
@@ -864,6 +935,37 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
         "adaos.services.reliability._build_yjs_webspace_guidance",
         lambda selected_webspace, action_overrides: {},
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.yjs.load_mark",
+        SimpleNamespace(
+            yjs_load_mark_snapshot=lambda **kwargs: {
+                "window_sec": 60,
+                "bucket_sec": 1,
+                "thresholds": {"high_bps": 32768, "critical_bps": 131072},
+                "assessment": {"state": "high", "reason": "selected_or_cached_webspaces_above_high_threshold"},
+                "selected_webspace_id": kwargs.get("webspace_id") or "default",
+                "selected_webspace": {
+                    "webspace_id": kwargs.get("webspace_id") or "default",
+                    "assessment": {"state": "high", "reason": "recent_root_flow_above_high_threshold"},
+                    "items": [
+                        {"root": "data", "status": "high", "avg_bps": 1024.0, "peak_bps": 4096.0},
+                    ],
+                },
+                "webspace_total": 1,
+                "active_root_total": 1,
+                "webspaces": {
+                    "default": {
+                        "webspace_id": "default",
+                        "assessment": {"state": "high", "reason": "recent_root_flow_above_high_threshold"},
+                        "items": [
+                            {"root": "data", "status": "high", "avg_bps": 1024.0, "peak_bps": 4096.0},
+                        ],
+                    }
+                },
+            }
+        ),
+    )
 
     snapshot = yjs_sync_runtime_snapshot(role="hub", webspace_id="default")
     contract = snapshot["channel_contract"]
@@ -894,6 +996,9 @@ def test_yjs_sync_runtime_snapshot_exposes_transport_ownership(monkeypatch) -> N
     assert snapshot["compaction_eligible_webspace_total"] == 1
     assert snapshot["replay_window_byte_total"] == 512
     assert snapshot["backup_fast_path_total"] == 1
+    assert snapshot["load_mark"]["assessment"]["state"] == "high"
+    assert snapshot["selected_webspace"]["load_mark"]["items"][0]["root"] == "data"
+    assert snapshot["webspaces"]["default"]["load_mark"]["assessment"]["state"] == "high"
     assert ownership["state"] == "explicit"
     assert ownership["selector"]["owner"] == "shared"
     assert ownership["selector"]["status"] == "unset"
@@ -1813,6 +1918,8 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
     assert "yws=sidecar->sidecar:sidecar_tunnel" in result.output
+    assert "status=unknown session=starting" in result.output
+    assert "sidecar.reason: sidecar process is running but has not emitted diagnostics yet" in result.output
     assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "sidecar.route_tunnel.yws_blocker" not in result.output
     assert "eligible=1" in result.output

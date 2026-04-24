@@ -8,6 +8,7 @@ from adaos.services.scenario.webspace_runtime import (
     WebspaceInfo,
     WebspaceService,
     describe_webspace_operational_state,
+    describe_webspace_validation_state,
     describe_webspace_overlay_state,
     describe_webspace_projection_state,
     ensure_dev_webspace_for_scenario,
@@ -50,10 +51,22 @@ async def webspace_describe(webspace_id: str | None = None) -> dict[str, Any]:
     target = str(webspace_id or "").strip() or default_webspace_id()
     return {
         "webspace": (await describe_webspace_operational_state(target)).to_dict(),
+        "validation": await describe_webspace_validation_state(target),
         "overlay": describe_webspace_overlay_state(target),
         "desktop": (await WebDesktopService().get_snapshot_async(target)).to_dict(),
         "projection": await describe_webspace_projection_state(target),
     }
+
+
+@tool(
+    "web.webspace.validate",
+    summary="Return authoritative backend validation for a webspace scenario state.",
+    stability="experimental",
+    examples=["await web.webspace.validate()", "await web.webspace.validate('desktop')"],
+)
+async def webspace_validate(webspace_id: str | None = None) -> dict[str, Any]:
+    target = str(webspace_id or "").strip() or default_webspace_id()
+    return await describe_webspace_validation_state(target)
 
 
 @tool(

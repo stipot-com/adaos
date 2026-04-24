@@ -83,14 +83,16 @@ rules:
   - `this`: prints locally using `io_console.print_text` → `[IO/console@{node}] ...`.
   - Other node: Router resolves `base_url` for the target node and POSTs to `<base_url>/api/io/console/print`.
 
-## Web IO Routing (Yjs webspaces)
+## Web IO Routing (Yjs webspaces and browser streams)
 
-For browser-driven webspaces we use dedicated “web IO” topics that the RouterService projects into the appropriate Yjs doc.
+For browser-driven webspaces we use dedicated “web IO” topics that the RouterService
+either projects into the appropriate Yjs doc or fans out as browser stream events.
 
 - Source:
   - `io.out.chat.append` (chat message append)
   - `io.out.say` (enqueue TTS)
   - `io.out.media.route` (media route intent / normalized route contract)
+  - `io.out.stream.publish` (transport-independent browser stream receiver payload)
 - Target selection:
   - default: RouterService resolves the destination from `_meta.webspace_id` (fallback: `payload.webspace_id`, else `default`)
   - broadcast: set `_meta.webspace_ids = [...]` to fan-out into multiple webspaces
@@ -99,12 +101,31 @@ For browser-driven webspaces we use dedicated “web IO” topics that the Route
   - `io.out.chat.append` -> `data.voice_chat.messages`
   - `io.out.say` -> `data.tts.queue`
   - `io.out.media.route` -> `data.media.route`
+  - `io.out.stream.publish` -> semantic browser event `webio.stream.<webspace>.<receiver>`
+
+For stream receivers the router does not write the payload back into Yjs.
+The browser runtime keeps the receiver's local state in `WebIoStreamService`,
+using the receiver config declared in `webui.json`.
 
 ### Routeless skills
 
 When a tool is invoked with a payload that contains `_meta`, AdaOS sets an execution
 context so `io.out.*` helpers inherit it automatically. This allows skills to emit
 outputs without carrying routing logic (no explicit `_meta` plumbing in skill code).
+
+### Member-originated browser streams
+
+Member-originated `io.out.stream.publish` follows the same semantic path as
+other member bus events:
+
+* the member skill emits `io.out.stream.publish`
+* `MemberLinkClient` forwards allowed local bus events to the hub
+* the hub ingests the member event on its local bus
+* `RouterService` resolves webspace targets and emits `webio.stream.*`
+
+This means the member skill does not need to know about the transport path,
+but it must still scope the output correctly with `_meta.webspace_id`,
+`_meta.webspace_ids`, or `_meta.route_id`.
 
 ## Subnet Directory (hub and members)
 

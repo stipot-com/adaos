@@ -64,6 +64,12 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     client.revoke_target_mcp_session("hub:test-zone", "sess-2", reason="rotate-target-session")
     client.deploy_target_ref("hub:test-zone", ref="refs/heads/test-main", note="pilot")
     client.rollback_last_test_deploy("hub:test-zone")
+    client.get_yjs_load_mark_history(limit=25, webspace_id="desktop", kind="owner", bucket_id="_by_owner/unknown", status="high")
+    client.get_yjs_logs(limit=3, lines=120, contains="load_mark", scope="subnet_active", include_hub=False)
+    client.get_skill_logs(limit=4, lines=80, skill="infra_access_skill")
+    client.get_adaos_logs(limit=2, lines=60)
+    client.get_events_logs(limit=2, lines=40, file="events.log")
+    client.get_subnet_info(target_id="hub:test-zone")
     client.call("development.list_descriptor_sets", request_id="req-1")
 
     assert config.headers()["Authorization"] == "Bearer access-123"
@@ -136,4 +142,20 @@ def test_root_mcp_client_uses_root_url_scope_and_bearer_headers() -> None:
     assert stub.calls[40][2]["json"]["tool_id"] == "hub.deploy_ref"
     assert stub.calls[40][2]["json"]["arguments"]["ref"] == "refs/heads/test-main"
     assert stub.calls[41][2]["json"]["tool_id"] == "hub.rollback_last_test_deploy"
-    assert stub.calls[42][2]["json"]["tool_id"] == "development.list_descriptor_sets"
+    assert stub.calls[42][1] == "/v1/root/mcp/yjs/load-mark/history"
+    assert stub.calls[42][2]["params"]["webspace_id"] == "desktop"
+    assert stub.calls[42][2]["params"]["kind"] == "owner"
+    assert stub.calls[42][2]["params"]["bucket_id"] == "_by_owner/unknown"
+    assert stub.calls[42][2]["params"]["status"] == "high"
+    assert stub.calls[43][1] == "/v1/root/mcp/logs/yjs"
+    assert stub.calls[43][2]["params"]["contains"] == "load_mark"
+    assert stub.calls[43][2]["params"]["scope"] == "subnet_active"
+    assert stub.calls[43][2]["params"]["include_hub"] is False
+    assert stub.calls[44][1] == "/v1/root/mcp/logs/skills"
+    assert stub.calls[44][2]["params"]["skill"] == "infra_access_skill"
+    assert stub.calls[45][1] == "/v1/root/mcp/logs/adaos"
+    assert stub.calls[46][1] == "/v1/root/mcp/logs/events"
+    assert stub.calls[46][2]["params"]["file"] == "events.log"
+    assert stub.calls[47][1] == "/v1/root/mcp/subnet/info"
+    assert stub.calls[47][2]["params"]["target_id"] == "hub:test-zone"
+    assert stub.calls[48][2]["json"]["tool_id"] == "development.list_descriptor_sets"

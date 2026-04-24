@@ -430,6 +430,8 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
     if sidecar:
         provenance = sidecar.get("transport_provenance") if isinstance(sidecar.get("transport_provenance"), dict) else {}
         process = sidecar.get("process") if isinstance(sidecar.get("process"), dict) else {}
+        health = process.get("health") if isinstance(process.get("health"), dict) else {}
+        code = process.get("code") if isinstance(process.get("code"), dict) else {}
         scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
         continuity = sidecar.get("continuity_contract") if isinstance(sidecar.get("continuity_contract"), dict) else {}
         progress = sidecar.get("progress") if isinstance(sidecar.get("progress"), dict) else {}
@@ -445,6 +447,7 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"enabled={bool(sidecar.get('enabled'))} "
             f"enablement={enablement_label} "
             f"status={sidecar.get('status') or 'unknown'} "
+            f"session={sidecar.get('session_state') or '-'} "
             f"owner={sidecar.get('transport_owner') or '-'} "
             f"manager={sidecar.get('lifecycle_manager') or '-'} "
             f"transport={sidecar.get('local_listener_state') or ('ready' if sidecar.get('transport_ready') else 'down')}/"
@@ -458,8 +461,21 @@ def _print_reliability_summary(payload: dict[str, Any]) -> None:
             f"local={sidecar.get('local_url') or '-'} "
             f"continuity={continuity.get('current_support') or '-'}:{continuity.get('hub_runtime_update') or '-'} "
             f"next={planned_next or '-'} "
+            f"probe={'ok' if health.get('last_probe_ok') else ('fail' if health.get('last_probe_ok') is False else '-')}"
+            f"/{health.get('consecutive_failures') if health.get('consecutive_failures') is not None else '-'} "
+            f"rev={(str(code.get('active_fingerprint') or '-')[:12])} "
             f"diag_age_s={sidecar.get('diag_age_s') if sidecar.get('diag_age_s') is not None else '-'}"
         )
+        if sidecar.get("status_reason"):
+            typer.echo(f"sidecar.reason: {sidecar.get('status_reason')}")
+        if process.get("last_restart_reason"):
+            typer.echo(f"sidecar.restart_reason: {process.get('last_restart_reason')}")
+        sync = process.get("sync") if isinstance(process.get("sync"), dict) else {}
+        if sync.get("last_sync_changed_paths"):
+            typer.echo(
+                "sidecar.sync: "
+                + ",".join(str(item) for item in (sync.get("last_sync_changed_paths") or []) if item)
+            )
         if progress:
             typer.echo(
                 "sidecar.progress: "

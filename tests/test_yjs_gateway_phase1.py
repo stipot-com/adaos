@@ -728,14 +728,12 @@ def test_register_ws_event_subscriptions_installs_forwarder_once(monkeypatch) ->
 
 
 def test_iter_initial_ws_event_messages_includes_hub_node_status(monkeypatch) -> None:
-    from adaos.services import bootstrap as bootstrap_module
+    bootstrap_module = types.ModuleType("adaos.services.bootstrap")
+    bootstrap_module.load_config = lambda *args, **kwargs: SimpleNamespace(role="hub")
+    bootstrap_module.is_ready = lambda *args, **kwargs: True
+    monkeypatch.setitem(sys.modules, "adaos.services.bootstrap", bootstrap_module)
     from adaos.services.system_model import service as system_model_service
 
-    monkeypatch.setattr(
-        bootstrap_module,
-        "load_config",
-        lambda *args, **kwargs: SimpleNamespace(role="hub"),
-    )
     monkeypatch.setattr(
         system_model_service,
         "current_node_status_push_payload",
@@ -761,6 +759,42 @@ def test_iter_initial_ws_event_messages_includes_hub_node_status(monkeypatch) ->
             },
             "source": "node.status",
             "ts": 321.0,
+        }
+    ]
+
+
+def test_iter_initial_ws_event_messages_includes_supervisor_raw_status(monkeypatch) -> None:
+    from adaos.services import core_update as core_update_module
+
+    monkeypatch.setattr(
+        core_update_module,
+        "read_public_update_status",
+        lambda: {
+            "ok": True,
+            "status": {"state": "countdown", "phase": "scheduled"},
+            "attempt": {"state": "planned"},
+            "runtime": {"transition_mode": "warm_switch"},
+            "_served_by": "supervisor",
+        },
+    )
+    monkeypatch.setattr(gateway_module.time, "time", lambda: 654.0)
+
+    messages = gateway_module._iter_initial_ws_event_messages({"supervisor.update.status.raw"})
+
+    assert messages == [
+        {
+            "ch": "events",
+            "t": "evt",
+            "kind": "supervisor.update.status.raw",
+            "payload": {
+                "ok": True,
+                "status": {"state": "countdown", "phase": "scheduled"},
+                "attempt": {"state": "planned"},
+                "runtime": {"transition_mode": "warm_switch"},
+                "_served_by": "supervisor",
+            },
+            "source": "supervisor.update.status.raw",
+            "ts": 654.0,
         }
     ]
 

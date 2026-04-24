@@ -26,13 +26,14 @@ try:
     from ypy_websocket.websocket import Websocket as YWebsocket
     from ypy_websocket.websocket_server import WebsocketServer
     from ypy_websocket.yroom import YRoom
+    from ypy_websocket.yutils import create_update_message
 except ImportError as exc:  # pragma: no cover - import guard for dev envs
     raise RuntimeError("ypy_websocket is required for AdaOS realtime collaboration. " "Install dependencies via `pip install -e .[dev]` or `pip install ypy-websocket`.") from exc
 
 from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
-from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace
+from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace, ystore_write_metadata_sync
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -88,7 +89,27 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
     return max(float(minimum), value)
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        value = int(default)
+    return max(int(minimum), value)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 _IDLE_ROOM_EVICT_SEC = _env_float("ADAOS_YJS_IDLE_ROOM_EVICT_SEC", 60.0, minimum=0.0)
+_YROOM_DIAG_ENABLED = _env_flag("ADAOS_YJS_ROOM_DIAG_ENABLED", True)
+_YROOM_DIAG_LOG_INTERVAL_SEC = _env_float("ADAOS_YJS_ROOM_DIAG_LOG_INTERVAL_SEC", 5.0, minimum=0.0)
+_YROOM_DIAG_BUFFER_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_BUFFER_WARN", 32, minimum=1)
+_YROOM_DIAG_PENDING_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_PENDING_WARN", 32, minimum=1)
+_YROOM_DIAG_UPDATE_WARN_BYTES = _env_int("ADAOS_YJS_ROOM_DIAG_UPDATE_WARN_BYTES", 256 * 1024, minimum=1)
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -138,6 +159,167 @@ def _memory_stream_statistics(stream: Any) -> dict[str, Any]:
         "tasks_waiting_send": int(getattr(snapshot, "tasks_waiting_send", 0) or 0),
         "tasks_waiting_receive": int(getattr(snapshot, "tasks_waiting_receive", 0) or 0),
     }
+
+
+class DiagnosticYRoom(YRoom):
+    """
+    Thin YRoom wrapper that logs pressure signals without changing semantics.
+
+    The goal is to surface whether memory growth comes from queued Y updates
+    and fanout tasks, not to alter delivery or persistence behavior yet.
+    """
+
+    def __init__(self, ready: bool = True, ystore: Any | None = None, log: logging.Logger | None = None):
+        super().__init__(ready=ready, ystore=ystore, log=log)
+        self._diag_pending_send_tasks = 0
+        self._diag_pending_store_tasks = 0
+        self._diag_peak_buffer_used = 0
+        self._diag_peak_pending_send_tasks = 0
+        self._diag_peak_pending_store_tasks = 0
+        self._diag_update_total = 0
+        self._diag_update_bytes_total = 0
+        self._diag_last_log_mono = 0.0
+
+    def _diag_room_id(self) -> str:
+        return str(getattr(self, "_webspace_id", "") or "default").strip() or "default"
+
+    def _diag_snapshot(self) -> dict[str, Any]:
+        send_stats = _memory_stream_statistics(getattr(self, "_update_send_stream", None))
+        recv_stats = _memory_stream_statistics(getattr(self, "_update_receive_stream", None))
+        ystore_snapshot: dict[str, Any] = {}
+        ystore = getattr(self, "ystore", None)
+        runtime_snapshot = getattr(ystore, "runtime_snapshot", None)
+        if callable(runtime_snapshot):
+            try:
+                raw = runtime_snapshot()
+                if isinstance(raw, dict):
+                    ystore_snapshot = {
+                        "update_log_entries": int(raw.get("update_log_entries") or 0),
+                        "update_log_bytes": int(raw.get("update_log_bytes") or 0),
+                        "replay_window_bytes": int(raw.get("replay_window_bytes") or 0),
+                        "last_update_bytes": int(raw.get("last_update_bytes") or 0),
+                    }
+            except Exception:
+                ystore_snapshot = {}
+        return {
+            "webspace_id": self._diag_room_id(),
+            "client_total": len(getattr(self, "clients", []) or []),
+            "send_stream": send_stats,
+            "receive_stream": recv_stats,
+            "pending_send_tasks": int(self._diag_pending_send_tasks),
+            "pending_store_tasks": int(self._diag_pending_store_tasks),
+            "update_total": int(self._diag_update_total),
+            "update_bytes_total": int(self._diag_update_bytes_total),
+            "ystore": ystore_snapshot,
+        }
+
+    def _diag_log_pressure(
+        self,
+        reason: str,
+        *,
+        force: bool = False,
+        update_bytes: int | None = None,
+        message_bytes: int | None = None,
+    ) -> None:
+        if not _YROOM_DIAG_ENABLED:
+            return
+        snapshot = self._diag_snapshot()
+        send_stream = snapshot.get("send_stream") if isinstance(snapshot.get("send_stream"), dict) else {}
+        receive_stream = snapshot.get("receive_stream") if isinstance(snapshot.get("receive_stream"), dict) else {}
+        ystore = snapshot.get("ystore") if isinstance(snapshot.get("ystore"), dict) else {}
+        buffer_used = int(send_stream.get("current_buffer_used") or 0)
+        waiting_send = int(send_stream.get("tasks_waiting_send") or 0)
+        waiting_receive = int(send_stream.get("tasks_waiting_receive") or 0)
+        pending_send = int(snapshot.get("pending_send_tasks") or 0)
+        pending_store = int(snapshot.get("pending_store_tasks") or 0)
+        pressure = (
+            buffer_used >= _YROOM_DIAG_BUFFER_WARN
+            or waiting_send >= _YROOM_DIAG_PENDING_WARN
+            or pending_send >= _YROOM_DIAG_PENDING_WARN
+            or pending_store >= _YROOM_DIAG_PENDING_WARN
+            or int(update_bytes or 0) >= _YROOM_DIAG_UPDATE_WARN_BYTES
+            or int(message_bytes or 0) >= _YROOM_DIAG_UPDATE_WARN_BYTES
+        )
+        peak = False
+        if buffer_used > self._diag_peak_buffer_used:
+            self._diag_peak_buffer_used = buffer_used
+            peak = True
+        if pending_send > self._diag_peak_pending_send_tasks:
+            self._diag_peak_pending_send_tasks = pending_send
+            peak = True
+        if pending_store > self._diag_peak_pending_store_tasks:
+            self._diag_peak_pending_store_tasks = pending_store
+            peak = True
+        now_mono = time.monotonic()
+        if not force and not pressure and not peak:
+            return
+        if not force and not peak and now_mono - self._diag_last_log_mono < _YROOM_DIAG_LOG_INTERVAL_SEC:
+            return
+        self._diag_last_log_mono = now_mono
+        self.log.warning(
+            "yroom pressure webspace=%s reason=%s clients=%s update_bytes=%s message_bytes=%s "
+            "send_buffer=%s/%s waiting_send=%s waiting_receive=%s pending_send=%s pending_store=%s "
+            "update_total=%s update_bytes_total=%s ystore_entries=%s ystore_bytes=%s replay_bytes=%s",
+            snapshot.get("webspace_id"),
+            str(reason or "").strip() or "unknown",
+            int(snapshot.get("client_total") or 0),
+            int(update_bytes or 0),
+            int(message_bytes or 0),
+            buffer_used,
+            int(send_stream.get("max_buffer_size") or 0),
+            waiting_send,
+            waiting_receive,
+            pending_send,
+            pending_store,
+            int(snapshot.get("update_total") or 0),
+            int(snapshot.get("update_bytes_total") or 0),
+            int(ystore.get("update_log_entries") or 0),
+            int(ystore.get("update_log_bytes") or 0),
+            int(ystore.get("replay_window_bytes") or 0),
+        )
+
+    async def _tracked_client_send(self, client: Any, message: bytes, update_bytes: int) -> None:
+        self._diag_pending_send_tasks += 1
+        try:
+            self._diag_log_pressure(
+                "client.send.scheduled",
+                update_bytes=update_bytes,
+                message_bytes=len(message),
+            )
+            await client.send(message)
+        finally:
+            self._diag_pending_send_tasks = max(0, int(self._diag_pending_send_tasks) - 1)
+
+    async def _tracked_ystore_write(self, update: bytes) -> None:
+        ystore = getattr(self, "ystore", None)
+        if ystore is None:
+            return
+        self._diag_pending_store_tasks += 1
+        try:
+            self._diag_log_pressure("ystore.write.scheduled", update_bytes=len(update))
+            await ystore.write(update)
+        finally:
+            self._diag_pending_store_tasks = max(0, int(self._diag_pending_store_tasks) - 1)
+
+    async def _broadcast_updates(self):
+        if self.ystore is not None and not self.ystore.started.is_set():
+            self._task_group.start_soon(self.ystore.start)
+
+        async with self._update_receive_stream:
+            async for update in self._update_receive_stream:
+                if self._task_group.cancel_scope.cancel_called:
+                    return
+                update_len = len(update or b"")
+                self._diag_update_total += 1
+                self._diag_update_bytes_total += update_len
+                self._diag_log_pressure("broadcast.update.received", update_bytes=update_len)
+                for client in self.clients:
+                    self.log.debug("Sending Y update to client with endpoint: %s", client.path)
+                    message = create_update_message(update)
+                    self._task_group.start_soon(self._tracked_client_send, client, message, update_len)
+                if self.ystore:
+                    self.log.debug("Writing Y update to YStore")
+                    self._task_group.start_soon(self._tracked_ystore_write, update)
 
 
 def _command_payload_fingerprint(kind: str, payload: Any) -> str:
@@ -383,6 +565,21 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
     recv_stream_stats = _memory_stream_statistics(getattr(room, "_update_receive_stream", None) if room is not None else None)
     started_event = getattr(room, "_started", None) if room is not None else None
     task_group = getattr(room, "_task_group", None) if room is not None else None
+    ystore_runtime = {}
+    if ystore is not None:
+        runtime_snapshot = getattr(ystore, "runtime_snapshot", None)
+        if callable(runtime_snapshot):
+            try:
+                raw = runtime_snapshot(now_ts=now)
+            except Exception:
+                raw = {}
+            if isinstance(raw, dict):
+                ystore_runtime = {
+                    "update_log_entries": int(raw.get("update_log_entries") or 0),
+                    "update_log_bytes": int(raw.get("update_log_bytes") or 0),
+                    "replay_window_bytes": int(raw.get("replay_window_bytes") or 0),
+                    "last_update_bytes": int(raw.get("last_update_bytes") or 0),
+                }
 
     return {
         "webspace_id": key,
@@ -421,6 +618,7 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
         "started": bool(getattr(started_event, "is_set", lambda: False)()) if started_event is not None else False,
         "task_group_active": bool(task_group is not None),
         "ystore_attached": bool(ystore is not None),
+        "ystore_runtime": ystore_runtime,
         "update_send_stream": send_stream_stats,
         "update_receive_stream": recv_stream_stats,
     }
@@ -789,7 +987,87 @@ def _iter_initial_ws_event_messages(topics: set[str]) -> list[dict[str, Any]]:
             )
         except Exception:
             _ylog.debug("failed to snapshot core.update.status for ws subscriber", exc_info=True)
+    if any(_ws_event_topic_matches(topic, "supervisor.update.status.raw") for topic in topics):
+        try:
+            from adaos.services.core_update import read_public_update_status as _read_public_update_status
+
+            messages.append(
+                _build_ws_event_message(
+                    "supervisor.update.status.raw",
+                    _read_public_update_status(),
+                    source="supervisor.update.status.raw",
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to snapshot supervisor.update.status.raw for ws subscriber", exc_info=True)
     return messages
+
+
+def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_agent_ctx()
+            ctx.bus.publish(
+                DomainEvent(
+                    type="webio.stream.snapshot.requested",
+                    payload={
+                        "topic": token,
+                        "webspace_id": webspace_id,
+                        "receiver": receiver,
+                        "transport": str(transport or "ws"),
+                    },
+                    source="events_ws",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to request webio stream snapshot topic=%s", token, exc_info=True)
+
+
+def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, transport: str) -> None:
+    for topic in topics:
+        token = str(topic or "").strip()
+        prefix = "webio.stream."
+        if not token.startswith(prefix):
+            continue
+        suffix = token[len(prefix):]
+        webspace_id, sep, receiver = suffix.partition(".")
+        if not sep:
+            continue
+        webspace_id = str(webspace_id or "").strip()
+        receiver = str(receiver or "").strip()
+        if not webspace_id or not receiver:
+            continue
+        try:
+            ctx = get_agent_ctx()
+            ctx.bus.publish(
+                DomainEvent(
+                    type="webio.stream.subscription.changed",
+                    payload={
+                        "topic": token,
+                        "webspace_id": webspace_id,
+                        "receiver": receiver,
+                        "transport": str(transport or "ws"),
+                        "action": str(action or "").strip() or "subscribed",
+                    },
+                    source="events_ws",
+                    ts=time.time(),
+                )
+            )
+        except Exception:
+            _ylog.debug("failed to publish webio stream subscription change topic=%s", token, exc_info=True)
 
 
 async def _send_initial_ws_event_messages(websocket: WebSocket, topics: set[str]) -> None:
@@ -832,12 +1110,17 @@ def _register_ws_event_subscriptions(
         tracked = entry.setdefault("topics", set())
         added = set(topics) - set(tracked)
         tracked.update(topics)
+    if added:
+        _publish_webio_stream_subscription_change(added, action="subscribed", transport="ws")
     return added
 
 
 def _unregister_ws_event_subscriptions(websocket: WebSocket) -> None:
     with _WS_EVENT_SUBSCRIPTIONS_LOCK:
-        _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+        entry = _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+    topics = set(entry.get("topics") or []) if isinstance(entry, dict) else set()
+    if topics:
+        _publish_webio_stream_subscription_change(topics, action="unsubscribed", transport="ws")
 
 
 def _forward_ws_bus_event(ev: DomainEvent) -> None:
@@ -962,6 +1245,15 @@ def _untrack_yws_connection(webspace_id: str, websocket: WebSocket) -> None:
                 clients.pop(device_key, None)
             if not clients:
                 _ACTIVE_YWS_CLIENTS.pop(key, None)
+    if remaining_connections <= 0:
+        room = getattr(y_server, "rooms", {}).get(key)
+        if room is not None:
+            diag_logger = getattr(room, "_diag_log_pressure", None)
+            if callable(diag_logger):
+                try:
+                    diag_logger("last_client_detached", force=True)
+                except Exception:
+                    pass
     if remaining_connections <= 0:
         _schedule_idle_room_reset(key)
 
@@ -1100,6 +1392,13 @@ async def reset_live_webspace_room(
         await asyncio.sleep(0.15)
 
     room = y_server.rooms.pop(key, None)
+    if room is not None:
+        diag_logger = getattr(room, "_diag_log_pressure", None)
+        if callable(diag_logger):
+            try:
+                diag_logger(f"room_reset:{close_reason}", force=True)
+            except Exception:
+                pass
     _mark_room_reset(
         key,
         close_reason=close_reason,
@@ -1408,7 +1707,8 @@ class WorkspaceWebsocketServer(WebsocketServer):
                     ystore = get_ystore_for_webspace(webspace_id)
                     row = get_workspace(webspace_id)
                     space = _space_mode(webspace_id)
-                    room = YRoom(ready=self.rooms_ready, ystore=ystore, log=self.log)
+                    room = DiagnosticYRoom(ready=self.rooms_ready, ystore=ystore, log=self.log)
+                    room._webspace_id = webspace_id
                     room._thread_id = threading.get_ident()
                     room._loop = asyncio.get_running_loop()
                     # Ensure periodic in-memory snapshotting for this webspace.
@@ -1433,6 +1733,7 @@ class WorkspaceWebsocketServer(WebsocketServer):
                     self.rooms[name] = room
                     _mark_room_created(webspace_id, room)
         room = self.rooms[name]
+        room._webspace_id = webspace_id
         room._thread_id = getattr(room, "_thread_id", threading.get_ident())
         room._loop = getattr(room, "_loop", asyncio.get_running_loop())
         try:
@@ -1602,25 +1903,31 @@ async def _update_device_presence(webspace_id: str, device_id: str) -> None:
     ydoc = room.ydoc
     now_ms = int(time.time() * 1000)
 
-    with ydoc.begin_transaction() as txn:
-        devices = ydoc.get_map("devices")
-        current = devices.get(device_id)
-        node = dict(current or {}) if isinstance(current, dict) else {}
+    with ystore_write_metadata_sync(
+        root_names=["devices"],
+        source="yjs.gateway_ws",
+        owner="core:yjs_gateway",
+        channel="core.yjs.gateway.sync",
+    ):
+        with ydoc.begin_transaction() as txn:
+            devices = ydoc.get_map("devices")
+            current = devices.get(device_id)
+            node = dict(current or {}) if isinstance(current, dict) else {}
 
-        meta = dict(node.get("meta") or {})
-        if "created_at" not in meta:
-            meta["created_at"] = now_ms
-        meta["kind"] = "browser"
+            meta = dict(node.get("meta") or {})
+            if "created_at" not in meta:
+                meta["created_at"] = now_ms
+            meta["kind"] = "browser"
 
-        presence = dict(node.get("presence") or {})
-        presence["online"] = True
-        presence.setdefault("since", now_ms)
-        presence["lastSeen"] = now_ms
+            presence = dict(node.get("presence") or {})
+            presence["online"] = True
+            presence.setdefault("since", now_ms)
+            presence["lastSeen"] = now_ms
 
-        node["meta"] = meta
-        node["presence"] = presence
+            node["meta"] = meta
+            node["presence"] = presence
 
-        devices.set(txn, device_id, node)
+            devices.set(txn, device_id, node)
 
 
 async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
@@ -1794,9 +2101,15 @@ async def process_events_command(
                     room = y_server.rooms.get(captured_ws)
                     if room:
                         listing = _webspace_listing()
-                        with room.ydoc.begin_transaction() as txn:
-                            data_map = room.ydoc.get_map("data")
-                            data_map.set(txn, "webspaces", {"items": listing})
+                        with ystore_write_metadata_sync(
+                            root_names=["data"],
+                            source="yjs.gateway_ws",
+                            owner="core:yjs_gateway",
+                            channel="core.yjs.gateway.sync",
+                        ):
+                            with room.ydoc.begin_transaction() as txn:
+                                data_map = room.ydoc.get_map("data")
+                                data_map.set(txn, "webspaces", {"items": listing})
                         _log.debug("wrote webspaces listing to room webspace=%s items=%d", captured_ws, len(listing))
                 except Exception:
                     _log.debug("webspace listing sync failed", exc_info=True)
@@ -2136,6 +2449,7 @@ async def events_ws(websocket: WebSocket):
                 )
                 if added:
                     await _send_initial_ws_event_messages(websocket, added)
+                    _request_webio_stream_snapshots(added, transport="ws")
                 continue
 
             ch = msg.get("ch")

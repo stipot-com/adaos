@@ -334,7 +334,7 @@ def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeyp
     monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
     monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
     monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
-    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
     monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
 
     first = manager._sample_memory_telemetry()
@@ -501,7 +501,7 @@ def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypat
     monkeypatch.setattr(supervisor, "_proc_details", lambda proc, cwd_hint=None: {"managed_pid": 4321})
     monkeypatch.setattr(supervisor, "_process_family_rss_bytes", lambda pid: next(samples))
     monkeypatch.setattr(supervisor, "_available_memory_bytes", lambda: 1024)
-    monkeypatch.setattr(supervisor.time, "time", lambda: next(times))
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
 
     manager._sample_memory_telemetry()
     manager._sample_memory_telemetry()
@@ -568,6 +568,104 @@ def test_supervisor_marks_profile_session_failed_when_profiled_runtime_exits(mon
     assert session["session"]["session_state"] == "failed"
     assert session["session"]["stop_reason"] == "runtime_exited_during_profile_mode"
     assert session["operations"][-1]["details"]["action"] == "profile_failed"
+
+
+def test_supervisor_profile_mode_shutdown_uses_extended_grace(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._memory_profile_mode = "sampled_profile"
+
+    class _Proc:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+        @staticmethod
+        def kill():
+            return None
+
+    captured: dict[str, object] = {}
+    sleeps: list[float] = []
+
+    def _post(url, *, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = dict(json or {})
+        captured["timeout"] = timeout
+        raise RuntimeError("shutdown-api-unavailable")
+
+    times = iter([0.0, 0.0, 10.0, 20.0, 26.0, 26.0, 31.0, 37.0, 37.0, 43.0, 48.0])
+
+    monkeypatch.setattr(supervisor.requests, "post", _post)
+    monkeypatch.setattr(supervisor.time, "time", lambda: next(times, 999.0))
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", _sleep)
+
+    proc = _Proc()
+    manager._proc = proc
+
+    asyncio.run(manager._terminate_proc_locked(graceful=True, reason="supervisor.runtime.listener_lost"))
+
+    assert captured["json"] == {
+        "reason": "supervisor.runtime.listener_lost",
+        "drain_timeout_sec": 20.0,
+        "signal_delay_sec": 1.0,
+    }
+    assert captured["timeout"] == 23.0
+    assert sleeps
+
+
+def test_supervisor_profile_session_requests_finalize_after_runtime_window(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_SAMPLED_PROFILE_MAX_RUNTIME_SEC", "40")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._memory_active_session_id = "mem-001"
+    manager._memory_profile_mode = "sampled_profile"
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "requested_at": 10.0,
+            "started_at": 10.0,
+        }
+    )
+
+    decision = manager._should_finalize_active_memory_profile(now=55.0)
+
+    assert decision is not None
+    assert decision["session_id"] == "mem-001"
+    assert decision["profile_mode"] == "sampled_profile"
+    assert decision["reason"] == "supervisor.memory.profile_window_complete.sampled_profile"
+
+
+def test_supervisor_observes_runtime_profile_finalize_markers(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._upsert_memory_session_summary(
+        {
+            "session_id": "mem-001",
+            "profile_mode": "sampled_profile",
+            "session_state": "running",
+            "artifact_refs": [
+                {
+                    "artifact_id": "mem-001-debug",
+                    "kind": "runtime_profile_finalize_debug",
+                    "path": str(tmp_path / "debug.json"),
+                }
+            ],
+        }
+    )
+
+    assert manager._memory_profile_finalize_observed("mem-001") is True
 
 
 def test_supervisor_retry_memory_profile_clones_retryable_session(monkeypatch, tmp_path) -> None:

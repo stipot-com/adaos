@@ -712,6 +712,125 @@ class RootMcpClient:
             params["subnet_filter"] = subnet_id
         return dict(self._request("GET", "/v1/root/mcp/audit", params=params))
 
+    def get_yjs_load_mark_history(
+        self,
+        *,
+        limit: int = 100,
+        webspace_id: str | None = None,
+        kind: str | None = None,
+        bucket_id: str | None = None,
+        display_contains: str | None = None,
+        status: str | None = None,
+        last_source: str | None = None,
+        since_ts: float | None = None,
+        until_ts: float | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        if webspace_id:
+            params["webspace_id"] = webspace_id
+        if kind:
+            params["kind"] = kind
+        if bucket_id:
+            params["bucket_id"] = bucket_id
+        if display_contains:
+            params["display_contains"] = display_contains
+        if status:
+            params["status"] = status
+        if last_source:
+            params["last_source"] = last_source
+        if since_ts is not None:
+            params["since_ts"] = float(since_ts)
+        if until_ts is not None:
+            params["until_ts"] = float(until_ts)
+        return dict(self._request("GET", "/v1/root/mcp/yjs/load-mark/history", params=params))
+
+    def get_logs(
+        self,
+        category: str,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        skill: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": int(limit),
+            "lines": int(lines),
+        }
+        if contains:
+            params["contains"] = contains
+        if skill:
+            params["skill"] = skill
+        if file:
+            params["file"] = file
+        if scope:
+            params["scope"] = scope
+        if include_hub is not None:
+            params["include_hub"] = bool(include_hub)
+        return dict(self._request("GET", f"/v1/root/mcp/logs/{category}", params=params))
+
+    def get_yjs_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict[str, Any]:
+        return self.get_logs("yjs", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
+
+    def get_skill_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        skill: str | None = None,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict[str, Any]:
+        return self.get_logs("skills", limit=limit, lines=lines, skill=skill, contains=contains, file=file, scope=scope, include_hub=include_hub)
+
+    def get_adaos_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict[str, Any]:
+        return self.get_logs("adaos", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
+
+    def get_events_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        contains: str | None = None,
+        file: str | None = None,
+        scope: str | None = None,
+        include_hub: bool | None = None,
+    ) -> dict[str, Any]:
+        return self.get_logs("events", limit=limit, lines=lines, contains=contains, file=file, scope=scope, include_hub=include_hub)
+
+    def get_subnet_info(
+        self,
+        *,
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/info", params=params))
+
     def call(
         self,
         tool_id: str,

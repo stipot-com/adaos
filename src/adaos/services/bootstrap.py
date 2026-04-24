@@ -98,6 +98,7 @@ from adaos.services.scenario import (
 from adaos.services.scenario import workflow_runtime as _scenario_workflow_runtime  # ensure scenario workflow subscriptions
 from adaos.services import weather as _weather_services  # ensure weather observers
 from adaos.services import nlu as _nlu_services  # ensure NLU dispatcher subscriptions
+from adaos.services.skill import runtime_shutdown_runtime as _runtime_shutdown_runtime  # ensure skill shutdown subscriptions
 from adaos.services.skill import service_supervisor_runtime as _service_supervisor_runtime  # ensure service supervisor subscriptions
 from adaos.services.skill.service_supervisor import get_service_supervisor
 from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
@@ -275,6 +276,42 @@ def _runtime_port_local_http_base() -> str | None:
     return None
 
 
+def _runtime_port_probe_candidates() -> list[str]:
+    bases: list[str] = []
+    runtime_port_base = _runtime_port_local_http_base()
+    if runtime_port_base:
+        bases.append(runtime_port_base)
+    bases.extend(
+        [
+            "http://127.0.0.1:8778",
+            "http://localhost:8778",
+            "http://127.0.0.1:8777",
+            "http://localhost:8777",
+        ]
+    )
+    seen: set[str] = set()
+    return [b for b in bases if (b not in seen and not seen.add(b))]
+
+
+def _probe_runtime_http_base(sess: Any, *, base: str, timeout_s: float) -> bool:
+    try:
+        response = sess.get(
+            str(base).rstrip("/") + "/api/ping",
+            headers={"Accept": "application/json"},
+            timeout=max(0.1, float(timeout_s)),
+        )
+        if int(response.status_code) != 200:
+            return False
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return False
+        if not bool(payload.get("ok")):
+            return False
+        return str(payload.get("service") or "").strip() == "adaos-runtime"
+    except Exception:
+        return False
+
+
 def _observe_route_local_base_diag(**details: Any) -> None:
     with _ROUTE_LOCAL_BASE_LOCK:
         _ROUTE_LOCAL_BASE_DIAG.update(details)
@@ -327,6 +364,7 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
 
     started = time.monotonic()
     result: str | None = None
+    result_source = ""
     last_error = ""
     sess = requests.Session()
     try:
@@ -350,10 +388,19 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
                 runtime_url = str((runtime or {}).get("runtime_url") or "").strip().rstrip("/")
                 if runtime_url and _is_local_http_base(runtime_url):
                     result = runtime_url
+                    result_source = "supervisor_public_status"
                     break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
+        if not result:
+            probe_timeout_s = max(0.1, min(float(timeout_s), 0.35))
+            for runtime_base in _runtime_port_probe_candidates():
+                if _probe_runtime_http_base(sess, base=runtime_base, timeout_s=probe_timeout_s):
+                    result = runtime_base.rstrip("/")
+                    result_source = "runtime_port_probe"
+                    last_error = ""
+                    break
     finally:
         try:
             sess.close()
@@ -366,7 +413,11 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
             _ROUTE_LOCAL_BASE_DIAG.get("local_base_discovery_total") or 0
         ) + 1
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_latency_ms"] = latency_ms
-        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = "supervisor_public_status" if result else "supervisor_public_status_failed"
+        _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = (
+            str(result_source or "").strip()
+            if result
+            else "supervisor_public_status_failed"
+        )
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = str(result or "").strip()
         _ROUTE_LOCAL_BASE_DIAG["local_base_last_discovered_at"] = time.time()
         if result:
@@ -1224,6 +1275,19 @@ class BootstrapService:
                     except Exception:
                         self._log.debug("failed to mirror core.update.status to members", exc_info=True)
 
+                def _forward_supervisor_update_status_raw_to_members(ev: Event) -> None:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type="supervisor.update.status.raw",
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror supervisor.update.status.raw to members", exc_info=True)
+
                 def _forward_node_status_to_members(ev: Event) -> None:
                     payload = ev.payload if isinstance(ev.payload, dict) else {}
                     if not _should_forward_node_status_to_members(payload):
@@ -1240,6 +1304,7 @@ class BootstrapService:
                         self._log.debug("failed to mirror node.status to members", exc_info=True)
 
                 core_bus.subscribe("core.update.status", _forward_core_update_status_to_members)
+                core_bus.subscribe("supervisor.update.status.raw", _forward_supervisor_update_status_raw_to_members)
                 core_bus.subscribe("node.status", _forward_node_status_to_members)
             except Exception:
                 self._log.debug(
@@ -1249,12 +1314,19 @@ class BootstrapService:
         try:
             from adaos.services.core_update import (
                 finalize_runtime_boot_status as _finalize_runtime_boot_status,
+                read_public_update_status as _read_public_update_status,
                 read_status as _read_core_update_status,
             )
 
             await bus.emit(
                 "core.update.status",
                 _read_core_update_status(),
+                source="lifecycle",
+                actor="system",
+            )
+            await bus.emit(
+                "supervisor.update.status.raw",
+                _read_public_update_status(),
                 source="lifecycle",
                 actor="system",
             )

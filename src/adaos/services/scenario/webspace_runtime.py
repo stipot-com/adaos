@@ -28,7 +28,7 @@ from adaos.services.yjs.doc import (
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
-from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.seed import SEED
 from adaos.services.eventbus import emit
@@ -47,9 +47,28 @@ _EFFECTIVE_BRANCH_PATHS = (
     "data.catalog",
     "data.installed",
     "data.desktop",
+    "data.webio",
     "data.routing",
     "registry.merged",
 )
+
+
+def _webspace_runtime_async_write_meta(*, root_names: list[str], source: str):
+    return ystore_write_metadata(
+        root_names=root_names,
+        source=source,
+        owner="core:webspace_runtime",
+        channel="core.webspace_runtime.async",
+    )
+
+
+def _webspace_runtime_sync_write_meta(*, root_names: list[str], source: str):
+    return ystore_write_metadata_sync(
+        root_names=root_names,
+        source=source,
+        owner="core:webspace_runtime",
+        channel="core.webspace_runtime.sync",
+    )
 _WHOLE_BRANCH_REPLACE_PATHS = frozenset(_EFFECTIVE_BRANCH_PATHS)
 _RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY = "effective_branch_fingerprints"
 _WEBUI_LOAD_PHASES = frozenset({"eager", "visible", "interaction", "deferred"})
@@ -118,6 +137,13 @@ class WebspaceInfo:
     home_scenario: str = "web_desktop"
     source_mode: str = "workspace"
     is_dev: bool = False
+    current_scenario: str | None = None
+    stored_home_scenario_exists: bool | None = None
+    home_scenario_exists: bool = True
+    current_scenario_exists: bool | None = None
+    degraded: bool = False
+    validation_reason: str | None = None
+    recommended_action: str | None = None
 
 
 @dataclass(slots=True)
@@ -140,6 +166,12 @@ class WebspaceOperationalState:
     stored_home_scenario: str | None
     effective_home_scenario: str
     current_scenario: str | None
+    stored_home_scenario_exists: bool | None = None
+    home_scenario_exists: bool = True
+    current_scenario_exists: bool | None = None
+    degraded: bool = False
+    validation_reason: str | None = None
+    recommended_action: str | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -151,6 +183,12 @@ class WebspaceOperationalState:
             "stored_home_scenario": self.stored_home_scenario,
             "home_scenario": self.effective_home_scenario,
             "current_scenario": self.current_scenario,
+            "stored_home_scenario_exists": self.stored_home_scenario_exists,
+            "home_scenario_exists": self.home_scenario_exists,
+            "current_scenario_exists": self.current_scenario_exists,
+            "degraded": self.degraded,
+            "validation_reason": self.validation_reason,
+            "recommended_action": self.recommended_action,
             "current_matches_home": bool(self.current_scenario) and self.current_scenario == self.effective_home_scenario,
         }
 
@@ -198,6 +236,7 @@ class WebspaceResolverOutputs:
     registry: Dict[str, List[str]] = field(default_factory=lambda: {"modals": [], "widgets": []})
     installed: Dict[str, List[str]] = field(default_factory=lambda: {"apps": [], "widgets": []})
     desktop: Dict[str, Any] = field(default_factory=dict)
+    webio: Dict[str, Any] = field(default_factory=dict)
     routing: Dict[str, Any] = field(default_factory=dict)
     skill_decls: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -515,9 +554,55 @@ def _resolved_output_branch_fingerprints(resolved: "WebspaceResolverOutputs") ->
         "data.catalog": _fingerprint_json_like(resolved.catalog),
         "data.installed": _fingerprint_json_like(resolved.installed),
         "data.desktop": _fingerprint_json_like(resolved.desktop),
+        "data.webio": _fingerprint_json_like(resolved.webio),
         "data.routing": _fingerprint_json_like(resolved.routing),
         "registry.merged": _fingerprint_json_like(resolved.registry),
     }
+
+
+def _normalize_webio_receiver(node: Any) -> Dict[str, Any]:
+    item = _coerce_dict(node)
+    if not item:
+        return {}
+    out: Dict[str, Any] = {}
+    mode = str(item.get("mode") or "").strip().lower()
+    if mode in {"replace", "append"}:
+        out["mode"] = mode
+    collection_key = str(item.get("collectionKey") or "").strip()
+    if collection_key:
+        out["collectionKey"] = collection_key
+    dedupe_by = str(item.get("dedupeBy") or "").strip()
+    if dedupe_by:
+        out["dedupeBy"] = dedupe_by
+    max_items = item.get("maxItems")
+    try:
+        if max_items is not None and int(max_items) > 0:
+            out["maxItems"] = int(max_items)
+    except Exception:
+        pass
+    if "initialState" in item:
+        out["initialState"] = _clone_json_like(item.get("initialState"))
+    return out
+
+
+def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    receivers: Dict[str, Any] = {}
+    for decl in skill_decls:
+        skill_name = str(decl.get("skill") or "").strip()
+        webio = decl.get("webio") if isinstance(decl.get("webio"), Mapping) else {}
+        raw_receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
+        for key, value in raw_receivers.items():
+            receiver_id = str(key or "").strip()
+            if not receiver_id or receiver_id in receivers:
+                continue
+            normalized = _normalize_webio_receiver(value)
+            if not normalized:
+                continue
+            normalized["id"] = receiver_id
+            if skill_name:
+                normalized["origin"] = f"skill:{skill_name}"
+            receivers[receiver_id] = normalized
+    return {"receivers": receivers}
 
 
 def _read_effective_branch_fingerprints(registry_map: Any) -> Dict[str, str]:
@@ -556,6 +641,13 @@ def _write_effective_branch_fingerprints(
     next_runtime_meta[_RUNTIME_META_EFFECTIVE_BRANCH_FINGERPRINTS_KEY] = next_fingerprints
     _set_map_value_if_changed(registry_map, txn, "runtime_meta", next_runtime_meta)
     return True
+
+
+def _has_effective_branch_value(y_map: Any, key: str) -> bool:
+    try:
+        return y_map.get(key) is not None
+    except Exception:
+        return False
 
 
 def _resolver_cache_keys(inputs: WebspaceResolverInputs) -> Dict[str, str]:
@@ -600,6 +692,7 @@ def _resolved_outputs_to_cache_payload(resolved: WebspaceResolverOutputs) -> Dic
         "registry": _clone_json_like(resolved.registry),
         "installed": _clone_json_like(resolved.installed),
         "desktop": _clone_json_like(resolved.desktop),
+        "webio": _clone_json_like(resolved.webio),
         "routing": _clone_json_like(resolved.routing),
         "skill_decls": _clone_json_like(resolved.skill_decls),
     }
@@ -615,6 +708,7 @@ def _resolved_outputs_from_cache_payload(payload: Mapping[str, Any]) -> Webspace
         registry=_coerce_dict(payload.get("registry") or {}),
         installed=_coerce_dict(payload.get("installed") or {}),
         desktop=_coerce_dict(payload.get("desktop") or {}),
+        webio=_coerce_dict(payload.get("webio") or {}),
         routing=_coerce_dict(payload.get("routing") or {}),
         skill_decls=[
             dict(item)
@@ -753,6 +847,110 @@ def _scenario_exists_for_switch(scenario_id: str, *, space: str) -> bool:
         return bool(scenarios_loader.scenario_exists(scenario_id, space=space))
     except Exception:
         return False
+
+
+def _scenario_exists_for_source_mode(scenario_id: str | None, *, source_mode: str) -> bool | None:
+    token = str(scenario_id or "").strip()
+    if not token:
+        return None
+    return _scenario_exists_for_switch(token, space=_scenario_loader_space(source_mode))
+
+
+def _build_webspace_validation(
+    *,
+    source_mode: str,
+    stored_home_scenario: str | None,
+    effective_home_scenario: str,
+    current_scenario: str | None,
+) -> dict[str, Any]:
+    stored_home_exists = _scenario_exists_for_source_mode(stored_home_scenario, source_mode=source_mode)
+    effective_home_exists = bool(_scenario_exists_for_source_mode(effective_home_scenario, source_mode=source_mode))
+    current_exists = _scenario_exists_for_source_mode(current_scenario, source_mode=source_mode)
+
+    degraded = False
+    reason = None
+    recommended_action = None
+    if stored_home_scenario and stored_home_exists is False and current_scenario and current_exists is False:
+        degraded = True
+        reason = "current_and_home_scenario_missing"
+        recommended_action = "reload_or_reset"
+    elif current_scenario and current_exists is False:
+        degraded = True
+        reason = "current_scenario_missing"
+        recommended_action = "reload_or_reset"
+    elif stored_home_scenario and stored_home_exists is False:
+        degraded = True
+        reason = "home_scenario_missing"
+        recommended_action = "go_home_or_set_home"
+    elif effective_home_exists is False:
+        degraded = True
+        reason = "effective_home_scenario_missing"
+        recommended_action = "set_home_or_reset"
+
+    return {
+        "stored_home_scenario_exists": stored_home_exists,
+        "home_scenario_exists": effective_home_exists,
+        "current_scenario_exists": current_exists,
+        "degraded": degraded,
+        "validation_reason": reason,
+        "recommended_action": recommended_action,
+    }
+
+
+def _with_webspace_validation(
+    *,
+    source_mode: str,
+    stored_home_scenario: str | None,
+    effective_home_scenario: str,
+    current_scenario: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload.update(
+        _build_webspace_validation(
+            source_mode=source_mode,
+            stored_home_scenario=stored_home_scenario,
+            effective_home_scenario=effective_home_scenario,
+            current_scenario=current_scenario,
+        )
+    )
+    return payload
+
+
+def _preflight_validated_scenario(
+    scenario_id: str | None,
+    *,
+    source_mode: str,
+    resolution: str,
+) -> tuple[str, str, dict[str, Any]]:
+    requested = str(scenario_id or "").strip() or None
+    requested_exists = _scenario_exists_for_source_mode(requested, source_mode=source_mode)
+    if requested and requested_exists:
+        return requested, resolution, {
+            "requested_scenario_id": requested,
+            "resolved_scenario_id": requested,
+            "requested_scenario_exists": True,
+            "fallback_applied": False,
+            "reason": None,
+        }
+
+    fallback = "web_desktop"
+    fallback_exists = bool(_scenario_exists_for_source_mode(fallback, source_mode=source_mode))
+    if requested and fallback_exists:
+        return fallback, f"{resolution}_fallback", {
+            "requested_scenario_id": requested,
+            "resolved_scenario_id": fallback,
+            "requested_scenario_exists": bool(requested_exists),
+            "fallback_applied": True,
+            "reason": "scenario_missing",
+        }
+
+    return str(requested or ""), resolution, {
+        "requested_scenario_id": requested,
+        "resolved_scenario_id": requested,
+        "requested_scenario_exists": bool(requested_exists),
+        "fallback_applied": False,
+        "reason": "scenario_missing" if requested else "scenario_unresolved",
+    }
 
 
 def _scenario_loader_space(source_mode: str) -> str:
@@ -1368,6 +1566,7 @@ class WebspaceScenarioRuntime:
       - data.catalog,
       - data.installed,
       - data.desktop,
+      - data.webio,
       - registry.merged.
     """
 
@@ -1474,6 +1673,8 @@ class WebspaceScenarioRuntime:
         ydoc_defaults = raw.get("ydoc_defaults") or {}
         raw_contrib = raw.get("contributions") or []
         contributions = [c for c in raw_contrib if isinstance(c, dict)]
+        webio_raw = raw.get("webio") or {}
+        webio_receivers_raw = webio_raw.get("receivers") if isinstance(webio_raw, dict) else {}
 
         payload = {
             "skill": skill_name,
@@ -1494,6 +1695,13 @@ class WebspaceScenarioRuntime:
             },
             "ydoc_defaults": ydoc_defaults if isinstance(ydoc_defaults, dict) else {},
             "contributions": contributions,
+            "webio": {
+                "receivers": (
+                    {str(k): _normalize_webio_receiver(v) for k, v in webio_receivers_raw.items() if str(k).strip()}
+                    if isinstance(webio_receivers_raw, dict)
+                    else {}
+                ),
+            },
         }
         if stamp is not None:
             _WEBUI_DECL_CACHE[cache_key] = (stamp, payload)
@@ -1884,6 +2092,8 @@ class WebspaceScenarioRuntime:
         desktop_next["pageSchema"] = _coerce_dict(desktop_config.get("pageSchema") or {})
         desktop_next["pinnedWidgets"] = list(desktop_config.get("pinnedWidgets") or [])
 
+        webio_dict = _merge_webio_receivers(skill_decls)
+
         routing_dict = _coerce_dict((inputs.live_state or {}).get("routing") or {})
         routes = routing_dict.get("routes")
         routing_dict = {**routing_dict, "routes": _coerce_dict(routes)}
@@ -1906,6 +2116,7 @@ class WebspaceScenarioRuntime:
                 "widgets": list(installed_with_auto.get("widgets") or []),
             },
             desktop=desktop_next,
+            webio=webio_dict,
             routing=routing_dict,
             skill_decls=skill_decls,
         )
@@ -1994,7 +2205,12 @@ class WebspaceScenarioRuntime:
             ignore_errors: bool = False,
         ) -> None:
             fingerprint = str(resolved_branch_fingerprints.get(path) or "").strip()
-            if fingerprint and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint:
+            branch_present = _has_effective_branch_value(y_map, key)
+            if (
+                fingerprint
+                and branch_present
+                and str(effective_branch_fingerprints.get(path) or "").strip() == fingerprint
+            ):
                 fingerprint_unchanged_paths.append(path)
                 fingerprint_updates[path] = fingerprint
                 pending_fingerprint_updates[path] = fingerprint
@@ -2112,6 +2328,7 @@ class WebspaceScenarioRuntime:
                 ("data.catalog", data_map, "catalog", resolved.catalog, False),
                 ("data.installed", data_map, "installed", resolved.installed, False),
                 ("data.desktop", data_map, "desktop", resolved.desktop, True),
+                ("data.webio", data_map, "webio", resolved.webio, True),
                 ("data.routing", data_map, "routing", resolved.routing, True),
             ),
             flush_fingerprints=True,
@@ -2216,8 +2433,12 @@ class WebspaceScenarioRuntime:
         rebuilds ui.application/data.catalog/data.installed/registry.merged
         and returns the resulting registry snapshot.
         """
-        with get_ydoc(webspace_id) as ydoc:
-            return self._rebuild_in_doc(ydoc, webspace_id, expected_request_id=request_id)
+        with _webspace_runtime_sync_write_meta(
+            root_names=["ui", "data", "registry"],
+            source="webspace_runtime.rebuild_sync",
+        ):
+            with get_ydoc(webspace_id) as ydoc:
+                return self._rebuild_in_doc(ydoc, webspace_id, expected_request_id=request_id)
 
     async def rebuild_webspace_async(
         self,
@@ -2463,19 +2684,32 @@ def _display_name_for_kind(title: Optional[str], *, webspace_id: str, kind: str)
 def _webspace_listing() -> List[Dict[str, Any]]:
     rows = workspace_index.list_workspaces()
     return [
-        {
-            "id": row.workspace_id,
-            "title": row.title,
-            "created_at": row.created_at,
-            "kind": row.effective_kind,
-            "home_scenario": row.effective_home_scenario,
-            "source_mode": row.effective_source_mode,
-        }
+        _with_webspace_validation(
+            source_mode=row.effective_source_mode,
+            stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+            effective_home_scenario=row.effective_home_scenario,
+            current_scenario=_try_read_live_current_scenario(row.workspace_id),
+            payload={
+                "id": row.workspace_id,
+                "title": row.title,
+                "created_at": row.created_at,
+                "kind": row.effective_kind,
+                "home_scenario": row.effective_home_scenario,
+                "source_mode": row.effective_source_mode,
+            },
+        )
         for row in rows
     ]
 
 
 def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceInfo:
+    current_scenario = _try_read_live_current_scenario(row.workspace_id)
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     return WebspaceInfo(
         id=row.workspace_id,
         title=row.title,
@@ -2484,6 +2718,13 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
         home_scenario=row.effective_home_scenario,
         source_mode=row.effective_source_mode,
         is_dev=row.is_dev,
+        current_scenario=current_scenario,
+        stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+        home_scenario_exists=bool(validation.get("home_scenario_exists")),
+        current_scenario_exists=validation.get("current_scenario_exists"),
+        degraded=bool(validation.get("degraded")),
+        validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+        recommended_action=str(validation.get("recommended_action") or "").strip() or None,
     )
 
 
@@ -2500,6 +2741,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     row = workspace_index.get_workspace(target_webspace_id) or workspace_index.ensure_workspace(target_webspace_id)
 
     current_scenario: str | None = _try_read_live_current_scenario(target_webspace_id)
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     if current_scenario is not None:
         return WebspaceOperationalState(
             webspace_id=target_webspace_id,
@@ -2510,6 +2757,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
             stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
             effective_home_scenario=row.effective_home_scenario,
             current_scenario=current_scenario,
+            stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+            home_scenario_exists=bool(validation.get("home_scenario_exists")),
+            current_scenario_exists=validation.get("current_scenario_exists"),
+            degraded=bool(validation.get("degraded")),
+            validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+            recommended_action=str(validation.get("recommended_action") or "").strip() or None,
         )
 
     try:
@@ -2521,6 +2774,12 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
     except Exception:
         current_scenario = None
 
+    validation = _build_webspace_validation(
+        source_mode=row.effective_source_mode,
+        stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
+        effective_home_scenario=row.effective_home_scenario,
+        current_scenario=current_scenario,
+    )
     return WebspaceOperationalState(
         webspace_id=target_webspace_id,
         title=row.title,
@@ -2530,7 +2789,30 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
         stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
         effective_home_scenario=row.effective_home_scenario,
         current_scenario=current_scenario,
+        stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
+        home_scenario_exists=bool(validation.get("home_scenario_exists")),
+        current_scenario_exists=validation.get("current_scenario_exists"),
+        degraded=bool(validation.get("degraded")),
+        validation_reason=str(validation.get("validation_reason") or "").strip() or None,
+        recommended_action=str(validation.get("recommended_action") or "").strip() or None,
     )
+
+
+async def describe_webspace_validation_state(webspace_id: str) -> dict[str, Any]:
+    state = await describe_webspace_operational_state(webspace_id)
+    return {
+        "webspace_id": state.webspace_id,
+        "source_mode": state.source_mode,
+        "stored_home_scenario": state.stored_home_scenario,
+        "home_scenario": state.effective_home_scenario,
+        "current_scenario": state.current_scenario,
+        "stored_home_scenario_exists": state.stored_home_scenario_exists,
+        "home_scenario_exists": state.home_scenario_exists,
+        "current_scenario_exists": state.current_scenario_exists,
+        "degraded": state.degraded,
+        "validation_reason": state.validation_reason,
+        "recommended_action": state.recommended_action,
+    }
 
 
 def describe_webspace_overlay_state(webspace_id: str) -> dict[str, Any]:
@@ -2674,10 +2956,14 @@ async def _sync_webspace_listing() -> None:
     payload = {"items": listing}
     rows = workspace_index.list_workspaces()
     for row in rows:
-        async with async_get_ydoc(row.workspace_id) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                _set_map_value_if_changed(data_map, txn, "webspaces", payload)
+        async with _webspace_runtime_async_write_meta(
+            root_names=["data"],
+            source="webspace_runtime.sync_listing",
+        ):
+            async with async_get_ydoc(row.workspace_id) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    _set_map_value_if_changed(data_map, txn, "webspaces", payload)
 
 
 class WebspaceService:
@@ -3194,10 +3480,14 @@ async def rebuild_webspace_from_sources(
             raise ValueError("scenario_id is required when reseed_from_scenario is enabled")
         stage_started = time.perf_counter()
         try:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                ui_map = ydoc.get_map("ui")
-                with ydoc.begin_transaction() as txn:
-                    ui_map.set(txn, "current_scenario", target_scenario)
+            async with _webspace_runtime_async_write_meta(
+                root_names=["ui"],
+                source="webspace_runtime.reseed_pointer",
+            ):
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    ui_map = ydoc.get_map("ui")
+                    with ydoc.begin_transaction() as txn:
+                        ui_map.set(txn, "current_scenario", target_scenario)
         except Exception:
             pass
         _record_timing(timings_ms, "reseed_pointer", stage_started)
@@ -3700,6 +3990,26 @@ async def reload_webspace_from_scenario(
 
     requested_action = "reset" if str(action or "").strip().lower() == "reset" else "reload"
     state, scenario_id, scenario_resolution = await _resolve_reload_scenario_target(webspace_id, scenario_id)
+    scenario_id, scenario_resolution, preflight = _preflight_validated_scenario(
+        scenario_id,
+        source_mode=state.source_mode,
+        resolution=scenario_resolution,
+    )
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": requested_action,
+            "webspace_id": webspace_id,
+            "scenario_id": None,
+            "scenario_resolution": scenario_resolution,
+            "kind": state.kind,
+            "source_mode": state.source_mode,
+            "home_scenario": state.effective_home_scenario,
+            "current_scenario_before": state.current_scenario,
+            "validation": preflight,
+            "error": "scenario_not_found",
+        }
 
     command_trace = _payload_command_trace(event_payload or {})
     recovery_fingerprint = _recovery_request_fingerprint(
@@ -3833,6 +4143,7 @@ async def reload_webspace_from_scenario(
             "source_mode": state.source_mode,
             "home_scenario": state.effective_home_scenario,
             "current_scenario_before": state.current_scenario,
+            "validation": preflight,
         }
     )
     return result
@@ -4075,18 +4386,29 @@ async def switch_webspace_scenario(
             ui_map = doc.get_map("ui")
             _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
 
-        live_applied = mutate_live_room(webspace_id, _mutator)
+        live_applied = mutate_live_room(
+            webspace_id,
+            _mutator,
+            root_names=["ui"],
+            source="webspace_runtime.switch_pointer",
+            owner="core:webspace_runtime",
+            channel="core.webspace_runtime.live_room",
+        )
         if live_applied:
             _record_timing(timings_ms, "write_switch_pointer", stage_started)
         else:
             stage_started = time.perf_counter()
-            async with async_get_ydoc(webspace_id) as ydoc:
-                _record_timing(timings_ms, "open_doc", stage_started)
-                ui_map = ydoc.get_map("ui")
-                stage_started = time.perf_counter()
-                with ydoc.begin_transaction() as txn:
-                    _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
-                _record_timing(timings_ms, "write_switch_pointer", stage_started)
+            async with _webspace_runtime_async_write_meta(
+                root_names=["ui"],
+                source="webspace_runtime.switch_pointer",
+            ):
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    _record_timing(timings_ms, "open_doc", stage_started)
+                    ui_map = ydoc.get_map("ui")
+                    stage_started = time.perf_counter()
+                    with ydoc.begin_transaction() as txn:
+                        _set_map_value_if_changed(ui_map, txn, "current_scenario", scenario_id)
+                    _record_timing(timings_ms, "write_switch_pointer", stage_started)
     except Exception:
         finalized_timings = _finalize_timing_map(timings_ms, started_at=switch_started)
         _set_webspace_rebuild_status(
@@ -4262,15 +4584,33 @@ async def go_home_webspace(webspace_id: str, *, wait_for_rebuild: bool = True) -
     if not webspace_id:
         raise ValueError("webspace_id is required")
     state = await describe_webspace_operational_state(webspace_id)
+    scenario_id, scenario_resolution, preflight = _preflight_validated_scenario(
+        state.effective_home_scenario,
+        source_mode=state.source_mode,
+        resolution="manifest_home",
+    )
+    if not scenario_id:
+        return {
+            "ok": False,
+            "accepted": False,
+            "action": "go_home",
+            "source_of_truth": "manifest_home_scenario",
+            "webspace_id": webspace_id,
+            "scenario_id": None,
+            "scenario_resolution": scenario_resolution,
+            "validation": preflight,
+            "error": "scenario_not_found",
+        }
     result = await switch_webspace_scenario(
         webspace_id,
-        state.effective_home_scenario,
+        scenario_id,
         set_home=False,
         wait_for_rebuild=wait_for_rebuild,
     )
     result["action"] = "go_home"
     result["source_of_truth"] = "manifest_home_scenario"
-    result["scenario_resolution"] = "manifest_home"
+    result["scenario_resolution"] = scenario_resolution
+    result["validation"] = preflight
     return result
 
 
@@ -4543,6 +4883,7 @@ __all__ = [
     "WebspaceResolverOutputs",
     "WebspaceScenarioRuntime",
     "describe_webspace_operational_state",
+    "describe_webspace_validation_state",
     "describe_webspace_overlay_state",
     "describe_webspace_projection_state",
     "describe_webspace_rebuild_state",

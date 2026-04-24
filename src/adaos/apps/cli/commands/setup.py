@@ -36,11 +36,12 @@ from adaos.services.autostart import disable as autostart_disable
 from adaos.services.autostart import enable as autostart_enable
 from adaos.services.autostart import restart_service as autostart_restart_service
 from adaos.services.autostart import status as autostart_status
-from adaos.services.core_slots import active_slot_manifest, slot_status as core_slot_status
+from adaos.services.core_slots import active_slot_manifest, slot_dir, slot_status as core_slot_status
 from adaos.services.core_update import last_result_path as core_update_last_result_path
 from adaos.services.core_update import plan_path as core_update_plan_path
 from adaos.services.core_update import restore_root_from_backup as restore_root_promotion_backup
 from adaos.services.core_update import status_path as core_update_status_path
+from adaos.services.settings import _parse_env_file
 from adaos.services.supervisor_memory import read_memory_runtime_state, read_memory_session_summary
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -383,6 +384,44 @@ def _repo_git_text(*args: str) -> str:
         return ""
 
 
+def _repo_git_text_at(repo_root: Path | str | None, *args: str) -> str:
+    if not repo_root:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return (completed.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _slot_build_version(slot_id: str) -> str:
+    slot_name = str(slot_id or "").strip().upper()
+    if not slot_name:
+        return ""
+    try:
+        repo_root = slot_dir(slot_name) / "repo"
+    except Exception:
+        return ""
+    base_version = str(os.getenv("ADAOS_BASE_VERSION") or "0.1.0").strip() or "0.1.0"
+    explicit = str(os.getenv("ADAOS_BUILD_VERSION") or "").strip()
+    if explicit:
+        return explicit
+    rev_count = _repo_git_text_at(repo_root, "rev-list", "--count", "HEAD")
+    if not rev_count:
+        return ""
+    short_sha = _repo_git_text_at(repo_root, "rev-parse", "--short", "HEAD")
+    suffix = f"+{rev_count}"
+    if short_sha:
+        suffix += f".{short_sha}"
+    return f"{base_version}{suffix}"
+
+
 def _autostart_admin_base_url(token: Optional[str] = None) -> str:
     explicit = str(os.getenv("ADAOS_CONTROL_URL") or os.getenv("ADAOS_CONTROL_BASE") or "").strip()
     if explicit:
@@ -430,6 +469,16 @@ def _autostart_service_token() -> str:
         raw = str(wrapper_env.get(key) or "").strip()
         if raw:
             return raw
+    shared_dotenv_path = str(info.get("shared_dotenv_path") or "").strip()
+    if shared_dotenv_path:
+        try:
+            env_file_vars = _parse_env_file(shared_dotenv_path)
+        except Exception:
+            env_file_vars = {}
+        for key in ("ADAOS_TOKEN", "ADAOS_HUB_TOKEN", "HUB_TOKEN"):
+            raw = str(env_file_vars.get(key) or "").strip()
+            if raw:
+                return raw
     return ""
 
 
@@ -508,6 +557,14 @@ def _autostart_admin_unavailable_message(base_url: str) -> str:
     )
 
 
+def _autostart_supervisor_unavailable_message(base_url: str) -> str:
+    journal_cmd, status_path = _autostart_service_diagnostics()
+    return (
+        f"local AdaOS supervisor API is unavailable at {base_url}; the service may be restarting or failed to boot. "
+        f"Inspect '{journal_cmd}' and '{status_path}'."
+    )
+
+
 def _autostart_supervisor_get(path: str, *, token: Optional[str] = None) -> dict:
     base_url = _autostart_supervisor_base_url()
     if not base_url:
@@ -518,7 +575,7 @@ def _autostart_supervisor_get(path: str, *, token: Optional[str] = None) -> dict
         payload = response.json()
         return payload if isinstance(payload, dict) else {"ok": True, "response": payload}
     except RequestException as exc:
-        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
+        raise RuntimeError(_autostart_supervisor_unavailable_message(base_url)) from exc
 
 
 def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
@@ -547,7 +604,7 @@ def _autostart_supervisor_post(path: str, *, body: dict | None = None, token: Op
                 raise RuntimeError(
                     f"local AdaOS supervisor API request to {base_url}{path} failed with {status_label}: {detail}"
                 ) from exc
-        raise RuntimeError(_autostart_admin_unavailable_message(base_url)) from exc
+        raise RuntimeError(_autostart_supervisor_unavailable_message(base_url)) from exc
 
 
 def _autostart_admin_get(path: str, *, token: Optional[str] = None) -> dict:
@@ -661,11 +718,7 @@ def _autostart_update_get(*, token: Optional[str] = None) -> dict:
 
 
 def _autostart_update_post(path: str, *, body: dict | None = None, token: Optional[str] = None) -> dict:
-    try:
-        return _autostart_supervisor_post(path, body=body, token=token)
-    except RuntimeError:
-        runtime_path = path.replace("/api/supervisor/update/", "/api/admin/update/")
-        return _autostart_admin_post(runtime_path, body=body, token=token)
+    return _autostart_supervisor_post(path, body=body, token=token)
 
 
 def _restart_autostart_service() -> dict[str, object]:
@@ -1308,6 +1361,19 @@ def autostart_disable_cmd(json_output: bool = typer.Option(False, "--json", help
         typer.secho("[AdaOS] autostart disabled", fg=typer.colors.GREEN)
 
 
+@autostart_app.command("restart")
+@_run_safe
+def autostart_restart_cmd(json_output: bool = typer.Option(False, "--json", help=_("cli.option.json"))):
+    res = _restart_autostart_service()
+    if json_output:
+        typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        typer.secho("[AdaOS] autostart restarted", fg=typer.colors.GREEN)
+        for key in ("scope", "service", "service_ref"):
+            if key in res:
+                typer.echo(f"{key}: {res[key]}")
+
+
 @autostart_app.command("update-status")
 @_run_safe
 def autostart_update_status_cmd(
@@ -1330,8 +1396,8 @@ def autostart_update_status_cmd(
     memory = payload.get("memory") if isinstance(payload.get("memory"), dict) else {}
     slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
     active_manifest_payload = payload.get("active_manifest") if isinstance(payload.get("active_manifest"), dict) else {}
-    active_slot = str(slots.get("active_slot") or "")
-    previous_slot = str(slots.get("previous_slot") or "")
+    active_slot = str(slots.get("active_slot") or runtime.get("active_slot") or "")
+    previous_slot = str(slots.get("previous_slot") or runtime.get("previous_slot") or "")
     slot_map = slots.get("slots") if isinstance(slots.get("slots"), dict) else {}
 
     def _slot_manifest(slot_id: str) -> dict:
@@ -1351,7 +1417,7 @@ def autostart_update_status_cmd(
         manifest = _slot_manifest(slot_id)
         if not slot_id:
             return "--"
-        version = str(manifest.get("target_version") or "").strip()
+        version = _slot_build_version(slot_id) or str(manifest.get("target_version") or "").strip()
         short_commit = str(manifest.get("git_short_commit") or "").strip()
         if not short_commit:
             full_commit = str(manifest.get("git_commit") or "").strip()
@@ -1375,6 +1441,9 @@ def autostart_update_status_cmd(
         typer.echo(f"target rev: {status.get('target_rev')}")
     if status.get("target_version"):
         typer.echo(f"target version: {status.get('target_version')}")
+    active_build_version = _slot_build_version(active_slot)
+    if active_build_version:
+        typer.echo(f"active build version: {active_build_version}")
     if status.get("scheduled_for"):
         try:
             scheduled_for = float(status.get("scheduled_for") or 0.0)

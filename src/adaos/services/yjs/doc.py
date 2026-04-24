@@ -9,10 +9,24 @@ from typing import Iterator, AsyncIterator, Awaitable, Optional, TypeVar, Callab
 
 import y_py as Y
 
-from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.agent_context import get_ctx
+from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata, ystore_write_metadata_sync
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
+
+
+def _resolve_yjs_write_owner() -> str:
+    try:
+        current = getattr(get_ctx(), "skill_ctx", None)
+        if current is not None:
+            active = current.get()
+            name = str(getattr(active, "name", "") or "").strip()
+            if name:
+                return f"skill:{name}"
+    except Exception:
+        pass
+    return "core"
 
 
 def _record_doc_timing(timings: dict[str, float] | None, key: str, started_at: float, *, prefix: str = "") -> float:
@@ -202,6 +216,7 @@ def get_ydoc(
     read_only: bool = False,
     timings: dict[str, float] | None = None,
     timing_prefix: str = "",
+    load_mark_roots: list[str] | tuple[str, ...] | None = None,
 ) -> Iterator[Y.YDoc]:
     """
     Synchronously load a webspace-backed YDoc, applying persisted updates on
@@ -240,6 +255,7 @@ def get_ydoc(
             return None
 
     before = _run_blocking(_load())
+    tracked_load_mark_roots = [str(name or "").strip() for name in (load_mark_roots or ()) if str(name or "").strip()]
     try:
         yield ydoc
     finally:
@@ -252,10 +268,16 @@ def get_ydoc(
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
                     try:
                         stage_started = time.perf_counter()
-                        if update:
-                            await ystore.write_update(update, update_kind="diff")
-                        else:
-                            await ystore.write_update(b"", update_kind="diff")
+                        async with ystore_write_metadata(
+                            root_names=tracked_load_mark_roots,
+                            source="get_ydoc",
+                            owner=_resolve_yjs_write_owner(),
+                            channel="yjs.doc.sync",
+                        ):
+                            if update:
+                                await ystore.write_update(update, update_kind="diff")
+                            else:
+                                await ystore.write_update(b"", update_kind="diff")
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                     except Exception:
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
@@ -291,6 +313,7 @@ async def async_get_ydoc(
     prefer_live_room: bool = False,
     timings: dict[str, float] | None = None,
     timing_prefix: str = "",
+    load_mark_roots: list[str] | tuple[str, ...] | None = None,
 ) -> AsyncIterator[Y.YDoc]:
     """
     Async counterpart of :func:`get_ydoc` for use inside running event loops.
@@ -319,6 +342,7 @@ async def async_get_ydoc(
                 _record_doc_timing(timings, "ystore_apply_updates", stage_started, prefix=timing_prefix)
                 pass
         before = None
+        tracked_load_mark_roots = [str(name or "").strip() for name in (load_mark_roots or ()) if str(name or "").strip()]
         if not read_only:
             stage_started = time.perf_counter()
             before = await ystore.current_state_vector()
@@ -346,10 +370,16 @@ async def async_get_ydoc(
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
                     try:
                         stage_started = time.perf_counter()
-                        if update:
-                            await ystore.write_update(update, update_kind="diff")
-                        else:
-                            await ystore.write_update(b"", update_kind="diff")
+                        async with ystore_write_metadata(
+                            root_names=tracked_load_mark_roots,
+                            source="async_get_ydoc",
+                            owner=_resolve_yjs_write_owner(),
+                            channel="yjs.doc.async",
+                        ):
+                            if update:
+                                await ystore.write_update(update, update_kind="diff")
+                            else:
+                                await ystore.write_update(b"", update_kind="diff")
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                     except Exception as exc:
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
@@ -391,7 +421,15 @@ async def async_read_ydoc(
         yield ydoc
 
 
-def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -> bool:
+def mutate_live_room(
+    webspace_id: str,
+    mutator: Callable[[Y.YDoc, Any], None],
+    *,
+    root_names: list[str] | None = None,
+    source: str = "yjs.doc.mutate_live_room",
+    owner: str | None = None,
+    channel: str = "core.yjs.live_room.sync",
+) -> bool:
     """
     Attempt to mutate the active YDoc directly so connected clients receive the change.
     Returns False if the webspace is not currently hosted in-process.
@@ -402,15 +440,29 @@ def mutate_live_room(webspace_id: str, mutator: Callable[[Y.YDoc, Any], None]) -
 
     def _apply() -> None:
         try:
-            with room.ydoc.begin_transaction() as txn:
-                mutator(room.ydoc, txn)
+            with ystore_write_metadata_sync(
+                root_names=list(root_names or []),
+                source=source,
+                owner=(owner or _resolve_yjs_write_owner()),
+                channel=channel,
+            ):
+                with room.ydoc.begin_transaction() as txn:
+                    mutator(room.ydoc, txn)
         except Exception:
             pass
 
     return _run_on_room_thread(room, _apply)
 
 
-def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
+def apply_update_to_live_room(
+    webspace_id: str,
+    update: bytes,
+    *,
+    root_names: list[str] | None = None,
+    source: str = "yjs.doc.apply_update_to_live_room",
+    owner: str | None = None,
+    channel: str = "core.yjs.live_room.update",
+) -> bool:
     """
     Apply a raw Yjs update to the active in-process room (if any).
     Returns False if the webspace is not currently hosted in-process.
@@ -423,7 +475,13 @@ def apply_update_to_live_room(webspace_id: str, update: bytes) -> bool:
 
     def _apply() -> None:
         try:
-            Y.apply_update(room.ydoc, update)
+            with ystore_write_metadata_sync(
+                root_names=list(root_names or []),
+                source=source,
+                owner=(owner or _resolve_yjs_write_owner()),
+                channel=channel,
+            ):
+                Y.apply_update(room.ydoc, update)
         except Exception:
             pass
 

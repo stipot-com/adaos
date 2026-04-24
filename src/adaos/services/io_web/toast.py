@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.io_web.toast")
@@ -56,21 +57,27 @@ class WebToastService:
         webspace = (webspace_id or "").strip() or default_webspace_id()
         toast = WebToast(level=level, message=message, code=code, source=source)
 
-        async with async_get_ydoc(webspace) as ydoc:
-            data_map = ydoc.get_map("data")
-            with ydoc.begin_transaction() as txn:
-                desktop = data_map.get("desktop")
-                if not isinstance(desktop, dict):
-                    desktop = {}
-                raw_toasts = desktop.get("toasts") or []
-                items: List[Dict[str, Any]] = []
-                if isinstance(raw_toasts, list):
-                    items = [it for it in raw_toasts if isinstance(it, dict)]
-                items.append(toast.to_dict())
-                # Keep only the last max_items entries.
-                if max_items > 0 and len(items) > max_items:
-                    items = items[-max_items:]
-                desktop["toasts"] = json.loads(json.dumps(items))
-                data_map.set(txn, "desktop", json.loads(json.dumps(desktop)))
+        async with ystore_write_metadata(
+            root_names=["data"],
+            source="io_web.toast",
+            owner="core:toast",
+            channel="core.toast.async",
+        ):
+            async with async_get_ydoc(webspace) as ydoc:
+                data_map = ydoc.get_map("data")
+                with ydoc.begin_transaction() as txn:
+                    desktop = data_map.get("desktop")
+                    if not isinstance(desktop, dict):
+                        desktop = {}
+                    raw_toasts = desktop.get("toasts") or []
+                    items: List[Dict[str, Any]] = []
+                    if isinstance(raw_toasts, list):
+                        items = [it for it in raw_toasts if isinstance(it, dict)]
+                    items.append(toast.to_dict())
+                    # Keep only the last max_items entries.
+                    if max_items > 0 and len(items) > max_items:
+                        items = items[-max_items:]
+                    desktop["toasts"] = json.loads(json.dumps(items))
+                    data_map.set(txn, "desktop", json.loads(json.dumps(desktop)))
 
         _log.debug("toast pushed webspace=%s level=%s code=%s", webspace, level, code)

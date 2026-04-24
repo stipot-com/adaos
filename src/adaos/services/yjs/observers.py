@@ -15,6 +15,13 @@ _ATTACHED_OBSERVERS: Dict[Tuple[str, int], Dict[RoomObserver, RoomObserverDetach
 _ACTIVE_YDOC_IDS: Dict[str, int] = {}
 
 
+def _ensure_builtin_room_observers_loaded() -> None:
+    try:
+        import adaos.services.yjs.load_mark  # noqa: F401
+    except Exception:
+        pass
+
+
 def _observer_name(observer: RoomObserver) -> str:
     try:
         return getattr(observer, "__name__", repr(observer))
@@ -70,6 +77,7 @@ def attach_room_observers(webspace_id: str, ydoc: Y.YDoc) -> None:
 
     This is called by the Y gateway when a YRoom is created or reused.
     """
+    _ensure_builtin_room_observers_loaded()
     ydoc_id = id(ydoc)
     previous_ydoc_id = _ACTIVE_YDOC_IDS.get(webspace_id)
     if previous_ydoc_id is not None and previous_ydoc_id != ydoc_id:

@@ -26,6 +26,7 @@ from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.skills.runtime_runner import execute_tool
 from adaos.sdk.io.context import io_meta
 
@@ -41,6 +42,14 @@ class RouterService:
         self._vlog = logging.getLogger("adaos.router.voice_chat")
         self._tg_reply_via_root_http = str(os.getenv("HUB_TG_REPLY_VIA_ROOT_HTTP") or "").strip() == "1"
         self._media_route_webspaces: set[str] = set()
+
+    def _router_yjs_write_meta(self):
+        return ystore_write_metadata(
+            root_names=["data"],
+            source="router.service",
+            owner="core:router",
+            channel="core.router.async",
+        )
 
     def _pick_target_node(self, desired_io: str, this_node: str) -> str:
         node = this_node
@@ -487,59 +496,84 @@ class RouterService:
             return base_ids
 
         async def _ensure_voice_chat_state(webspace_id: str) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = data_map.get("voice_chat")
-                if isinstance(current, dict) and isinstance(current.get("messages"), list):
-                    return
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "voice_chat", {"messages": []})
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = data_map.get("voice_chat")
+                    if isinstance(current, dict) and isinstance(current.get("messages"), list):
+                        return
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "voice_chat", {"messages": []})
 
         async def _append_voice_chat_message(webspace_id: str, msg: dict) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = data_map.get("voice_chat")
-                messages = []
-                if isinstance(current, dict) and isinstance(current.get("messages"), list):
-                    messages = list(current.get("messages") or [])
-                messages.append(msg)
-                # keep last N messages only (MVP)
-                if len(messages) > 60:
-                    messages = messages[-60:]
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "voice_chat", {"messages": messages})
-                try:
-                    self._vlog.debug(
-                        "voice_chat.append webspace=%s count=%d last_from=%s last_text=%r",
-                        webspace_id,
-                        len(messages),
-                        msg.get("from"),
-                        msg.get("text"),
-                    )
-                except Exception:
-                    pass
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = data_map.get("voice_chat")
+                    messages = []
+                    if isinstance(current, dict) and isinstance(current.get("messages"), list):
+                        messages = list(current.get("messages") or [])
+                    messages.append(msg)
+                    # keep last N messages only (MVP)
+                    if len(messages) > 60:
+                        messages = messages[-60:]
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "voice_chat", {"messages": messages})
+                    try:
+                        self._vlog.debug(
+                            "voice_chat.append webspace=%s count=%d last_from=%s last_text=%r",
+                            webspace_id,
+                            len(messages),
+                            msg.get("from"),
+                            msg.get("text"),
+                        )
+                    except Exception:
+                        pass
 
         async def _ensure_tts_state(webspace_id: str) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = data_map.get("tts")
-                if isinstance(current, dict) and isinstance(current.get("queue"), list):
-                    return
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "tts", {"queue": []})
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = data_map.get("tts")
+                    if isinstance(current, dict) and isinstance(current.get("queue"), list):
+                        return
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "tts", {"queue": []})
 
         async def _append_tts_queue_item(webspace_id: str, item: dict) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = data_map.get("tts")
-                queue = []
-                if isinstance(current, dict) and isinstance(current.get("queue"), list):
-                    queue = list(current.get("queue") or [])
-                queue.append(item)
-                if len(queue) > 50:
-                    queue = queue[-50:]
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "tts", {"queue": queue})
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = data_map.get("tts")
+                    queue = []
+                    if isinstance(current, dict) and isinstance(current.get("queue"), list):
+                        queue = list(current.get("queue") or [])
+                    queue.append(item)
+                    if len(queue) > 50:
+                        queue = queue[-50:]
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "tts", {"queue": queue})
+
+        def _publish_webio_stream_event(
+            webspace_id: str,
+            receiver: str,
+            payload: dict[str, Any],
+            *,
+            source: str,
+            ts: float,
+        ) -> None:
+            ws = str(webspace_id or "").strip() or "default"
+            receiver_id = str(receiver or "").strip()
+            if not receiver_id:
+                return
+            self.bus.publish(
+                Event(
+                    type=f"webio.stream.{ws}.{receiver_id}",
+                    source=source,
+                    ts=ts,
+                    payload=payload,
+                )
+            )
 
         def _coerce_bool(value: Any) -> bool:
             if isinstance(value, bool):
@@ -565,24 +599,26 @@ class RouterService:
                 return None
 
         async def _ensure_media_state(webspace_id: str) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = _coerce_y(data_map.get("media"))
-                if isinstance(current, dict) and isinstance(current.get("route"), dict):
-                    return
-                next_state = dict(current) if isinstance(current, dict) else {}
-                next_state.setdefault("route", {})
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "media", next_state)
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = _coerce_y(data_map.get("media"))
+                    if isinstance(current, dict) and isinstance(current.get("route"), dict):
+                        return
+                    next_state = dict(current) if isinstance(current, dict) else {}
+                    next_state.setdefault("route", {})
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "media", next_state)
 
         async def _set_media_route_state(webspace_id: str, route_state: dict[str, Any]) -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                data_map = ydoc.get_map("data")
-                current = _coerce_y(data_map.get("media"))
-                next_state = dict(current) if isinstance(current, dict) else {}
-                next_state["route"] = route_state
-                with ydoc.begin_transaction() as txn:
-                    data_map.set(txn, "media", next_state)
+            async with self._router_yjs_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    data_map = ydoc.get_map("data")
+                    current = _coerce_y(data_map.get("media"))
+                    next_state = dict(current) if isinstance(current, dict) else {}
+                    next_state["route"] = route_state
+                    with ydoc.begin_transaction() as txn:
+                        data_map.set(txn, "media", next_state)
 
         async def _get_media_route_state(webspace_id: str) -> dict[str, Any] | None:
             async with async_get_ydoc(webspace_id) as ydoc:
@@ -1118,6 +1154,34 @@ class RouterService:
                 await _ensure_media_state(ws)
                 await _set_media_route_state(ws, route_state)
 
+        async def _on_io_out_stream_publish(ev: Event) -> None:
+            payload = ev.payload or {}
+            if not isinstance(payload, dict):
+                return
+            receiver = str(payload.get("receiver") or "").strip()
+            if not receiver:
+                return
+            event_ts = float(payload.get("ts") or ev.ts or time.time())
+            data = payload.get("data")
+            meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            targets = await _resolve_webspace_ids(payload)
+            for ws in targets:
+                event_payload = {
+                    "receiver": receiver,
+                    "webspace_id": ws,
+                    "data": data,
+                    "ts": event_ts,
+                }
+                if meta:
+                    event_payload["_meta"] = {**meta, "webspace_id": ws}
+                _publish_webio_stream_event(
+                    ws,
+                    receiver,
+                    event_payload,
+                    source=str(ev.source or "router"),
+                    ts=event_ts,
+                )
+
         async def _on_browser_session_changed(ev: Event) -> None:
             payload = ev.payload or {}
             if not isinstance(payload, dict):
@@ -1357,6 +1421,7 @@ class RouterService:
         self.bus.subscribe("io.out.chat.append", _on_io_out_chat_append)
         self.bus.subscribe("io.out.say", _on_io_out_say)
         self.bus.subscribe("io.out.media.route", _on_io_out_media_route)
+        self.bus.subscribe("io.out.stream.publish", _on_io_out_stream_publish)
         self.bus.subscribe("browser.session.changed", _on_browser_session_changed)
         self.bus.subscribe("subnet.member.snapshot.changed", _on_member_media_inventory_changed)
         self.bus.subscribe("subnet.member.link.up", _on_member_media_inventory_changed)

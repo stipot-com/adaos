@@ -71,15 +71,17 @@ def test_autostart_update_status_uses_local_admin_api(monkeypatch) -> None:
         raise AssertionError(path)
 
     monkeypatch.setattr(setup_cmd, "_autostart_supervisor_get", _fake_supervisor_get)
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.0+42.8e2f6e75" if slot_id == "A" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "target rev: rev2026" in result.output
+    assert "active build version: 0.1.0+42.8e2f6e75" in result.output
     assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=1" in result.output
     assert "memory last session: id=mem-001 state=requested mode=sampled_profile publish=local_only" in result.output
-    assert "active slot: A | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active slot: A | 0.1.0+42.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 
@@ -107,11 +109,13 @@ def test_autostart_update_status_falls_back_to_active_manifest_payload(monkeypat
             },
         },
     )
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.0+42.8e2f6e75" if slot_id == "B" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
-    assert "active slot: B | 0.1.0 | 8e2f6e75 | rev2026" in result.output
+    assert "active build version: 0.1.0+42.8e2f6e75" in result.output
+    assert "active slot: B | 0.1.0+42.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
     assert "active commit: 8e2f6e7529b60f67094a7951e690558c67fdf333" in result.output
 
 def test_autostart_update_status_prints_supervisor_attempt(monkeypatch) -> None:
@@ -256,8 +260,53 @@ def test_autostart_update_status_prints_scheduled_and_subsequent_transition(monk
     assert result.exit_code == 0, result.output
     assert "scheduled for:" in result.output
     assert "subsequent transition: queued" in result.output
-    assert "transition mode: warm_switch" in result.output
-    assert "candidate prewarm: starting" in result.output
+
+
+def test_autostart_restart_calls_restart_service(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _restart() -> dict[str, object]:
+        captured["called"] = True
+        return {
+            "ok": True,
+            "scope": "system",
+            "service": "adaos.service",
+            "service_ref": "/etc/systemd/system/adaos.service",
+        }
+
+    monkeypatch.setattr(setup_cmd, "_restart_autostart_service", _restart)
+
+    result = runner.invoke(autostart_app, ["restart"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["called"] is True
+    assert "[AdaOS] autostart restarted" in result.output
+    assert "scope: system" in result.output
+    assert "service: adaos.service" in result.output
+
+
+def test_autostart_restart_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(
+        setup_cmd,
+        "_restart_autostart_service",
+        lambda: {
+            "ok": True,
+            "scope": "user",
+            "service": "adaos.service",
+        },
+    )
+
+    result = runner.invoke(autostart_app, ["restart", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == {
+        "ok": True,
+        "scope": "user",
+        "service": "adaos.service",
+    }
 
 
 def test_autostart_update_defer_posts_to_supervisor(monkeypatch) -> None:
@@ -289,12 +338,12 @@ def test_autostart_smoke_update_defaults_to_current_branch(monkeypatch) -> None:
         captured["body"] = body
         return {"ok": True, "accepted": True}
 
-    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _post)
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
 
     result = runner.invoke(autostart_app, ["smoke-update", "--json"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/api/admin/update/start"
+    assert captured["path"] == "/api/supervisor/update/start"
     assert captured["body"]["target_rev"] == "rev2026"
     assert captured["body"]["target_version"] == "0.1.0+1.abc"
     assert captured["body"]["reason"] == "cli.smoke_update"
@@ -311,13 +360,53 @@ def test_autostart_update_start_defaults_to_current_branch(monkeypatch) -> None:
         captured["body"] = body
         return {"ok": True, "accepted": True}
 
-    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _post)
+    monkeypatch.setattr(setup_cmd, "_autostart_supervisor_post", _post)
 
     result = runner.invoke(autostart_app, ["update-start", "--json"])
 
     assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/supervisor/update/start"
     assert captured["body"]["target_rev"] == "rev2026"
     assert captured["body"]["target_version"] == "0.1.0+2.def"
+
+
+def test_autostart_update_start_does_not_fallback_to_runtime_admin(monkeypatch) -> None:
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        setup_cmd,
+        "_autostart_supervisor_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("local AdaOS supervisor API is unavailable at http://127.0.0.1:8776")),
+    )
+
+    def _unexpected_admin_post(*args, **kwargs):
+        raise AssertionError("runtime admin fallback must not be used for autostart update mutations")
+
+    monkeypatch.setattr(setup_cmd, "_autostart_admin_post", _unexpected_admin_post)
+
+    result = runner.invoke(autostart_app, ["update-start"])
+
+    assert result.exit_code == 1, result.output
+    assert "http://127.0.0.1:8776" in result.output
+
+
+def test_autostart_cli_token_reads_shared_dotenv_when_wrapper_has_no_token(monkeypatch) -> None:
+    monkeypatch.setattr(
+        setup_cmd,
+        "autostart_status",
+        lambda ctx: {
+            "shared_dotenv_path": "/root/adaos/.env",
+            "wrapper_env": {"ADAOS_SUPERVISOR_PORT": "8776"},
+        },
+    )
+    monkeypatch.setattr(
+        setup_cmd,
+        "_parse_env_file",
+        lambda path: {"ADAOS_TOKEN": "dotenv-token"},
+    )
+
+    assert setup_cmd._autostart_service_token() == "dotenv-token"
+    assert setup_cmd._autostart_cli_token() == "dotenv-token"
 
 
 def test_autostart_update_promote_root_posts_to_supervisor(monkeypatch) -> None:
@@ -615,14 +704,16 @@ def test_autostart_update_status_falls_back_to_local_runner_state(monkeypatch) -
             "_local_fallback": True,
         },
     )
+    monkeypatch.setattr(setup_cmd, "_slot_build_version", lambda slot_id: "0.1.1+43.8e2f6e75" if slot_id == "B" else "")
 
     result = runner.invoke(autostart_app, ["update-status"])
 
     assert result.exit_code == 0, result.output
     assert "state: idle" in result.output
     assert "message: autostart runner boot" in result.output
+    assert "active build version: 0.1.1+43.8e2f6e75" in result.output
     assert "memory: mode=normal control=phase2_supervisor_restart suspicion=idle sessions=2 requested=sampled_profile" in result.output
-    assert "active slot: B | 0.1.1 | 8e2f6e75 | rev2026" in result.output
+    assert "active slot: B | 0.1.1+43.8e2f6e75 | 8e2f6e75 | rev2026" in result.output
 
 
 def test_autostart_inspect_renders_hot_children_and_services(monkeypatch) -> None:

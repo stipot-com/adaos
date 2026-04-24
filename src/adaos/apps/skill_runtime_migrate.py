@@ -46,6 +46,24 @@ def _tests_ok(results: dict[str, Any]) -> bool:
     return all(status == "passed" for status in _tests_payload(results).values())
 
 
+def _lifecycle_payload(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _lifecycle_failure_stage(lifecycle: dict[str, Any]) -> str:
+    data = _lifecycle_payload(lifecycle)
+    for key in ("persist", "rehydrate", "healthcheck", "drain", "dispose", "before_deactivate", "rollback"):
+        payload = _lifecycle_payload(data.get(key))
+        if not payload:
+            continue
+        if bool(payload.get("skipped")):
+            continue
+        ok_value = payload.get("ok")
+        if ok_value is False:
+            return key
+    return ""
+
+
 def _safe_for_core_update(items: list[dict[str, Any]]) -> bool:
     failures = [item for item in items if not bool(item.get("ok"))]
     if not failures:
@@ -84,6 +102,7 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "skill": skill_name,
             "ok": True,
+            "failure_kind": "",
             "failed_stage": "",
             "prepared_version": None,
             "prepared_slot": None,
@@ -91,6 +110,7 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
             "active_slot_before": str(before.get("active_slot") or ""),
             "active_slot_after": "",
             "tests": {},
+            "lifecycle": {},
             "rollback_performed": False,
             "deactivated": False,
         }
@@ -109,6 +129,12 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
             )
             activated = True
             entry["active_slot_after"] = str(active_slot or "")
+            after = _runtime_status_safe(mgr, skill_name)
+            entry["lifecycle"] = dict(after.get("lifecycle") or {}) if isinstance(after, dict) else {}
+            lifecycle_failed_stage = _lifecycle_failure_stage(entry["lifecycle"])
+            if lifecycle_failed_stage:
+                entry["stage"] = lifecycle_failed_stage
+                raise RuntimeError(f"lifecycle check failed at {lifecycle_failed_stage}")
 
             if run_tests:
                 entry["stage"] = "tests"
@@ -122,6 +148,7 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
             stage = str(entry.get("stage") or "prepare")
             entry["ok"] = False
             entry["failed_stage"] = stage
+            entry["failure_kind"] = "lifecycle" if stage in {"persist", "rehydrate", "healthcheck", "drain", "dispose", "before_deactivate", "rollback"} else "tests" if stage == "tests" else "prepare"
             entry["error"] = str(exc)
             if activated and stage in {"activate", "tests"}:
                 try:
@@ -137,12 +164,16 @@ def migrate_installed_skills(*, run_tests: bool = True) -> dict[str, Any]:
     failed = [item for item in items if not bool(item.get("ok"))]
     rollback_total = sum(1 for item in items if bool(item.get("rollback_performed")))
     deactivated_total = sum(1 for item in items if bool(item.get("deactivated")))
+    lifecycle_failed_total = sum(1 for item in items if str(item.get("failure_kind") or "") == "lifecycle")
+    tests_failed_total = sum(1 for item in items if str(item.get("failure_kind") or "") == "tests")
     return {
         "ok": not failed,
         "total": len(items),
         "failed_total": len(failed),
         "rollback_total": rollback_total,
         "deactivated_total": deactivated_total,
+        "lifecycle_failed_total": lifecycle_failed_total,
+        "tests_failed_total": tests_failed_total,
         "run_tests": bool(run_tests),
         "safe_for_core_update": _safe_for_core_update(items),
         "skills": items,
@@ -165,19 +196,30 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
         entry: dict[str, Any] = {
             "skill": skill_name,
             "ok": True,
+            "failure_kind": "",
             "failed_stage": "",
             "active_version": str(status.get("version") or ""),
             "active_slot": str(status.get("active_slot") or ""),
             "tests": {},
+            "lifecycle": dict(status.get("lifecycle") or {}) if isinstance(status, dict) else {},
             "deactivated": False,
             "skipped": False,
         }
         if bool(status.get("deactivated")):
+            deactivation = dict(status.get("deactivation") or {}) if isinstance(status, dict) else {}
             entry["skipped"] = True
-            entry["reason"] = str((status.get("deactivation") or {}).get("reason") or "already deactivated")
+            entry["reason"] = str(deactivation.get("reason") or "already deactivated")
+            entry["deactivated"] = True
+            entry["deactivation"] = deactivation
+            entry["failure_kind"] = str(deactivation.get("failure_kind") or "")
+            entry["failed_stage"] = str(deactivation.get("failed_stage") or "")
             items.append(entry)
             continue
         try:
+            lifecycle_failed_stage = _lifecycle_failure_stage(entry["lifecycle"])
+            if lifecycle_failed_stage:
+                entry["stage"] = lifecycle_failed_stage
+                raise RuntimeError(f"lifecycle check failed at {lifecycle_failed_stage}")
             entry["stage"] = "tests"
             tests = mgr.run_skill_tests(skill_name, source="installed")
             entry["tests"] = _tests_payload(tests)
@@ -187,10 +229,22 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
         except Exception as exc:
             entry["ok"] = False
             entry["failed_stage"] = str(entry.get("stage") or "tests")
+            entry["failure_kind"] = (
+                "lifecycle"
+                if entry["failed_stage"] in {"persist", "rehydrate", "healthcheck", "drain", "dispose", "before_deactivate", "rollback"}
+                else "tests"
+            )
             entry["error"] = str(exc)
             if deactivate_on_failure:
                 try:
-                    deactivated = mgr.deactivate_runtime(skill_name, reason="post_commit_checks_failed")
+                    deactivated = mgr.deactivate_runtime(
+                        skill_name,
+                        reason="post_commit_checks_failed",
+                        failure_kind=str(entry["failure_kind"] or ""),
+                        failed_stage=str(entry["failed_stage"] or ""),
+                        source="post_commit_check_installed_skills",
+                        committed_core_switch=True,
+                    )
                     entry["deactivated"] = True
                     entry["deactivation"] = deactivated
                 except Exception as deactivate_exc:
@@ -201,12 +255,16 @@ def post_commit_check_installed_skills(*, deactivate_on_failure: bool = False) -
     failed = [item for item in items if not bool(item.get("ok"))]
     deactivated_total = sum(1 for item in items if bool(item.get("deactivated")))
     skipped_total = sum(1 for item in items if bool(item.get("skipped")))
+    lifecycle_failed_total = sum(1 for item in items if str(item.get("failure_kind") or "") == "lifecycle")
+    tests_failed_total = sum(1 for item in items if str(item.get("failure_kind") or "") == "tests")
     return {
         "ok": not failed,
         "total": len(items),
         "failed_total": len(failed),
         "deactivated_total": deactivated_total,
         "skipped_total": skipped_total,
+        "lifecycle_failed_total": lifecycle_failed_total,
+        "tests_failed_total": tests_failed_total,
         "deactivate_on_failure": bool(deactivate_on_failure),
         "safe_for_core_update": _safe_for_core_update(items),
         "skills": items,

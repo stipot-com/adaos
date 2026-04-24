@@ -11,11 +11,21 @@ from adaos.services.nlu.teacher_events import rebuild_events_by_candidate
 from adaos.services.nlu.teacher_store import load_teacher_state, save_teacher_state
 from adaos.services.nlu.ycoerce import coerce_dict, is_mapping_like, iter_mappings
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.nlu.teacher.store.runtime")
 
 _PERSIST_DEBOUNCE_S = 0.25
+
+
+def _nlu_teacher_store_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.teacher_store_runtime",
+        owner="core:nlu.teacher_store",
+        channel="core.nlu.teacher_store.async",
+    )
 
 _pending: dict[str, asyncio.Task] = {}
 
@@ -114,10 +124,11 @@ async def _read_teacher_from_ydoc(webspace_id: str) -> dict[str, Any]:
 
 
 async def _write_teacher_to_ydoc(webspace_id: str, teacher: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_teacher_store_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 async def _persist_now(webspace_id: str) -> None:

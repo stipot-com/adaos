@@ -63,3 +63,10 @@ When diagnosing a live rollout, check fields in this order:
 5. `awaiting_restart` and `restart_mode`
 
 If `authority=supervisor` and the runtime is temporarily unavailable, the supervisor surfaces should still be treated as the source of truth for the active update attempt.
+
+Browser delivery now has two layers:
+
+- `supervisor.update.status.raw`: browser-safe raw supervisor transition payload. Clients should prefer this for live transition UI because it keeps the supervisor-owned shape (`status`, `attempt`, `runtime`) intact.
+- `core.update.status`: normalized semantic event for the wider control plane. Keep using this for generic update notifications and compatibility with older consumers.
+
+When both are present, browser/runtime code should treat `supervisor.update.status.raw` as the higher-priority source and keep HTTP polling of `/api/supervisor/public/update-status` only as a fallback.

@@ -20,12 +20,31 @@ from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.doc import async_get_ydoc, get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("adaos.operations")
 _MANAGER_LOCK = threading.RLock()
 _MANAGERS: dict[str, "OperationManager"] = {}
 _ACTIVE_STATUSES = {"accepted", "queued", "running", "waiting_input"}
+
+
+def _operations_async_write_meta():
+    return ystore_write_metadata(
+        root_names=["runtime"],
+        source="operations.manager",
+        owner="core:operations",
+        channel="core.operations.async",
+    )
+
+
+def _operations_sync_write_meta():
+    return ystore_write_metadata_sync(
+        root_names=["runtime"],
+        source="operations.manager",
+        owner="core:operations",
+        channel="core.operations.sync",
+    )
 
 
 def _now_iso() -> str:
@@ -461,28 +480,30 @@ class OperationManager:
         snapshot = self.snapshot(webspace_id=webspace_id)
 
         async def _write_async() -> None:
-            async with async_get_ydoc(webspace_id) as ydoc:
-                runtime_map = ydoc.get_map("runtime")
-                with ydoc.begin_transaction() as txn:
-                    runtime_map.set(
-                        txn,
-                        "operations",
-                        _json_clone({"by_id": snapshot["by_id"], "order": snapshot["order"], "active": snapshot["active"]}),
-                    )
-                    runtime_map.set(txn, "notifications", _json_clone(snapshot["notifications"]))
+            async with _operations_async_write_meta():
+                async with async_get_ydoc(webspace_id) as ydoc:
+                    runtime_map = ydoc.get_map("runtime")
+                    with ydoc.begin_transaction() as txn:
+                        runtime_map.set(
+                            txn,
+                            "operations",
+                            _json_clone({"by_id": snapshot["by_id"], "order": snapshot["order"], "active": snapshot["active"]}),
+                        )
+                        runtime_map.set(txn, "notifications", _json_clone(snapshot["notifications"]))
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            with get_ydoc(webspace_id) as ydoc:
-                runtime_map = ydoc.get_map("runtime")
-                with ydoc.begin_transaction() as txn:
-                    runtime_map.set(
-                        txn,
-                        "operations",
-                        _json_clone({"by_id": snapshot["by_id"], "order": snapshot["order"], "active": snapshot["active"]}),
-                    )
-                    runtime_map.set(txn, "notifications", _json_clone(snapshot["notifications"]))
+            with _operations_sync_write_meta():
+                with get_ydoc(webspace_id) as ydoc:
+                    runtime_map = ydoc.get_map("runtime")
+                    with ydoc.begin_transaction() as txn:
+                        runtime_map.set(
+                            txn,
+                            "operations",
+                            _json_clone({"by_id": snapshot["by_id"], "order": snapshot["order"], "active": snapshot["active"]}),
+                        )
+                        runtime_map.set(txn, "notifications", _json_clone(snapshot["notifications"]))
         else:
             loop.create_task(_write_async(), name=f"operation-project-{webspace_id}")
 

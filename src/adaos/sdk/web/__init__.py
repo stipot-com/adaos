@@ -27,6 +27,7 @@ from .desktop import (
 from .webspace import (
     webspace_list,
     webspace_describe,
+    webspace_validate,
     webspace_create,
     webspace_rename,
     webspace_delete,
@@ -35,6 +36,7 @@ from .webspace import (
     webspace_go_home,
     webspace_ensure_dev,
 )
+from .yjs import webspace_ydoc, webspace_read_ydoc, webspace_ydoc_sync
 
 __all__ = [
     "desktop_toggle_install",
@@ -52,6 +54,7 @@ __all__ = [
     "desktop_set_snapshot",
     "webspace_list",
     "webspace_describe",
+    "webspace_validate",
     "webspace_create",
     "webspace_rename",
     "webspace_delete",
@@ -59,4 +62,7 @@ __all__ = [
     "webspace_set_home",
     "webspace_go_home",
     "webspace_ensure_dev",
+    "webspace_ydoc",
+    "webspace_read_ydoc",
+    "webspace_ydoc_sync",
 ]

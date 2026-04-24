@@ -484,7 +484,14 @@ class MemberLinkClient:
             store = get_ystore_for_webspace(ws_id)
             async with suppress_ystore_write_notifications():
                 await store.write(upd)
-            apply_update_to_live_room(ws_id, upd)
+            apply_update_to_live_room(
+                ws_id,
+                upd,
+                root_names=["data", "ui"],
+                source="subnet.link_client",
+                owner="core:subnet_link_client",
+                channel="core.subnet.link.update",
+            )
         except Exception:
             return
 

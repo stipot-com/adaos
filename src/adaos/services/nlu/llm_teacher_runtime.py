@@ -23,6 +23,7 @@ from adaos.services.reliability import (
 from adaos.services.scenarios import loader as scenarios_loader
 from adaos.services.root.client import RootHttpClient
 from adaos.services.yjs.doc import async_get_ydoc
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.webspace import default_webspace_id
 
 from .ycoerce import coerce_dict, is_iterable_like, iter_mappings, iter_scalars
@@ -34,6 +35,15 @@ _LLM_TEACHER_ENABLED = os.getenv("ADAOS_NLU_LLM_TEACHER") == "1"
 _MODEL = os.getenv("ADAOS_NLU_LLM_MODEL") or os.getenv("OPENAI_RESPONSES_MODEL") or "gpt-4o-mini"
 _MAX_TOKENS = int(os.getenv("ADAOS_NLU_LLM_MAX_TOKENS", "500") or "500")
 _TIMEOUT_S = float(os.getenv("ADAOS_NLU_LLM_TIMEOUT_S", "20") or "20")
+
+
+def _nlu_llm_write_meta():
+    return ystore_write_metadata(
+        root_names=["data"],
+        source="nlu.llm_teacher_runtime",
+        owner="core:nlu.llm_teacher",
+        channel="core.nlu.llm_teacher.async",
+    )
 
 
 def _payload(evt: Any) -> Dict[str, Any]:
@@ -621,32 +631,34 @@ async def _llm_call(messages: list[dict[str, str]], *, request_id: str | None = 
 
 
 async def _append_llm_log(webspace_id: str, entry: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _teacher_obj(data_map)
-        logs = list(iter_mappings(teacher.get("llm_logs")))
-        logs.append(entry)
-        teacher["llm_logs"] = logs[-300:]
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_llm_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _teacher_obj(data_map)
+            logs = list(iter_mappings(teacher.get("llm_logs")))
+            logs.append(entry)
+            teacher["llm_logs"] = logs[-300:]
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 async def _patch_llm_log(webspace_id: str, *, log_id: str, patch: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _teacher_obj(data_map)
-        logs = list(iter_mappings(teacher.get("llm_logs")))
-        next_logs: list[dict[str, Any]] = []
-        for item in logs:
-            if item.get("id") == log_id:
-                updated = dict(item)
-                updated.update(patch)
-                next_logs.append(updated)
-            else:
-                next_logs.append(item)
-        teacher["llm_logs"] = next_logs[-300:]
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_llm_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _teacher_obj(data_map)
+            logs = list(iter_mappings(teacher.get("llm_logs")))
+            next_logs: list[dict[str, Any]] = []
+            for item in logs:
+                if item.get("id") == log_id:
+                    updated = dict(item)
+                    updated.update(patch)
+                    next_logs.append(updated)
+                else:
+                    next_logs.append(item)
+            teacher["llm_logs"] = next_logs[-300:]
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 async def _update_revision_by_request_id(
@@ -655,34 +667,36 @@ async def _update_revision_by_request_id(
     request_id: str,
     patch: dict[str, Any],
 ) -> Optional[dict[str, Any]]:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _teacher_obj(data_map)
-        revisions = list(iter_mappings(teacher.get("revisions")))
-        updated: Optional[dict[str, Any]] = None
-        cleaned: list[dict[str, Any]] = []
-        for item in revisions:
-            if item.get("request_id") == request_id and item.get("status") in {"pending", "proposed"}:
-                updated = dict(item)
-                updated.update(patch)
-                cleaned.append(updated)
-            else:
-                cleaned.append(item)
-        teacher["revisions"] = cleaned
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
-        return updated
+    async with _nlu_llm_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _teacher_obj(data_map)
+            revisions = list(iter_mappings(teacher.get("revisions")))
+            updated: Optional[dict[str, Any]] = None
+            cleaned: list[dict[str, Any]] = []
+            for item in revisions:
+                if item.get("request_id") == request_id and item.get("status") in {"pending", "proposed"}:
+                    updated = dict(item)
+                    updated.update(patch)
+                    cleaned.append(updated)
+                else:
+                    cleaned.append(item)
+            teacher["revisions"] = cleaned
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
+            return updated
 
 
 async def _append_candidate(webspace_id: str, candidate: dict[str, Any]) -> None:
-    async with async_get_ydoc(webspace_id) as ydoc:
-        data_map = ydoc.get_map("data")
-        teacher = _teacher_obj(data_map)
-        candidates = list(iter_mappings(teacher.get("candidates")))
-        candidates.append(candidate)
-        teacher["candidates"] = candidates[-200:]
-        with ydoc.begin_transaction() as txn:
-            data_map.set(txn, "nlu_teacher", teacher)
+    async with _nlu_llm_write_meta():
+        async with async_get_ydoc(webspace_id) as ydoc:
+            data_map = ydoc.get_map("data")
+            teacher = _teacher_obj(data_map)
+            candidates = list(iter_mappings(teacher.get("candidates")))
+            candidates.append(candidate)
+            teacher["candidates"] = candidates[-200:]
+            with ydoc.begin_transaction() as txn:
+                data_map.set(txn, "nlu_teacher", teacher)
 
 
 @subscribe("nlp.teacher.request")

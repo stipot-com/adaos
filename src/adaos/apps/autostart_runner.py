@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import json
+import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -12,7 +15,7 @@ import traceback
 from http import HTTPStatus
 from pathlib import Path
 from string import Formatter
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 import requests
@@ -48,6 +51,10 @@ from adaos.services.core_slots import (
     write_slot_manifest,
 )
 from adaos.services.node_config import load_config, save_config
+from adaos.services.runtime_memory_profile import (
+    finish_active_runtime_memory_profile,
+    register_active_runtime_memory_profile,
+)
 from adaos.services.runtime_paths import current_base_dir, current_logs_dir
 from adaos.services.root.client import RootHttpClient
 from adaos.services.root.core_update_sync import build_core_update_report
@@ -60,6 +67,7 @@ from adaos.services.supervisor_memory import (
 
 
 _SKIP_PENDING_UPDATE_ENV = "ADAOS_SKIP_PENDING_CORE_UPDATE"
+_LOG = logging.getLogger("adaos.autostart")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -325,6 +333,37 @@ class _RuntimeMemoryProfileSession:
         self._start_snapshot = None
 
 
+def _install_runtime_profile_signal_handlers(
+    runtime_memory_profile: _RuntimeMemoryProfileSession,
+) -> Callable[[], None]:
+    previous_handlers: dict[int, Any] = {}
+    registered: list[int] = []
+
+    def _handler(signum: int, _frame: Any) -> None:
+        finish_result = finish_active_runtime_memory_profile()
+        if not finish_result.get("ok"):
+            _LOG.warning("runtime memory profile finalize on signal did not complete result=%s", finish_result)
+        raise SystemExit(128 + int(signum))
+
+    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if sig is None:
+            continue
+        try:
+            previous_handlers[int(sig)] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+            registered.append(int(sig))
+        except Exception:
+            continue
+
+    def _restore() -> None:
+        for sig in registered:
+            previous = previous_handlers.get(sig, signal.SIG_DFL)
+            with contextlib.suppress(Exception):
+                signal.signal(sig, previous)
+
+    return _restore
+
+
 def _format_slot_value(template: str, values: dict[str, str]) -> str:
     fields = {field_name for _, field_name, _, _ in Formatter().parse(template) if field_name}
     payload = dict(values)
@@ -450,6 +489,26 @@ def _resume_post_apply_update_transition(current: dict[str, Any], *, plan: dict[
 def _update_validation_webspace_id() -> str:
     value = str(os.getenv("ADAOS_CORE_UPDATE_VALIDATE_WEBSPACE_ID") or "default").strip()
     return value or "default"
+
+
+def _post_commit_quarantine_summary(report: dict[str, Any]) -> str:
+    if not isinstance(report, dict):
+        return ""
+    items: list[str] = []
+    for item in report.get("skills") or []:
+        if not isinstance(item, dict) or not bool(item.get("deactivated")):
+            continue
+        deactivation = item.get("deactivation") if isinstance(item.get("deactivation"), dict) else {}
+        if not bool(deactivation.get("committed_core_switch")):
+            continue
+        skill_label = str(item.get("skill") or "skill")
+        failure_kind = str(item.get("failure_kind") or deactivation.get("failure_kind") or "").strip()
+        failed_stage = str(item.get("failed_stage") or deactivation.get("failed_stage") or "failed").strip() or "failed"
+        label = f"{skill_label}:{failure_kind + '/' if failure_kind else ''}{failed_stage}"
+        items.append(label)
+    if not items:
+        return ""
+    return ", ".join(items[:3]) + (f" (+{len(items) - 3})" if len(items) > 3 else "")
 
 
 def _validation_headers(token: str | None) -> dict[str, str]:
@@ -947,11 +1006,14 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                     failed_total = int(post_commit_skill_checks.get("failed_total") or 0)
                     deactivated_total = int(post_commit_skill_checks.get("deactivated_total") or 0)
                     if failed_total or deactivated_total:
+                        quarantine_summary = _post_commit_quarantine_summary(post_commit_skill_checks)
                         post_commit_note = (
                             f" | skills degraded after commit"
                             f" failed={failed_total}"
                             f" deactivated={deactivated_total}"
                         )
+                        if quarantine_summary:
+                            post_commit_note += f" quarantine={quarantine_summary}"
                 root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
                 status_state = "validated" if root_promotion_required else "succeeded"
                 status_phase = "root_promotion_pending" if root_promotion_required else "validate"
@@ -1169,6 +1231,8 @@ def main() -> None:
 
         runtime_memory_profile = _RuntimeMemoryProfileSession()
         runtime_memory_profile.start()
+        register_active_runtime_memory_profile(runtime_memory_profile)
+        restore_profile_signal_handlers = _install_runtime_profile_signal_handlers(runtime_memory_profile)
 
         phase = "uvicorn.run"
         try:
@@ -1182,7 +1246,11 @@ def main() -> None:
                 access_log=False,
             )
         finally:
-            runtime_memory_profile.finish()
+            restore_profile_signal_handlers()
+            finish_result = finish_active_runtime_memory_profile()
+            if not finish_result.get("ok"):
+                _LOG.warning("runtime memory profile finalize on runner shutdown did not complete result=%s", finish_result)
+            register_active_runtime_memory_profile(None)
             if pidfile is not None:
                 _cleanup_pidfile(pidfile)
     except SystemExit:
