@@ -479,6 +479,12 @@ The intended semantics are:
    - `rollback` if the old slot must be restored
    - `deactivate` if the core/runtime switch remains committed but this skill must be quarantined
 
+Current implementation now also hardens the activation-failure path:
+
+- if pointer cutover succeeds but `rehydrate_runtime` fails, the runtime attempts shutdown hooks on the newly active slot
+- the runtime then restores the previous active version/slot selection, internal-data marker, and deactivation state
+- lifecycle diagnostics for the failed target slot remain persisted for operator inspection
+
 ### Runtime hook direction
 
 The platform should remain functional without custom skill hooks, but the target contract should support optional hooks for stateful skills:
@@ -582,7 +588,7 @@ Use the checklist below as the migration hardening path for the kernel/runtime l
 - [x] define optional lifecycle hooks for `before_deactivate`, `after_activate`, `rehydrate`, and `dispose/drain`
 - [x] make post-activation rehydration a declared runtime phase instead of an implicit side effect
 - [x] persist per-skill migration diagnostics for `persist`, `migrate`, `rehydrate`, and `healthcheck`, not only `prepare/test/activate`
-- [ ] standardize rollback semantics when pointer switch succeeded but rehydration failed
+- [x] standardize rollback semantics when pointer switch succeeded but rehydration failed
 - [ ] standardize deactivate semantics when core switch stays committed but one skill cannot complete rehydration
 - [ ] make projection-backed skills document which branches are canonical and which are rebuildable caches
 - [ ] move Yjs-backed stateful skills toward "durable truth + projection rebuild" instead of "projection is the only truth"

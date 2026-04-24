@@ -152,6 +152,8 @@ lifecycle:
   persist_before_switch: persist_state
   after_activate: after_activate
   rehydrate: rehydrate
+  drain: drain
+  dispose: dispose
   before_deactivate: before_deactivate
 ```
 
@@ -162,9 +164,20 @@ Current behavior:
 - `persist_before_switch` runs against the currently active slot before pointer cutover when an active prepared runtime exists
 - `after_activate` runs after the new slot becomes active
 - `rehydrate` runs after activation to rebuild derived runtime state
+- `drain` runs before rollback/deactivate or activation-failure cleanup when declared
+- `dispose` runs after `drain` and before `before_deactivate` when declared
 - `before_deactivate` runs before explicit deactivate or rollback of the current slot
 
 Lifecycle diagnostics are persisted into slot metadata and surfaced by `adaos skill status --json` through `runtime_status().lifecycle`.
+
+If activation already switched to a new version/slot and `rehydrate` then fails, AdaOS now attempts to restore:
+
+- the previous active version marker
+- the previous active slot selection
+- the previous internal data slot marker
+- the previous deactivation state
+
+The failed target slot keeps its lifecycle diagnostics so operators can inspect the failed `rehydrate`, shutdown hooks, and rollback result.
 
 ## Tool execution and setup
 

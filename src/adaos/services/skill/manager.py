@@ -1129,6 +1129,10 @@ class SkillManager:
     def activate_runtime(self, name: str, *, version: str | None = None, slot: str | None = None) -> str:
         env = self._runtime_env(name)
         source_path: Path | None = None
+        previous_active_version = env.resolve_active_version()
+        previous_active_slot = env.read_active_slot(previous_active_version) if previous_active_version else None
+        previous_internal_slot = env.read_active_internal_slot()
+        previous_deactivation = env.read_deactivation()
         try:
             candidate, _source_kind = self._resolve_runtime_update_source(name, space="workspace")
             if candidate.exists():
@@ -1217,19 +1221,31 @@ class SkillManager:
                 "stage": "activate",
                 "error": str(exc),
             }
+            shutdown_results = self._invoke_shutdown_hooks(
+                env=env,
+                slot=slot_paths,
+                resolved_manifest=target_manifest,
+                payload={
+                    "skill": name,
+                    "version": target_version,
+                    "slot": target_slot,
+                    "reason": "activation_rehydrate_failed",
+                    "state": "deactivating",
+                },
+            )
+            lifecycle.update(shutdown_results)
+            lifecycle["rollback"] = self._restore_runtime_selection(
+                env=env,
+                previous_active_version=previous_active_version,
+                previous_active_slot=previous_active_slot,
+                previous_internal_slot=previous_internal_slot,
+                previous_deactivation=previous_deactivation,
+            )
             metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
             history = metadata.setdefault("history", {})
             history["last_activation_error"] = str(exc)
             history["last_activation_error_at"] = datetime.now(timezone.utc).isoformat()
             env.write_version_metadata(target_version, metadata)
-            try:
-                env.rollback_slot(target_version)
-            except Exception:
-                pass
-            try:
-                env.rollback_internal_slot()
-            except Exception:
-                pass
             raise RuntimeError(f"activation rehydrate failed: {exc}") from exc
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot
@@ -1265,12 +1281,11 @@ class SkillManager:
         current_paths = env.build_slot_paths(version, current_slot)
         current_manifest = self._read_json_dict(current_paths.resolved_manifest)
         lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=current_slot)
-        try:
-            lifecycle["before_deactivate"] = self._invoke_slot_lifecycle_hook(
+        lifecycle.update(
+            self._invoke_shutdown_hooks(
                 env=env,
                 slot=current_paths,
                 resolved_manifest=current_manifest,
-                hook_key="before_deactivate",
                 payload={
                     "skill": name,
                     "version": version,
@@ -1279,8 +1294,7 @@ class SkillManager:
                     "state": "deactivating",
                 },
             )
-        except Exception as exc:
-            lifecycle["before_deactivate"] = {"ok": False, "error": str(exc), "hook": "before_deactivate"}
+        )
         metadata.setdefault("slots", {}).setdefault(current_slot, {})["lifecycle"] = dict(lifecycle)
         env.write_version_metadata(version, metadata)
         restored_slot = env.rollback_slot(version)
@@ -1288,6 +1302,14 @@ class SkillManager:
             env.rollback_internal_slot()
         except Exception as exc:
             raise RuntimeError(f"runtime slot restored to {restored_slot}, internal data rollback failed: {exc}") from exc
+        lifecycle["rollback"] = {
+            "ok": True,
+            "skipped": False,
+            "restored_active_version": version,
+            "restored_active_slot": restored_slot,
+        }
+        metadata.setdefault("slots", {}).setdefault(current_slot, {})["lifecycle"] = dict(lifecycle)
+        env.write_version_metadata(version, metadata)
         return restored_slot
 
     def dev_rollback_runtime(self, name: str) -> str:
@@ -1352,12 +1374,11 @@ class SkillManager:
         active_paths = env.build_slot_paths(version, active_slot)
         active_manifest = self._read_json_dict(active_paths.resolved_manifest)
         lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=active_slot)
-        try:
-            lifecycle["before_deactivate"] = self._invoke_slot_lifecycle_hook(
+        lifecycle.update(
+            self._invoke_shutdown_hooks(
                 env=env,
                 slot=active_paths,
                 resolved_manifest=active_manifest,
-                hook_key="before_deactivate",
                 payload={
                     "skill": name,
                     "version": version,
@@ -1366,8 +1387,7 @@ class SkillManager:
                     "state": "deactivating",
                 },
             )
-        except Exception as exc:
-            lifecycle["before_deactivate"] = {"ok": False, "error": str(exc), "hook": "before_deactivate"}
+        )
         metadata.setdefault("slots", {}).setdefault(active_slot, {})["lifecycle"] = dict(lifecycle)
         env.write_version_metadata(version, metadata)
         payload = {
@@ -2244,9 +2264,12 @@ class SkillManager:
         return {
             "persist": {"ok": False, "skipped": True, "reason": "not_activated"},
             "migrate": {},
+            "drain": {"ok": False, "skipped": True, "reason": "not_triggered"},
+            "dispose": {"ok": False, "skipped": True, "reason": "not_triggered"},
             "after_activate": {"ok": False, "skipped": True, "reason": "not_activated"},
             "rehydrate": {"ok": False, "skipped": True, "reason": "not_activated"},
             "before_deactivate": {"ok": False, "skipped": True, "reason": "not_triggered"},
+            "rollback": {"ok": False, "skipped": True, "reason": "not_triggered"},
             "healthcheck": {},
         }
 
@@ -2478,6 +2501,71 @@ class SkillManager:
                 "state": "persist_before_switch",
             },
         )
+
+    def _invoke_shutdown_hooks(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        slot: SkillSlotPaths,
+        resolved_manifest: Mapping[str, Any],
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for hook_key in ("drain", "dispose", "before_deactivate"):
+            try:
+                results[hook_key] = self._invoke_slot_lifecycle_hook(
+                    env=env,
+                    slot=slot,
+                    resolved_manifest=resolved_manifest,
+                    hook_key=hook_key,
+                    payload=payload,
+                )
+            except Exception as exc:
+                results[hook_key] = {
+                    "ok": False,
+                    "skipped": False,
+                    "hook": hook_key,
+                    "error": str(exc),
+                }
+        return results
+
+    def _restore_runtime_selection(
+        self,
+        *,
+        env: SkillRuntimeEnvironment,
+        previous_active_version: str | None,
+        previous_active_slot: str | None,
+        previous_internal_slot: str | None,
+        previous_deactivation: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "ok": True,
+            "restored_active_version": str(previous_active_version or ""),
+            "restored_active_slot": str(previous_active_slot or ""),
+            "restored_internal_slot": str(previous_internal_slot or ""),
+            "restored_deactivation": bool(previous_deactivation),
+        }
+        try:
+            if previous_active_version:
+                env.prepare_version(previous_active_version)
+                if previous_active_slot:
+                    env.set_active_slot(previous_active_version, previous_active_slot)
+                env.active_version_marker().write_text(previous_active_version, encoding="utf-8")
+            else:
+                try:
+                    env.active_version_marker().unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if previous_internal_slot:
+                env.set_active_internal_slot(previous_internal_slot.upper())
+            if previous_deactivation:
+                env.write_deactivation(dict(previous_deactivation))
+            else:
+                env.clear_deactivation()
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+        return result
 
     def _migrate_internal_data(
         self,
@@ -2892,6 +2980,10 @@ class SkillManager:
         target_manifest = self._read_json_dict(manifest_path)
         lifecycle = self._slot_lifecycle_state(metadata=metadata, slot=target_slot)
         lifecycle["persist"] = {"ok": True, "skipped": True, "hook": "persist_before_switch", "reason": "dev_runtime"}
+        previous_active_version = env.resolve_active_version()
+        previous_active_slot = env.read_active_slot(previous_active_version) if previous_active_version else None
+        previous_internal_slot = env.read_active_internal_slot()
+        previous_deactivation = env.read_deactivation()
         env.set_active_slot(target_version, target_slot)
         env.set_active_internal_slot(target_slot)
         env.active_version_marker().write_text(target_version, encoding="utf-8")
@@ -2913,16 +3005,30 @@ class SkillManager:
             lifecycle["healthcheck"] = {"ok": True, "stage": "activate"}
         except Exception as exc:
             lifecycle["healthcheck"] = {"ok": False, "stage": "activate", "error": str(exc)}
+            lifecycle.update(
+                self._invoke_shutdown_hooks(
+                    env=env,
+                    slot=slot_paths,
+                    resolved_manifest=target_manifest,
+                    payload={
+                        "skill": name,
+                        "version": target_version,
+                        "slot": target_slot,
+                        "reason": "activation_rehydrate_failed",
+                        "state": "deactivating",
+                        "dev": True,
+                    },
+                )
+            )
+            lifecycle["rollback"] = self._restore_runtime_selection(
+                env=env,
+                previous_active_version=previous_active_version,
+                previous_active_slot=previous_active_slot,
+                previous_internal_slot=previous_internal_slot,
+                previous_deactivation=previous_deactivation,
+            )
             metadata.setdefault("slots", {}).setdefault(target_slot, {})["lifecycle"] = dict(lifecycle)
             env.write_version_metadata(target_version, metadata)
-            try:
-                env.rollback_slot(target_version)
-            except Exception:
-                pass
-            try:
-                env.rollback_internal_slot()
-            except Exception:
-                pass
             raise RuntimeError(f"activation rehydrate failed: {exc}") from exc
         history = metadata.setdefault("history", {})
         history["last_active_slot"] = target_slot

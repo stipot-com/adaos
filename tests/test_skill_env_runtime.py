@@ -581,3 +581,155 @@ def test_deactivate_runtime_runs_before_deactivate_hook(monkeypatch) -> None:
     assert payload["deactivated"] is True
     assert [name for name, _payload in calls] == ["before_deactivate_tool"]
     assert status["lifecycle"]["before_deactivate"]["tool"] == "before_deactivate_tool"
+
+
+def test_deactivate_runtime_runs_shutdown_hooks_in_order(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "shutdown_hooks_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: shutdown_hooks_skill\nversion: '1.0.0'\n", encoding="utf-8")
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(
+        mgr,
+        "_enrich_manifest",
+        lambda **kwargs: {
+            "name": skill_name,
+            "version": "1.0.0",
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {
+                "skill_env": str(kwargs["slot"].skill_env_path),
+                "skill_memory": str(kwargs["slot"].skill_memory_path),
+                "python_paths": [],
+            },
+            "tools": {
+                "drain_tool": {"module": "skills.shutdown_hooks_skill.handlers.main", "callable": "drain_tool"},
+                "dispose_tool": {"module": "skills.shutdown_hooks_skill.handlers.main", "callable": "dispose_tool"},
+                "before_deactivate_tool": {
+                    "module": "skills.shutdown_hooks_skill.handlers.main",
+                    "callable": "before_deactivate_tool",
+                },
+            },
+            "lifecycle": {
+                "drain": "drain_tool",
+                "dispose": "dispose_tool",
+                "before_deactivate": "before_deactivate_tool",
+            },
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        },
+    )
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    calls: list[str | None] = []
+
+    def _fake_execute_tool(skill_dir_arg, *, module=None, attr=None, payload=None, extra_paths=None):
+        calls.append(attr)
+        return {"ok": True, "attr": attr}
+
+    monkeypatch.setattr(skill_manager_module, "execute_tool", _fake_execute_tool)
+
+    mgr.prepare_runtime(skill_name, run_tests=False, preferred_slot="A")
+    mgr.activate_runtime(skill_name, version="1.0.0", slot="A")
+    status = mgr.runtime_status(skill_name)
+    assert status["lifecycle"]["drain"]["skipped"] is True
+
+    mgr.deactivate_runtime(skill_name, reason="manual_check")
+    status = mgr.runtime_status(skill_name)
+
+    assert calls == ["drain_tool", "dispose_tool", "before_deactivate_tool"]
+    assert status["lifecycle"]["drain"]["tool"] == "drain_tool"
+    assert status["lifecycle"]["dispose"]["tool"] == "dispose_tool"
+    assert status["lifecycle"]["before_deactivate"]["tool"] == "before_deactivate_tool"
+
+
+def test_failed_rehydrate_restores_previous_active_version(monkeypatch) -> None:
+    ctx = get_ctx()
+    mgr = SkillManager(git=ctx.git, paths=ctx.paths, caps=_Caps())
+    skill_name = "rehydrate_restore_skill"
+    skill_dir = Path(ctx.paths.skills_dir()) / skill_name
+    (skill_dir / "handlers").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "handlers" / "main.py").write_text("def handle(payload=None):\n    return payload or {}\n", encoding="utf-8")
+    (skill_dir / "skill.yaml").write_text("name: rehydrate_restore_skill\nversion: '2.0.0'\n", encoding="utf-8")
+
+    env = SkillRuntimeEnvironment(skills_root=Path(ctx.paths.skills_dir()), skill_name=skill_name)
+    env.prepare_version("1.0.0")
+    env.prepare_version("2.0.0")
+    env.active_version_marker().write_text("1.0.0", encoding="utf-8")
+    env.set_active_slot("1.0.0", "A")
+    env.set_active_internal_slot("A")
+
+    def _fake_enrich_manifest(**kwargs):
+        version = kwargs["manifest"].get("version") or "0.0.0"
+        return {
+            "name": skill_name,
+            "version": version,
+            "slot": kwargs["slot"].slot,
+            "source": str(kwargs["skill_dir"]),
+            "runtime": {
+                "skill_env": str(kwargs["slot"].skill_env_path),
+                "skill_memory": str(kwargs["slot"].skill_memory_path),
+                "python_paths": [],
+            },
+            "tools": {
+                "rehydrate_tool": {"module": "skills.rehydrate_restore_skill.handlers.main", "callable": "rehydrate_tool"},
+                "drain_tool": {"module": "skills.rehydrate_restore_skill.handlers.main", "callable": "drain_tool"},
+                "dispose_tool": {"module": "skills.rehydrate_restore_skill.handlers.main", "callable": "dispose_tool"},
+                "before_deactivate_tool": {
+                    "module": "skills.rehydrate_restore_skill.handlers.main",
+                    "callable": "before_deactivate_tool",
+                },
+            },
+            "lifecycle": {
+                "rehydrate": "rehydrate_tool",
+                "drain": "drain_tool",
+                "dispose": "dispose_tool",
+                "before_deactivate": "before_deactivate_tool",
+            },
+            "default_tool": "",
+            "data_migration_tool": "",
+            "data_migration": {},
+        }
+
+    monkeypatch.setattr(mgr, "_prepare_runtime_environment", lambda **kwargs: (Path("python"), []))
+    monkeypatch.setattr(mgr, "_enrich_manifest", _fake_enrich_manifest)
+    monkeypatch.setattr(skill_manager_module, "install_skill_in_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mgr, "_smoke_import", lambda **kwargs: None)
+
+    calls: list[str | None] = []
+
+    def _fake_execute_tool(skill_dir_arg, *, module=None, attr=None, payload=None, extra_paths=None):
+        calls.append(attr)
+        if attr == "rehydrate_tool":
+            raise RuntimeError("rehydrate exploded")
+        return {"ok": True, "attr": attr}
+
+    monkeypatch.setattr(skill_manager_module, "execute_tool", _fake_execute_tool)
+
+    mgr.prepare_runtime(skill_name, version_override="1.0.0", run_tests=False, preferred_slot="A")
+    mgr.prepare_runtime(skill_name, version_override="2.0.0", run_tests=False, preferred_slot="B")
+
+    try:
+        mgr.activate_runtime(skill_name, version="2.0.0", slot="B")
+    except RuntimeError as exc:
+        assert "activation rehydrate failed" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected activation failure")
+
+    assert env.resolve_active_version() == "1.0.0"
+    assert env.read_active_slot("1.0.0") == "A"
+    status = mgr.runtime_status(skill_name)
+    assert status["version"] == "1.0.0"
+
+    failed_meta = env.read_version_metadata("2.0.0")
+    failed_lifecycle = failed_meta["slots"]["B"]["lifecycle"]
+    assert failed_lifecycle["healthcheck"]["ok"] is False
+    assert failed_lifecycle["rollback"]["ok"] is True
+    assert failed_lifecycle["rollback"]["restored_active_version"] == "1.0.0"
+    assert calls == ["rehydrate_tool", "drain_tool", "dispose_tool", "before_deactivate_tool"]
