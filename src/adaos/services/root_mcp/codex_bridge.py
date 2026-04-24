@@ -516,6 +516,74 @@ class CodexRootMcpBridge:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "get_yjs_logs",
+                "description": "Read bounded YJS log tails captured in the root-visible logs directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_skill_logs",
+                "description": "Read bounded skill service log tails captured in the root-visible logs directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "skill": {"type": "string"},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_adaos_logs",
+                "description": "Read bounded adaos.log tails captured in the root-visible logs directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_events_logs",
+                "description": "Read bounded events.log tails captured in the root-visible logs directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
+                        "contains": {"type": "string"},
+                        "file": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_info",
+                "description": "Read the currently scoped root-known subnet information and visible sessions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -651,6 +719,45 @@ class CodexRootMcpBridge:
                     until_ts=float(args["until_ts"]) if args.get("until_ts") is not None else None,
                 )
             )
+        if tool == "get_yjs_logs":
+            return _tool_text(
+                client.get_yjs_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                )
+            )
+        if tool == "get_skill_logs":
+            return _tool_text(
+                client.get_skill_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    skill=_normalize_text(args.get("skill")),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                )
+            )
+        if tool == "get_adaos_logs":
+            return _tool_text(
+                client.get_adaos_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                )
+            )
+        if tool == "get_events_logs":
+            return _tool_text(
+                client.get_events_logs(
+                    limit=int(args.get("limit") or 5),
+                    lines=int(args.get("lines") or 200),
+                    contains=_normalize_text(args.get("contains")),
+                    file=_normalize_text(args.get("file")),
+                )
+            )
+        if tool == "get_subnet_info":
+            return _tool_text(client.get_subnet_info(target_id=_normalize_text(args.get("target_id"))))
         raise KeyError(tool)
 
     def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:

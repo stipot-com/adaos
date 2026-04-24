@@ -282,6 +282,84 @@ def test_root_mcp_reads_yjs_load_mark_history(monkeypatch) -> None:
     assert payload["history"]["items"][0]["bucket_id"] == "_by_owner/unknown"
 
 
+def test_root_mcp_reads_log_categories(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    client = _make_client()
+    headers = {
+        "X-Owner-Token": "owner-secret",
+        "X-AdaOS-Subnet-Id": "subnet:test-zone",
+        "X-AdaOS-Zone": "lab-a",
+    }
+
+    from adaos.apps.api import root_endpoints
+
+    (tmp_path / "adaos.log").write_text("line-1\nline-2\n", encoding="utf-8")
+    (tmp_path / "events.log").write_text("evt-1\nevt-2\n", encoding="utf-8")
+    (tmp_path / "yjs_load_mark.jsonl").write_text('{"ts":1}\n', encoding="utf-8")
+    (tmp_path / "service.infra_access_skill.log").write_text("svc-1\nsvc-2\n", encoding="utf-8")
+    monkeypatch.setattr(root_endpoints, "_root_logs_dir", lambda: tmp_path)
+
+    adaos_resp = client.get("/v1/root/mcp/logs/adaos", headers=headers, params={"lines": 1})
+    assert adaos_resp.status_code == 200
+    assert adaos_resp.json()["logs"]["items"][0]["name"] == "adaos.log"
+    assert adaos_resp.json()["logs"]["items"][0]["tail"] == ["line-2"]
+
+    skills_resp = client.get(
+        "/v1/root/mcp/logs/skills",
+        headers=headers,
+        params={"skill": "infra_access_skill", "lines": 2},
+    )
+    assert skills_resp.status_code == 200
+    assert skills_resp.json()["logs"]["items"][0]["name"] == "service.infra_access_skill.log"
+
+    yjs_resp = client.get("/v1/root/mcp/logs/yjs", headers=headers)
+    assert yjs_resp.status_code == 200
+    assert yjs_resp.json()["logs"]["items"][0]["name"] == "yjs_load_mark.jsonl"
+
+
+def test_root_mcp_subnet_info_uses_scope_and_known_state(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_ROOT_OWNER_TOKEN", "owner-secret")
+    client = _make_client()
+    headers = {
+        "X-Owner-Token": "owner-secret",
+        "X-AdaOS-Subnet-Id": "subnet:test-zone",
+        "X-AdaOS-Zone": "lab-a",
+    }
+
+    from adaos.apps.api import root_endpoints
+
+    class _FakeDirectory:
+        def list_known_nodes(self) -> list[dict[str, object]]:
+            return [
+                {"node_id": "node-1", "subnet_id": "subnet:test-zone", "online": True},
+                {"node_id": "node-2", "subnet_id": "subnet:other", "online": False},
+            ]
+
+    monkeypatch.setattr(root_endpoints, "get_directory", lambda: _FakeDirectory())
+    monkeypatch.setattr(
+        root_endpoints,
+        "list_mcp_session_leases",
+        lambda **kwargs: [
+            {"session_id": "sess-1", "subnet_id": "subnet:test-zone", "status": "active", "target_ids": ["hub:test-zone"]},
+            {"session_id": "sess-2", "subnet_id": "subnet:other", "status": "active", "target_ids": ["hub:other"]},
+        ],
+    )
+    monkeypatch.setattr(
+        root_endpoints,
+        "get_managed_target",
+        lambda target_id: {"target_id": target_id, "subnet_id": "subnet:test-zone"} if target_id == "hub:test-zone" else None,
+    )
+
+    resp = client.get("/v1/root/mcp/subnet/info", headers=headers, params={"target_id": "hub:test-zone"})
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["scope"]["subnet_id"] == "subnet:test-zone"
+    assert payload["subnet"]["target_id"] == "hub:test-zone"
+    assert payload["subnet"]["node_summary"]["total_known"] == 1
+    assert payload["subnet"]["session_summary"]["active_visible"] == 1
+
+
 def test_descriptor_cache_refresh_records_publish_lifecycle(monkeypatch, tmp_path) -> None:
     from adaos.services.root_mcp import registry as descriptor_registry
 

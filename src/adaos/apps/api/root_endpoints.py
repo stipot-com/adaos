@@ -3,6 +3,7 @@ import json
 import hashlib
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -50,6 +51,7 @@ from adaos.services.root_mcp.sessions import (
 )
 from adaos.services.root_mcp.targets import upsert_managed_target
 from adaos.services.root_mcp.tokens import issue_access_token, list_access_tokens, revoke_access_token, validate_access_token
+from adaos.services.registry.subnet_directory import get_directory
 
 router = APIRouter()
 root_router = APIRouter(prefix="/v1/root", tags=["root"])
@@ -293,6 +295,164 @@ def _allowed_target_ids(auth: dict[str, Any]) -> list[str]:
         if token and token not in out:
             out.append(token)
     return out
+
+
+def _root_logs_dir() -> Path:
+    ctx = get_ctx()
+    raw = ctx.paths.logs_dir()
+    path = Path(raw() if callable(raw) else raw)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _tail_text_lines(path: Path, *, max_lines: int) -> list[str]:
+    if max_lines <= 0 or not path.exists():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").splitlines()[-max_lines:]
+    except Exception:
+        return []
+
+
+def _match_log_category(category: str, name: str, *, contains: str | None = None, skill: str | None = None) -> bool:
+    token = str(name or "").strip()
+    contains_token = str(contains or "").strip()
+    if contains_token and contains_token not in token:
+        return False
+    if category == "adaos":
+        return token == "adaos.log" or token.startswith("adaos.log.")
+    if category == "events":
+        return token == "events.log" or token.startswith("events.log.")
+    if category == "yjs":
+        return token == "yjs_load_mark.jsonl" or "yjs" in token
+    if category == "skills":
+        if token == "service.log" or not token.startswith("service.") or not token.endswith(".log"):
+            return False
+        skill_token = str(skill or "").strip()
+        if not skill_token:
+            return True
+        return token == f"service.{skill_token}.log"
+    return False
+
+
+def _list_root_local_logs(
+    *,
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+) -> dict[str, Any]:
+    logs_dir = _root_logs_dir()
+    max_files = max(1, min(int(limit), 50))
+    max_lines = max(1, min(int(lines), 2000))
+    requested_file = str(file or "").strip().replace("\\", "/")
+    items: list[dict[str, Any]] = []
+
+    if requested_file:
+        path = (logs_dir / requested_file).resolve()
+        if logs_dir.resolve() not in [path, *path.parents]:
+            return {
+                "category": category,
+                "source_mode": "root_local_logs_dir",
+                "available": False,
+                "error": "path_outside_logs_dir",
+                "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": requested_file},
+                "items": [],
+            }
+        if path.exists() and path.is_file() and _match_log_category(category, path.name, contains=contains, skill=skill):
+            stat = path.stat()
+            items.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "rel": requested_file,
+                    "size_bytes": int(stat.st_size),
+                    "modified_at": _iso_utc(stat.st_mtime),
+                    "tail": _tail_text_lines(path, max_lines=max_lines),
+                }
+            )
+        return {
+            "category": category,
+            "source_mode": "root_local_logs_dir",
+            "available": bool(items),
+            "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": requested_file},
+            "items": items,
+        }
+
+    candidates = []
+    for entry in logs_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if _match_log_category(category, entry.name, contains=contains, skill=skill):
+            candidates.append(entry)
+    candidates.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0.0, reverse=True)
+    for path in candidates[:max_files]:
+        stat = path.stat()
+        items.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "rel": path.name,
+                "size_bytes": int(stat.st_size),
+                "modified_at": _iso_utc(stat.st_mtime),
+                "tail": _tail_text_lines(path, max_lines=max_lines),
+            }
+        )
+    return {
+        "category": category,
+        "source_mode": "root_local_logs_dir",
+        "available": True,
+        "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": None},
+        "items": items,
+    }
+
+
+def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = None, target_id: str | None = None) -> dict[str, Any]:
+    scope_subnet = str(auth.get("subnet_id") or "").strip()
+    allowed_target_ids = _allowed_target_ids(auth)
+    requested_target_id = str(target_id or "").strip()
+    if requested_target_id and allowed_target_ids and requested_target_id not in allowed_target_ids:
+        raise HTTPException(status_code=403, detail={"code": "target_forbidden", "message": "Managed target is outside the token target allowlist."})
+    effective_target_id = requested_target_id or (allowed_target_ids[0] if allowed_target_ids else "")
+    inferred_subnet = (
+        str(subnet_id or "").strip()
+        or (effective_target_id[len("hub:") :] if effective_target_id.startswith("hub:") else "")
+        or scope_subnet
+    )
+    if not inferred_subnet:
+        raise HTTPException(status_code=400, detail={"code": "missing_params", "message": "subnet_id or target_id is required."})
+    if scope_subnet and inferred_subnet != scope_subnet:
+        raise HTTPException(status_code=403, detail={"code": "scope_mismatch", "message": "Requested subnet scope does not match access token scope."})
+    target = get_managed_target(effective_target_id) if effective_target_id else None
+    directory = get_directory()
+    nodes = [item for item in directory.list_known_nodes() if str(item.get("subnet_id") or "").strip() == inferred_subnet]
+    sessions = list_mcp_session_leases(limit=200, target_id=effective_target_id or None, active_only=False)
+    visible_sessions = [
+        item
+        for item in sessions
+        if str(item.get("subnet_id") or "").strip() == inferred_subnet
+        or (effective_target_id and effective_target_id in list(item.get("target_ids") or []))
+    ]
+    return {
+        "source_mode": "root_known_subnet_state",
+        "subnet_id": inferred_subnet,
+        "zone": str(auth.get("zone") or "").strip() or None,
+        "target_id": effective_target_id or None,
+        "allowed_target_ids": allowed_target_ids,
+        "managed_target": target,
+        "known_nodes": nodes,
+        "node_summary": {
+            "total_known": len(nodes),
+            "online_known": sum(1 for item in nodes if bool(item.get("online"))),
+        },
+        "visible_sessions": visible_sessions[:25],
+        "session_summary": {
+            "total_visible": len(visible_sessions),
+            "active_visible": sum(1 for item in visible_sessions if str(item.get("status") or "") == "active"),
+        },
+    }
 
 
 def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
@@ -1114,6 +1274,61 @@ async def root_mcp_yjs_load_mark_history(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "history": history,
+    }
+
+
+@root_router.get("/mcp/logs/{category}")
+async def root_mcp_logs(
+    category: str,
+    limit: int = 5,
+    lines: int = 200,
+    contains: str | None = None,
+    skill: str | None = None,
+    file: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    category_token = str(category or "").strip().lower()
+    if category_token not in {"adaos", "events", "yjs", "skills"}:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Unknown log category."})
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    payload = _list_root_local_logs(
+        category=category_token,
+        limit=limit,
+        lines=lines,
+        contains=contains,
+        skill=skill,
+        file=file,
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "logs": payload,
+    }
+
+
+@root_router.get("/mcp/subnet/info")
+async def root_mcp_subnet_info(
+    target_id: str | None = None,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    info = _build_root_subnet_info(auth=auth, subnet_id=scope.get("subnet_id"), target_id=target_id)
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "subnet": info,
     }
 
 

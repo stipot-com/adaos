@@ -174,6 +174,34 @@ class _FakeRootMcpClient:
         )
         return {"history": {"count": 1, "items": [{"bucket_id": bucket_id or "_by_owner/unknown"}]}}
 
+    def get_yjs_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
+        self.calls.append(("get_yjs_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+        return {"logs": {"category": "yjs", "items": [{"rel": file or "yjs_load_mark.jsonl"}]}}
+
+    def get_skill_logs(
+        self,
+        *,
+        limit: int = 5,
+        lines: int = 200,
+        skill: str | None = None,
+        contains: str | None = None,
+        file: str | None = None,
+    ) -> dict:
+        self.calls.append(("get_skill_logs", skill or "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+        return {"logs": {"category": "skills", "items": [{"rel": f"service.{skill or 'infra_access_skill'}.log"}]}}
+
+    def get_adaos_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
+        self.calls.append(("get_adaos_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+        return {"logs": {"category": "adaos", "items": [{"rel": "adaos.log"}]}}
+
+    def get_events_logs(self, *, limit: int = 5, lines: int = 200, contains: str | None = None, file: str | None = None) -> dict:
+        self.calls.append(("get_events_logs", "", {"limit": limit, "lines": lines, "contains": contains, "file": file}))
+        return {"logs": {"category": "events", "items": [{"rel": file or "events.log"}]}}
+
+    def get_subnet_info(self, *, target_id: str | None = None) -> dict:
+        self.calls.append(("get_subnet_info", target_id or "", {}))
+        return {"subnet": {"target_id": target_id or "hub:test-subnet", "subnet_id": "test-subnet"}}
+
 
 def test_codex_bridge_profile_roundtrip(tmp_path: Path) -> None:
     profile_path, token_path = bridge_mod.default_profile_paths(tmp_path, "adaos-test-hub")
@@ -260,6 +288,22 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
             },
         }
     )
+    yjs_logs = bridge.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "get_yjs_logs", "arguments": {"limit": 3, "lines": 120, "contains": "load_mark"}},
+        }
+    )
+    subnet_info = bridge.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {"name": "get_subnet_info", "arguments": {}},
+        }
+    )
 
     assert initialize is not None
     assert initialize["result"]["serverInfo"]["name"] == "adaos-test-hub"
@@ -274,6 +318,11 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
     assert "list_profileops_sessions" in tool_names
     assert "start_profileops_session" in tool_names
     assert "get_yjs_load_mark_history" in tool_names
+    assert "get_yjs_logs" in tool_names
+    assert "get_skill_logs" in tool_names
+    assert "get_adaos_logs" in tool_names
+    assert "get_events_logs" in tool_names
+    assert "get_subnet_info" in tool_names
     assert status is not None
     assert status["result"]["structuredContent"]["target_id"] == "hub:test-subnet"
     assert architecture is not None
@@ -284,11 +333,17 @@ def test_codex_bridge_handles_initialize_and_tool_calls(monkeypatch) -> None:
     assert profileops_start["result"]["structuredContent"]["profile"]["control"]["session"]["profile_mode"] == "trace_profile"
     assert load_mark_history is not None
     assert load_mark_history["result"]["structuredContent"]["history"]["count"] == 1
+    assert yjs_logs is not None
+    assert yjs_logs["result"]["structuredContent"]["logs"]["category"] == "yjs"
+    assert subnet_info is not None
+    assert subnet_info["result"]["structuredContent"]["subnet"]["subnet_id"] == "test-subnet"
     assert ("get_target_status", "hub:test-subnet", {}) in fake_client.calls
     assert ("get_adaos_dev_architecture_catalog", "", {}) in fake_client.calls
     assert ("get_profileops_status", "hub:test-subnet", {}) in fake_client.calls
     assert ("start_profileops_session", "hub:test-subnet", {"profile_mode": "trace_profile", "reason": "root_mcp.memory.start", "trigger_source": "root_mcp"}) in fake_client.calls
     assert ("get_yjs_load_mark_history", "desktop", {"limit": 25, "kind": "owner", "bucket_id": "_by_owner/unknown", "display_contains": None, "status": None, "last_source": None, "since_ts": None, "until_ts": None}) in fake_client.calls
+    assert ("get_yjs_logs", "", {"limit": 3, "lines": 120, "contains": "load_mark", "file": None}) in fake_client.calls
+    assert ("get_subnet_info", "", {}) in fake_client.calls
 
 
 def test_build_codex_stdio_command_uses_profile_and_server_name(tmp_path: Path) -> None:
