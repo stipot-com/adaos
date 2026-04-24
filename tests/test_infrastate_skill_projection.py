@@ -1007,7 +1007,18 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
                 "deactivated_total": 1,
                 "skills": [
                     {"skill": "weather_skill", "ok": True},
-                    {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate", "deactivated": True},
+                    {
+                        "skill": "voice_skill",
+                        "ok": False,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                        "deactivated": True,
+                        "deactivation": {
+                            "committed_core_switch": True,
+                            "failure_kind": "lifecycle",
+                            "failed_stage": "rehydrate",
+                        },
+                    },
                 ],
             }
         },
@@ -1020,6 +1031,7 @@ def test_infrastate_skill_post_commit_helpers_report_deactivations():
     assert "voice_skill:lifecycle/rehydrate" in note
     assert "lifecycle_failed=1" in note
     assert "deactivated=1" in note
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in note
 
 
 def test_infrastate_core_update_diagnostics_include_required_local_payloads(monkeypatch, tmp_path: Path):

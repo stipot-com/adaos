@@ -187,6 +187,7 @@ That means a skill may be marked failed or selectively deactivated because `rehy
 
 Operator-facing migration reports also surface lifecycle failures separately from test failures, so a `lifecycle/rehydrate` failure is visible as a first-class shutdown/migration issue rather than only as a generic failed skill.
 This same metadata is also written into the deactivation marker when a skill is selectively quarantined after a committed core switch.
+Supervisor-facing validation status and operator projections now also surface a compact quarantine summary, so post-commit status can show which skill was quarantined and at which lifecycle/test stage.
 
 ## Tool execution and setup
 

@@ -590,6 +590,7 @@ They should also treat persisted lifecycle diagnostics as first-class health sig
 Current implementation now feeds lifecycle diagnostics into the skill runtime migration report and allows post-commit checks to fail and selectively deactivate a skill before test execution when runtime lifecycle health is already known to be bad.
 Operator-facing projections now also distinguish lifecycle failures from plain test failures, so reports can show `lifecycle/rehydrate` instead of collapsing everything into `tests`.
 Selective deactivation now also persists that same failure contract in the skill deactivation marker, so the runtime can distinguish "manually deactivated" from "quarantined after committed core switch because `lifecycle/rehydrate` failed".
+That quarantine metadata is now propagated into operator-facing notes and post-validation status messages, so the supervisor-visible transition summary can name the quarantined skill and failing stage directly.
 
 ### Roadmap checklist
 

@@ -507,7 +507,18 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
             "deactivated_total": 1,
             "skills": [
                 {"skill": "weather_skill", "ok": True},
-                {"skill": "voice_skill", "ok": False, "failure_kind": "lifecycle", "failed_stage": "rehydrate", "deactivated": True},
+                {
+                    "skill": "voice_skill",
+                    "ok": False,
+                    "failure_kind": "lifecycle",
+                    "failed_stage": "rehydrate",
+                    "deactivated": True,
+                    "deactivation": {
+                        "committed_core_switch": True,
+                        "failure_kind": "lifecycle",
+                        "failed_stage": "rehydrate",
+                    },
+                },
             ],
         },
     )
@@ -521,6 +532,7 @@ def test_infrascope_adds_skill_post_commit_operation_row(monkeypatch):
     assert "voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
     assert "lifecycle_failed=1" in rows[0]["subtitle"]
     assert "deactivated=1" in rows[0]["subtitle"]
+    assert "quarantine=voice_skill:lifecycle/rehydrate" in rows[0]["subtitle"]
 
 
 def test_infrascope_list_inventory_returns_local_fallback_when_empty(monkeypatch):

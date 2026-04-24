@@ -491,6 +491,26 @@ def _update_validation_webspace_id() -> str:
     return value or "default"
 
 
+def _post_commit_quarantine_summary(report: dict[str, Any]) -> str:
+    if not isinstance(report, dict):
+        return ""
+    items: list[str] = []
+    for item in report.get("skills") or []:
+        if not isinstance(item, dict) or not bool(item.get("deactivated")):
+            continue
+        deactivation = item.get("deactivation") if isinstance(item.get("deactivation"), dict) else {}
+        if not bool(deactivation.get("committed_core_switch")):
+            continue
+        skill_label = str(item.get("skill") or "skill")
+        failure_kind = str(item.get("failure_kind") or deactivation.get("failure_kind") or "").strip()
+        failed_stage = str(item.get("failed_stage") or deactivation.get("failed_stage") or "failed").strip() or "failed"
+        label = f"{skill_label}:{failure_kind + '/' if failure_kind else ''}{failed_stage}"
+        items.append(label)
+    if not items:
+        return ""
+    return ", ".join(items[:3]) + (f" (+{len(items) - 3})" if len(items) > 3 else "")
+
+
 def _validation_headers(token: str | None) -> dict[str, str]:
     headers = {"Accept": "application/json"}
     if token:
@@ -986,11 +1006,14 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                     failed_total = int(post_commit_skill_checks.get("failed_total") or 0)
                     deactivated_total = int(post_commit_skill_checks.get("deactivated_total") or 0)
                     if failed_total or deactivated_total:
+                        quarantine_summary = _post_commit_quarantine_summary(post_commit_skill_checks)
                         post_commit_note = (
                             f" | skills degraded after commit"
                             f" failed={failed_total}"
                             f" deactivated={deactivated_total}"
                         )
+                        if quarantine_summary:
+                            post_commit_note += f" quarantine={quarantine_summary}"
                 root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
                 status_state = "validated" if root_promotion_required else "succeeded"
                 status_phase = "root_promotion_pending" if root_promotion_required else "validate"
