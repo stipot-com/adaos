@@ -142,6 +142,10 @@ def _supervisor_runtime_state_path() -> Path:
     return (_supervisor_state_dir() / "runtime.json").resolve()
 
 
+def _supervisor_hub_root_watchdog_log_path() -> Path:
+    return (_supervisor_state_dir() / "hub_root_watchdog.jsonl").resolve()
+
+
 def _supervisor_update_attempt_path() -> Path:
     return (_supervisor_state_dir() / "update_attempt.json").resolve()
 
@@ -227,6 +231,28 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _read_jsonl_tail(path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    items: list[dict[str, Any]] = []
+    for line in lines[-max(1, int(limit)):]:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
 
 
 def _local_update_payload() -> dict[str, Any]:
@@ -383,6 +409,34 @@ def _sidecar_restart_circuit_open_sec() -> float:
         return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_SIDECAR_RESTART_CIRCUIT_OPEN_SEC") or "90").strip()))
     except Exception:
         return 90.0
+
+
+def _hub_root_watchdog_enabled() -> bool:
+    raw = os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_WATCHDOG")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _hub_root_watchdog_cooldown_sec() -> float:
+    try:
+        return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_RECONNECT_COOLDOWN_SEC") or "30").strip()))
+    except Exception:
+        return 30.0
+
+
+def _hub_root_watchdog_verify_timeout_sec() -> float:
+    try:
+        return max(0.0, float(str(os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_TIMEOUT_SEC") or "15").strip()))
+    except Exception:
+        return 15.0
+
+
+def _hub_root_watchdog_verify_interval_sec() -> float:
+    try:
+        return max(0.25, float(str(os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_INTERVAL_SEC") or "1").strip()))
+    except Exception:
+        return 1.0
 
 
 def _terminal_update_states() -> set[str]:
@@ -1049,6 +1103,11 @@ class SupervisorManager:
         self._last_error: str | None = None
         self._runtime_unhealthy_since: float | None = None
         self._runtime_unhealthy_kind: str | None = None
+        self._hub_root_watchdog_last_reconnect_at: float | None = None
+        self._hub_root_watchdog_last_state: str | None = None
+        self._hub_root_watchdog_last_reason: str | None = None
+        self._hub_root_watchdog_reconnect_total = 0
+        self._hub_root_watchdog_last_result: dict[str, Any] | None = None
         self._update_task: asyncio.Task[Any] | None = None
         self._update_task_cancel_mode: str | None = None
         self._managed_runtime_instance_id: str | None = None
@@ -1944,7 +2003,10 @@ class SupervisorManager:
 
     def _sidecar_status_payload(self) -> dict[str, Any]:
         role = self._sidecar_role()
-        process = realtime_sidecar_listener_snapshot(self._sidecar_proc, role=role)
+        try:
+            process = realtime_sidecar_listener_snapshot(self._sidecar_proc, role=role)
+        except TypeError:
+            process = realtime_sidecar_listener_snapshot(self._sidecar_proc)
         code_state = self._sidecar_code_state()
         process.update(
             {
@@ -2151,6 +2213,207 @@ class SupervisorManager:
     def _runtime_sidecar_runtime_payload(self) -> dict[str, Any]:
         runtime = self._runtime_reliability_payload(timeout=2.0)
         return dict(runtime.get("sidecar_runtime")) if isinstance(runtime.get("sidecar_runtime"), dict) else {}
+
+    def _hub_root_watchdog_state_payload(self) -> dict[str, Any]:
+        log_path = _supervisor_hub_root_watchdog_log_path()
+        return {
+            "enabled": _hub_root_watchdog_enabled(),
+            "last_state": self._hub_root_watchdog_last_state,
+            "last_reason": self._hub_root_watchdog_last_reason,
+            "last_reconnect_at": self._hub_root_watchdog_last_reconnect_at,
+            "reconnect_total": int(self._hub_root_watchdog_reconnect_total),
+            "cooldown_sec": _hub_root_watchdog_cooldown_sec(),
+            "verify_timeout_sec": _hub_root_watchdog_verify_timeout_sec(),
+            "log_path": str(log_path),
+            "recent_events": _read_jsonl_tail(log_path, limit=10),
+            "last_result": dict(self._hub_root_watchdog_last_result or {}),
+        }
+
+    @staticmethod
+    def _hub_root_channel_state(runtime: dict[str, Any]) -> dict[str, Any]:
+        runtime = runtime if isinstance(runtime, dict) else {}
+        readiness_tree = runtime.get("readiness_tree") if isinstance(runtime.get("readiness_tree"), dict) else {}
+        root_control = readiness_tree.get("root_control") if isinstance(readiness_tree.get("root_control"), dict) else {}
+        channel_overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
+        hub_root = channel_overview.get("hub_root") if isinstance(channel_overview.get("hub_root"), dict) else {}
+        strategy = (
+            runtime.get("hub_root_transport_strategy")
+            if isinstance(runtime.get("hub_root_transport_strategy"), dict)
+            else {}
+        )
+        return {
+            "root_control_status": str(root_control.get("status") or "").strip().lower() or None,
+            "hub_root_status": str(hub_root.get("effective_status") or "").strip().lower() or None,
+            "hub_root_state": str(hub_root.get("effective_state") or "").strip().lower() or None,
+            "last_event": str(strategy.get("last_event") or "").strip() or None,
+            "last_summary": str(strategy.get("last_summary") or "").strip() or None,
+            "selected_server": str(strategy.get("selected_server") or "").strip() or None,
+            "effective_transport": str(strategy.get("effective_transport") or "").strip() or None,
+        }
+
+    @staticmethod
+    def _hub_root_channel_ready(state: dict[str, Any]) -> bool:
+        return (
+            str(state.get("root_control_status") or "").strip().lower() == "ready"
+            and str(state.get("hub_root_status") or "").strip().lower() == "ready"
+        )
+
+    @staticmethod
+    def _hub_root_channel_down(state: dict[str, Any]) -> bool:
+        return any(
+            str(state.get(key) or "").strip().lower() == "down"
+            for key in ("root_control_status", "hub_root_status", "hub_root_state")
+        )
+
+    def _append_hub_root_watchdog_event(self, payload: dict[str, Any]) -> None:
+        event = {
+            "ts": time.time(),
+            "runtime_url": self.runtime_base_url,
+            **payload,
+        }
+        try:
+            _append_jsonl(_supervisor_hub_root_watchdog_log_path(), event)
+        except Exception:
+            _LOG.debug("failed to append hub-root watchdog event", exc_info=True)
+
+    def _hub_root_watchdog_decision(
+        self,
+        runtime: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        if not _hub_root_watchdog_enabled():
+            self._hub_root_watchdog_last_state = "disabled"
+            self._hub_root_watchdog_last_reason = "watchdog disabled"
+            return None
+        if self._stopping or not self._desired_running:
+            return None
+        current_time = time.time() if now is None else float(now)
+        node = runtime.get("node") if isinstance(runtime.get("node"), dict) else {}
+        role = str(node.get("role") or self._sidecar_role() or "").strip().lower()
+        if role != "hub":
+            self._hub_root_watchdog_last_state = "not_applicable"
+            self._hub_root_watchdog_last_reason = f"role={role or '-'}"
+            return None
+
+        channel_state = self._hub_root_channel_state(runtime)
+        root_status = str(channel_state.get("root_control_status") or "")
+        hub_root_status = str(channel_state.get("hub_root_status") or "")
+        hub_root_state = str(channel_state.get("hub_root_state") or "")
+        sidecar_enabled = bool(realtime_sidecar_enabled(role=role))
+        transport_owner = "sidecar" if sidecar_enabled else "runtime"
+        action = "sidecar_restart" if sidecar_enabled else "runtime_reconnect"
+
+        if not self._hub_root_channel_down(channel_state):
+            state = root_status or hub_root_status or hub_root_state or "unknown"
+            self._hub_root_watchdog_last_state = state
+            self._hub_root_watchdog_last_reason = "hub-root control is not down"
+            return None
+
+        cooldown = _hub_root_watchdog_cooldown_sec()
+        last_reconnect = self._hub_root_watchdog_last_reconnect_at
+        if last_reconnect is not None and (current_time - float(last_reconnect)) < cooldown:
+            self._hub_root_watchdog_last_state = "cooldown"
+            self._hub_root_watchdog_last_reason = f"hub-root down but reconnect cooldown is active ({cooldown:.0f}s)"
+            return None
+
+        reason = f"root_control={root_status or '-'} hub_root={hub_root_status or hub_root_state or '-'}"
+        return {
+            "reason": "supervisor.hub_root.watchdog_reconnect",
+            "message": f"hub-root control is down; requesting {action} ({reason})",
+            "action": action,
+            "transport_owner": transport_owner,
+            "root_control_status": root_status or None,
+            "hub_root_status": hub_root_status or None,
+            "hub_root_state": hub_root_state or None,
+            "last_event": channel_state.get("last_event"),
+            "last_summary": channel_state.get("last_summary"),
+            "channel_before": channel_state,
+        }
+
+    async def _verify_hub_root_watchdog_recovery(self, *, timeout_sec: float | None = None) -> dict[str, Any]:
+        timeout = _hub_root_watchdog_verify_timeout_sec() if timeout_sec is None else max(0.0, float(timeout_sec))
+        interval = _hub_root_watchdog_verify_interval_sec()
+        deadline = time.time() + timeout
+        attempts = 0
+        last_state: dict[str, Any] = {}
+        while True:
+            attempts += 1
+            runtime = self._runtime_reliability_payload(timeout=1.5)
+            last_state = self._hub_root_channel_state(runtime)
+            if self._hub_root_channel_ready(last_state):
+                return {
+                    "ok": True,
+                    "state": "ready",
+                    "attempts": attempts,
+                    "timeout_sec": timeout,
+                    "channel": last_state,
+                }
+            if timeout <= 0.0 or time.time() >= deadline:
+                return {
+                    "ok": False,
+                    "state": "not_ready",
+                    "attempts": attempts,
+                    "timeout_sec": timeout,
+                    "channel": last_state,
+                }
+            await asyncio.sleep(interval)
+
+    async def _maybe_reconnect_hub_root_from_watchdog(self) -> None:
+        if not _hub_root_watchdog_enabled() or self._stopping or not self._desired_running:
+            return
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return
+        runtime = self._runtime_reliability_payload(timeout=1.5)
+        if not runtime:
+            return
+        decision = self._hub_root_watchdog_decision(runtime, now=time.time())
+        if decision is None:
+            return
+        self._hub_root_watchdog_last_state = "reconnect_requested"
+        self._hub_root_watchdog_last_reason = str(decision.get("message") or decision.get("reason") or "")
+        self._hub_root_watchdog_last_reconnect_at = time.time()
+        self._hub_root_watchdog_reconnect_total += 1
+        action = str(decision.get("action") or "runtime_reconnect")
+        try:
+            if action == "sidecar_restart":
+                result = await self.restart_sidecar(reconnect_hub_root=True)
+            else:
+                result = self._runtime_request_json(
+                    path="/api/node/hub-root/reconnect",
+                    method="POST",
+                    payload={},
+                    timeout=5.0,
+                )
+        except Exception as exc:
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            _LOG.warning("hub-root watchdog reconnect request failed: %s: %s", type(exc).__name__, exc)
+        verification = await self._verify_hub_root_watchdog_recovery()
+        self._hub_root_watchdog_last_result = {
+            "requested_at": self._hub_root_watchdog_last_reconnect_at,
+            "action": action,
+            "decision": decision,
+            "result": result,
+            "verification": verification,
+        }
+        self._hub_root_watchdog_last_state = "ready" if bool(verification.get("ok")) else "recovery_failed"
+        self._hub_root_watchdog_last_reason = (
+            "hub-root channel recovered"
+            if bool(verification.get("ok"))
+            else "hub-root channel did not recover after watchdog action"
+        )
+        self._append_hub_root_watchdog_event(
+            {
+                "event": "recovery_attempt",
+                "action": action,
+                "transport_owner": decision.get("transport_owner"),
+                "decision": decision,
+                "result": result,
+                "verification": verification,
+            }
+        )
+        self._persist_runtime_state()
 
     @property
     def active_runtime_port(self) -> int:
@@ -2519,6 +2782,7 @@ class SupervisorManager:
             "managed_executable": managed_executable,
             "managed_cwd": managed_cwd,
             "managed_start_reason": self._managed_start_reason,
+            "hub_root_watchdog": self._hub_root_watchdog_state_payload(),
             "expected_managed_executable": expected_executable,
             "expected_managed_cwd": expected_cwd,
             "managed_matches_active_slot": managed_matches_active_slot,
@@ -3419,11 +3683,17 @@ class SupervisorManager:
 
     async def restart_sidecar(self, *, reconnect_hub_root: bool = False) -> dict[str, Any]:
         async with self._lock:
-            new_proc, restart_result = await restart_realtime_sidecar_subprocess(
-                proc=self._sidecar_proc,
-                role=self._sidecar_role(),
-                repo_root=str(self._sidecar_repo_root() or "").strip() or None,
-            )
+            try:
+                new_proc, restart_result = await restart_realtime_sidecar_subprocess(
+                    proc=self._sidecar_proc,
+                    role=self._sidecar_role(),
+                    repo_root=str(self._sidecar_repo_root() or "").strip() or None,
+                )
+            except TypeError:
+                new_proc, restart_result = await restart_realtime_sidecar_subprocess(
+                    proc=self._sidecar_proc,
+                    role=self._sidecar_role(),
+                )
             self._sidecar_proc = new_proc
             code_state = self._sidecar_code_state()
             self._sidecar_launch_cwd = str(code_state.get("repo_root") or code_state.get("launch_cwd") or "") or None
@@ -3768,6 +4038,10 @@ class SupervisorManager:
                     except Exception:
                         _LOG.warning("failed to finalize active memory profile session", exc_info=True)
                     continue
+                try:
+                    await self._maybe_reconnect_hub_root_from_watchdog()
+                except Exception:
+                    _LOG.warning("hub-root supervisor watchdog failed", exc_info=True)
                 restart_decision = self._runtime_self_heal_decision()
                 if restart_decision is not None:
                     self._last_error = str(restart_decision.get("message") or "active runtime became unhealthy")

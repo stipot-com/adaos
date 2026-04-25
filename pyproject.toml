@@ -81,6 +81,7 @@ addopts = "-q --strict-markers"
 markers = [
   "integration: integration tests",
   "e2e: end-to-end tests",
+  "asyncio: asyncio tests",
 ]
 testpaths = [
   "tests", # для SDK/API тестов

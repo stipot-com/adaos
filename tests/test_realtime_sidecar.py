@@ -76,12 +76,12 @@ class _FakeTransport:
         return None
 
 
-def test_realtime_sidecar_enabled_defaults_to_hub_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_realtime_sidecar_enabled_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADAOS_REALTIME_ENABLE", raising=False)
     monkeypatch.delenv("HUB_REALTIME_ENABLE", raising=False)
 
-    assert realtime_sidecar_enabled(role="hub", os_name="nt") is True
-    assert realtime_sidecar_enabled(role="hub", os_name="posix") is True
+    assert realtime_sidecar_enabled(role="hub", os_name="nt") is False
+    assert realtime_sidecar_enabled(role="hub", os_name="posix") is False
     assert realtime_sidecar_enabled(role="member", os_name="nt") is False
     assert realtime_sidecar_enabled(role="root", os_name="nt") is False
 
@@ -105,19 +105,19 @@ def test_realtime_sidecar_enablement_policy_reports_default_and_env_override(mon
     policy = realtime_sidecar_enablement_policy(role="hub")
     assert policy == {
         "role": "hub",
-        "enabled": True,
-        "default_enabled": True,
+        "enabled": False,
+        "default_enabled": False,
         "explicit": False,
         "source": "role_default",
         "env_var": None,
         "env_value": None,
-        "reason": "hub runtimes default to sidecar transport",
+        "reason": "hub runtimes keep sidecar disabled by default until explicitly enabled",
     }
 
     monkeypatch.setenv("HUB_REALTIME_ENABLE", "0")
     policy = realtime_sidecar_enablement_policy(role="hub")
     assert policy["enabled"] is False
-    assert policy["default_enabled"] is True
+    assert policy["default_enabled"] is False
     assert policy["explicit"] is True
     assert policy["source"] == "env_override"
     assert policy["env_var"] == "HUB_REALTIME_ENABLE"

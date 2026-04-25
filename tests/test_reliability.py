@@ -1484,11 +1484,13 @@ def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monk
                 "sidecar_runtime": {
                     "enablement": {
                         "enabled": True,
-                        "default_enabled": True,
-                        "explicit": False,
-                        "source": "role_default",
+                        "default_enabled": False,
+                        "explicit": True,
+                        "source": "env_override",
+                        "env_var": "ADAOS_REALTIME_ENABLE",
+                        "env_value": "1",
                         "role": "hub",
-                        "reason": "hub runtimes default to sidecar transport",
+                        "reason": "ADAOS_REALTIME_ENABLE=1",
                     },
                     "continuity_contract": {
                         "current_support": "ready",
@@ -1553,8 +1555,8 @@ def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monk
     assert payload["source"] == "api.node.reliability.summary"
     assert payload["hubRootHardening"]["coveredFlows"] == 6
     assert payload["sidecarEnablement"]["enabled"] is True
-    assert payload["sidecarEnablement"]["defaultEnabled"] is True
-    assert payload["sidecarEnablement"]["source"] == "role_default"
+    assert payload["sidecarEnablement"]["defaultEnabled"] is False
+    assert payload["sidecarEnablement"]["source"] == "env_override"
     assert payload["sidecarContinuity"]["currentSupport"] == "ready"
     assert payload["browserYwsHandoffReady"] is True
     assert payload["phase0Communication"]["tasks"]["nodeBrowserReady"]["status"] == "done"
@@ -1918,8 +1920,7 @@ def test_node_reliability_cli_prints_sidecar_scope_and_sync_owner(monkeypatch) -
     assert "sidecar.route_tunnel: support=planned boundary=transport_only" in result.output
     assert "ws=runtime->sidecar:not_implemented" in result.output
     assert "yws=sidecar->sidecar:sidecar_tunnel" in result.output
-    assert "status=unknown session=starting" in result.output
-    assert "sidecar.reason: sidecar process is running but has not emitted diagnostics yet" in result.output
+    assert "status=ready session=-" in result.output
     assert "sidecar.route_tunnel.ws_blocker: browser route websocket still terminates in the runtime FastAPI app" in result.output
     assert "sidecar.route_tunnel.yws_blocker" not in result.output
     assert "eligible=1" in result.output

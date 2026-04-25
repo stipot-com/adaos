@@ -306,6 +306,143 @@ def test_runtime_self_heal_restarts_when_managed_process_does_not_match_active_s
     assert decision["expected_managed_executable"] == "/slots/B/venv/bin/python"
 
 
+def test_hub_root_watchdog_requests_reconnect_when_root_control_is_down(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+
+    decision = manager._hub_root_watchdog_decision(
+        {
+            "readiness_tree": {"root_control": {"status": "down"}},
+            "channel_overview": {
+                "hub_root": {
+                    "effective_status": "down",
+                    "effective_state": "down",
+                }
+            },
+            "hub_root_transport_strategy": {
+                "last_event": "failure",
+                "last_summary": "watchdog._reading_task",
+            },
+        },
+        now=100.0,
+    )
+
+    assert isinstance(decision, dict)
+    assert decision["reason"] == "supervisor.hub_root.watchdog_reconnect"
+    assert decision["action"] == "runtime_reconnect"
+    assert decision["transport_owner"] == "runtime"
+    assert decision["root_control_status"] == "down"
+    assert decision["last_summary"] == "watchdog._reading_task"
+
+
+def test_hub_root_watchdog_respects_reconnect_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_RECONNECT_COOLDOWN_SEC", "30")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._hub_root_watchdog_last_reconnect_at = 95.0
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+
+    decision = manager._hub_root_watchdog_decision(
+        {
+            "readiness_tree": {"root_control": {"status": "down"}},
+            "channel_overview": {"hub_root": {"effective_status": "down"}},
+        },
+        now=100.0,
+    )
+
+    assert decision is None
+    assert manager._hub_root_watchdog_last_state == "cooldown"
+    assert "cooldown" in str(manager._hub_root_watchdog_last_reason)
+
+
+def test_hub_root_watchdog_invokes_runtime_reconnect(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_TIMEOUT_SEC", "0")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return None
+
+    calls: list[dict[str, object]] = []
+    manager._proc = _Proc()
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+    monkeypatch.setattr(
+        manager,
+        "_runtime_reliability_payload",
+        lambda timeout=1.5: {
+            "readiness_tree": {"root_control": {"status": "down"}},
+            "channel_overview": {"hub_root": {"effective_status": "down"}},
+        },
+    )
+
+    def _request(**kwargs):
+        calls.append(dict(kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_runtime_request_json", _request)
+
+    asyncio.run(manager._maybe_reconnect_hub_root_from_watchdog())
+
+    assert len(calls) == 1
+    assert calls[0]["path"] == "/api/node/hub-root/reconnect"
+    assert manager._hub_root_watchdog_reconnect_total == 1
+    assert manager._hub_root_watchdog_last_result["result"]["ok"] is True
+    assert manager._hub_root_watchdog_last_result["verification"]["ok"] is False
+
+
+def test_hub_root_watchdog_restarts_sidecar_when_sidecar_owns_transport(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_TIMEOUT_SEC", "0")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+    snapshots = [
+        {
+            "readiness_tree": {"root_control": {"status": "down"}},
+            "channel_overview": {"hub_root": {"effective_status": "down"}},
+        },
+        {
+            "readiness_tree": {"root_control": {"status": "ready"}},
+            "channel_overview": {"hub_root": {"effective_status": "ready", "effective_state": "stable"}},
+        },
+    ]
+
+    def _runtime_payload(timeout=1.5):
+        if len(snapshots) > 1:
+            return snapshots.pop(0)
+        return snapshots[0]
+
+    sidecar_calls: list[dict[str, object]] = []
+
+    async def _restart_sidecar(**kwargs):
+        sidecar_calls.append(dict(kwargs))
+        return {"ok": True, "restart": {"ok": True}, "reconnect": {"ok": True}}
+
+    monkeypatch.setattr(manager, "_runtime_reliability_payload", _runtime_payload)
+    monkeypatch.setattr(manager, "restart_sidecar", _restart_sidecar)
+
+    asyncio.run(manager._maybe_reconnect_hub_root_from_watchdog())
+
+    assert len(sidecar_calls) == 1
+    assert sidecar_calls[0]["reconnect_hub_root"] is True
+    assert manager._hub_root_watchdog_last_result["action"] == "sidecar_restart"
+    assert manager._hub_root_watchdog_last_result["verification"]["ok"] is True
+    assert manager._hub_root_watchdog_last_state == "ready"
+    events = supervisor._read_jsonl_tail(supervisor._supervisor_hub_root_watchdog_log_path(), limit=5)
+    assert events[-1]["action"] == "sidecar_restart"
+    assert events[-1]["verification"]["ok"] is True
+
+
 def test_supervisor_start_update_and_cancel(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MIN_UPDATE_PERIOD_SEC", "0")

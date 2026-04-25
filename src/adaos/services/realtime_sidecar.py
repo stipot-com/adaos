@@ -167,7 +167,7 @@ def _realtime_sidecar_repo_root() -> Path | None:
 
 def realtime_sidecar_enablement_policy(*, role: str | None = None) -> dict[str, Any]:
     role_norm = _default_realtime_sidecar_role(role)
-    default_enabled = role_norm == "hub"
+    default_enabled = False
     raw = os.getenv("ADAOS_REALTIME_ENABLE")
     env_var = "ADAOS_REALTIME_ENABLE"
     if raw is None:
@@ -189,13 +189,13 @@ def realtime_sidecar_enablement_policy(*, role: str | None = None) -> dict[str, 
     if role_norm == "hub":
         return {
             "role": role_norm,
-            "enabled": True,
-            "default_enabled": True,
+            "enabled": False,
+            "default_enabled": False,
             "explicit": False,
             "source": "role_default",
             "env_var": None,
             "env_value": None,
-            "reason": "hub runtimes default to sidecar transport",
+            "reason": "hub runtimes keep sidecar disabled by default until explicitly enabled",
         }
     if role_norm:
         return {
@@ -767,9 +767,30 @@ def apply_realtime_loop_policy() -> None:
         pass
 
 
+def _load_node_yaml() -> dict[str, Any]:
+    try:
+        from adaos.services.capacity import _load_node_yaml as load_yaml
+    except Exception:
+        return {}
+    try:
+        payload = load_yaml()
+    except TypeError:
+        try:
+            payload = load_yaml(None)
+        except Exception:
+            payload = {}
+    except Exception:
+        payload = {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
 def resolve_realtime_remote_candidates() -> list[str]:
     explicit_url = str(os.getenv("ADAOS_REALTIME_REMOTE_WS_URL") or "").strip() or None
     nats_cfg = load_nats_runtime_config()
+    if not nats_cfg:
+        legacy_payload = _load_node_yaml()
+        legacy_nats = legacy_payload.get("nats") if isinstance(legacy_payload.get("nats"), dict) else {}
+        nats_cfg = dict(legacy_nats) if isinstance(legacy_nats, dict) else {}
     if not nats_cfg:
         nats_cfg = migrate_legacy_nats_runtime_config()
     node_url_raw = str((nats_cfg or {}).get("ws_url") or "").strip() or None
