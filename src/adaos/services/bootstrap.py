@@ -219,7 +219,21 @@ def _hub_route_prefers_supervisor_public_status(path_norm: str, method: str) -> 
     return method in ("GET", "HEAD") and path_norm == "/api/supervisor/public/update-status"
 
 
+def _dev_without_supervisor() -> bool:
+    env_type = str(os.getenv("ENV_TYPE") or "").strip().lower()
+    if env_type != "dev":
+        return False
+    return str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _supervisor_local_bases() -> list[str]:
+    if _dev_without_supervisor():
+        return []
     bases: list[str] = []
     explicit = (
         os.getenv("ADAOS_SUPERVISOR_URL")
@@ -338,7 +352,9 @@ def _note_route_local_base_shortcut(*, source: str, value: str | None) -> None:
         pass
 
 
-def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None:
+def _discover_active_runtime_local_base(
+    *, timeout_s: float = 0.6, allow_network_probe: bool = False
+) -> str | None:
     try:
         import requests  # type: ignore
     except Exception:
@@ -361,6 +377,24 @@ def _discover_active_runtime_local_base(*, timeout_s: float = 0.6) -> str | None
             except Exception:
                 pass
             return cached_value
+
+        # Route handling runs on the event loop. When we have no cached local base,
+        # skip synchronous network probing in the hot path and fall back to static
+        # localhost candidates instead of blocking the loop on connect timeouts.
+        if not allow_network_probe:
+            _ROUTE_LOCAL_BASE_DIAG["local_base_cache_miss_total"] = int(
+                _ROUTE_LOCAL_BASE_DIAG.get("local_base_cache_miss_total") or 0
+            ) + 1
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_source"] = "cache_miss_no_probe"
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_value"] = ""
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_error"] = "network_probe_skipped"
+            _ROUTE_LOCAL_BASE_DIAG["local_base_last_error_at"] = now
+            snapshot = dict(_ROUTE_LOCAL_BASE_DIAG)
+            try:
+                observe_hub_root_route_runtime(**snapshot)
+            except Exception:
+                pass
+            return None
 
     started = time.monotonic()
     result: str | None = None
@@ -547,7 +581,7 @@ def _hub_public_ws_candidates(base_url: str | None) -> list[str]:
     normalized_base = _normalize_hub_nats_ws_url(base_url)
 
     candidates: list[str] = []
-    if normalized_base:
+    if normalized_base and nats_url_uses_websocket(normalized_base):
         candidates.append(normalized_base)
     for item in public_nats_ws_candidates(
         prefer_dedicated=prefer_dedicated,
@@ -1648,10 +1682,24 @@ class BootstrapService:
                         raw_nurl = str(node_nats.get("ws_url") or "").strip() or None
                         if override:
                             raw_nurl = override
+                        requested_transport = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
+                        if requested_transport in {"ws", "websocket", "websockets"} and raw_nurl and not nats_url_uses_websocket(raw_nurl):
+                            ws_candidates = _hub_public_ws_candidates(raw_nurl)
+                            raw_nurl = next(
+                                (str(item).strip() for item in ws_candidates if nats_url_uses_websocket(item)),
+                                public_nats_ws_api(),
+                            )
                         nurl = _normalize_hub_nats_ws_url(raw_nurl)
                         nuser = str(node_nats.get("user") or "") or None
                         npass = str(node_nats.get("pass") or "") or None
                         if nurl and raw_nurl and nurl != raw_nurl:
+                            save_nats_runtime_config(ws_url=nurl, user=nuser, password=npass)
+                        elif (
+                            requested_transport in {"ws", "websocket", "websockets"}
+                            and nurl
+                            and raw_nurl
+                            and nurl != str(node_nats.get("ws_url") or "").strip()
+                        ):
                             save_nats_runtime_config(ws_url=nurl, user=nuser, password=npass)
                         return nurl, nuser, npass
                     except Exception:
@@ -1971,6 +2019,7 @@ class BootstrapService:
                         try:
                             nats_attempt_server = None
                             nurl, nuser, npass = _read_node_nats()
+                            requested_transport = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
                             if not nurl or not nuser or not npass:
                                 fetched = await _fetch_nats_credentials()
                                 if fetched:
@@ -1982,6 +2031,11 @@ class BootstrapService:
                                     print("[hub-io] NATS disabled: missing persisted runtime nats.ws_url/user/pass")
                                 await asyncio.sleep(2.0)
                                 continue
+                            if requested_transport in {"ws", "websocket", "websockets"} and not nats_url_uses_websocket(nurl):
+                                fetched = await _fetch_nats_credentials()
+                                if fetched:
+                                    await asyncio.sleep(0.1)
+                                    continue
                             if nats_url_uses_websocket(nurl) or (
                                 realtime_enabled and _nats_url_needs_public_ws_refresh(nurl)
                             ):
@@ -6212,6 +6266,20 @@ class BootstrapService:
 
                                     def _do_http() -> dict[str, Any]:
                                         try:
+                                            if _hub_route_prefers_supervisor_public_status(path_norm, method) and _dev_without_supervisor():
+                                                from adaos.services.core_update import (
+                                                    read_public_update_status as _read_public_update_status,
+                                                )
+
+                                                payload = _read_public_update_status()
+                                                raw = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                                                return {
+                                                    "t": "http_resp",
+                                                    "status": 200,
+                                                    "headers": {"content-type": "application/json; charset=utf-8"},
+                                                    "body_b64": base64.b64encode(raw).decode("ascii"),
+                                                    "truncated": False,
+                                                }
                                             import requests  # type: ignore
 
                                             try:

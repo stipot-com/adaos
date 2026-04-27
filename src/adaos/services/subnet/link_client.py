@@ -663,11 +663,22 @@ class MemberLinkClient:
     @staticmethod
     def _resolve_local_control_base() -> str:
         candidates: list[str] = []
-        supervisor_candidates = [
-            str(os.getenv("ADAOS_SUPERVISOR_URL") or "").strip().rstrip("/"),
-            "http://127.0.0.1:8776",
-            "http://localhost:8776",
-        ]
+        env_type = str(os.getenv("ENV_TYPE") or "").strip().lower()
+        supervisor_enabled = str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        allow_supervisor_probe = bool(supervisor_enabled or env_type != "dev")
+        supervisor_candidates = []
+        if allow_supervisor_probe:
+            supervisor_candidates.extend(
+                [
+                    "http://127.0.0.1:8776",
+                    "http://localhost:8776",
+                ]
+            )
         for raw in (
             os.getenv("ADAOS_SELF_BASE_URL"),
             os.getenv("ADAOS_CONTROL_URL"),

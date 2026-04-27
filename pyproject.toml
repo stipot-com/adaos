@@ -42,6 +42,7 @@ dependencies = [
   "y-py>=0.6.0",
   "ypy-websocket>=0.12.4",
   "httpx>=0.27.0",
+  "aiohttp>=3.10.0",
   "nats-py>=2.6.0",
   "websockets>=11.0",
   "ipykernel",
