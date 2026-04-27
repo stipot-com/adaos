@@ -57,11 +57,16 @@ This keeps SDK internals private, avoids exposing a fake direct SDK path, and fi
 - scoped Codex connection to one managed target, normally `hub:<subnet_id>`
 - read-first operational methods for the target
 - token issuance through the target's published `infra_access_skill` token-management surface
-- profile and token files stored under the local workspace runtime state
+- profile and token files stored under the workspace-local `.adaos/mcp/` directory
 
 The bridge currently exposes these tools:
 
 - `foundation`
+- `get_architecture_catalog`
+- `get_sdk_metadata`
+- `get_template_catalog`
+- `get_public_skill_registry`
+- `get_public_scenario_registry`
 - `list_managed_targets`
 - `get_managed_target`
 - `get_operational_surface`
@@ -72,6 +77,12 @@ The bridge currently exposes these tools:
 - `get_logs`
 - `run_healthchecks`
 - `recent_audit`
+- `get_yjs_load_mark_history`
+- `get_yjs_logs`
+- `get_skill_logs`
+- `get_adaos_logs`
+- `get_events_logs`
+- `get_subnet_info`
 
 ## Why This Is a Local Bridge
 
@@ -134,6 +145,17 @@ The important parts are:
 
 The token itself is not stored in `~/.codex/config.toml`; the bridge reads it from the token file referenced by the profile.
 
+## Workspace Directories
+
+The local bridge now uses explicit workspace-local directories with separate purposes:
+
+- `.adaos/mcp/`
+  bridge profile and token files used by Codex
+- `.adaos/state/root_mcp/`
+  Root MCP state and cache such as descriptor cache, session registry, and control reports
+- `.adaos/logs/`
+  local AdaOS process logs for the current machine; this is not an MCP response cache
+
 ### 3. Verify the Codex registration
 
 ```powershell
@@ -188,6 +210,8 @@ Check:
 ### Logs or healthchecks fail
 
 Those methods currently depend on `execution_mode=local_process`. If the target publishes only `reported_only`, status and observability tools still work, but bounded execution tools do not.
+
+The dedicated log tools such as `get_adaos_logs`, `get_events_logs`, `get_skill_logs`, and `get_yjs_logs` now default to `scope=subnet_active`. This is intended to avoid empty `root_local` answers masking a healthy hub-root observability path. Use `scope=root_local` only when you intentionally want logs from the local machine hosting the bridge or root service.
 
 ## Current Boundaries
 

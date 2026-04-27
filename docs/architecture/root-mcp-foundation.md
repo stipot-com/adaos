@@ -561,6 +561,14 @@ As MCP session leases are introduced, web-facing operational views should also b
 - show target, deadline, last use, and usage count
 - revoke or rotate sessions
 
+Operational observability reads should also carry explicit source provenance.
+In particular, log-style reads must distinguish at least:
+
+- `root_local`
+- `subnet_active`
+
+so operators and agents can tell whether they are seeing logs from the root-hosting machine or aggregated logs from the currently active subnet runtime.
+
 ### What Should Be Logged
 
 At minimum, every handled request should record:

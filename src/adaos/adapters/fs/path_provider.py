@@ -82,6 +82,9 @@ class PathProvider:
     def models_dir(self) -> Path:
         return (self.base / "models").resolve()
 
+    def mcp_dir(self) -> Path:
+        return (self.base / "mcp").resolve()
+
     def logs_dir(self) -> Path:
         return (self.base / "logs").resolve()
 
@@ -90,6 +93,9 @@ class PathProvider:
 
     def state_dir(self) -> Path:
         return (self.base / "state").resolve()
+
+    def root_mcp_state_dir(self) -> Path:
+        return (self.state_dir() / "root_mcp").resolve()
 
     def locales_base_dir(self) -> Path:
         """Base directory for runtime locales exposed via ``get_ctx().paths``."""
@@ -129,9 +135,11 @@ class PathProvider:
             self.skill_templates_dir(),
             self.scenario_templates_dir(),
             self.models_dir(),
+            self.mcp_dir(),
             self.logs_dir(),
             self.cache_dir(),
             self.state_dir(),
+            self.root_mcp_state_dir(),
             self.tmp_dir(),
         ):
             p.mkdir(parents=True, exist_ok=True)

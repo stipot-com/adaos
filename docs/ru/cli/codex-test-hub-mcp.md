@@ -57,11 +57,16 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - scoped-подключение Codex к одному managed target, обычно `hub:<subnet_id>`
 - базовые read-first operational methods для target
 - выдачу токена через опубликованный target-side surface `infra_access_skill`
-- хранение profile и token files в локальном runtime state workspace
+- хранение profile и token files в workspace-local каталоге `.adaos/mcp/`
 
 Сейчас bridge публикует такие tools:
 
 - `foundation`
+- `get_architecture_catalog`
+- `get_sdk_metadata`
+- `get_template_catalog`
+- `get_public_skill_registry`
+- `get_public_scenario_registry`
 - `list_managed_targets`
 - `get_managed_target`
 - `get_operational_surface`
@@ -72,6 +77,12 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - `get_logs`
 - `run_healthchecks`
 - `recent_audit`
+- `get_yjs_load_mark_history`
+- `get_yjs_logs`
+- `get_skill_logs`
+- `get_adaos_logs`
+- `get_events_logs`
+- `get_subnet_info`
 
 ## Почему это локальный bridge, а не direct remote MCP
 
@@ -136,6 +147,17 @@ codex mcp add adaos-test-hub --env ADAOS_MCP_PROFILE=D:\git\adaos\.adaos\mcp\ada
 
 Сам токен не хранится в `~/.codex/config.toml`; bridge читает его из token file, на который ссылается profile.
 
+## Каталоги workspace
+
+Локальный bridge теперь использует явное разделение директорий:
+
+- `.adaos/mcp/`
+  profile и token files для Codex bridge
+- `.adaos/state/root_mcp/`
+  state и cache Root MCP: descriptor cache, session registry, control reports
+- `.adaos/logs/`
+  локальные логи AdaOS-процессов на текущей машине; это не cache ответов MCP
+
 ### 3. Проверить регистрацию в Codex
 
 ```powershell
@@ -190,6 +212,8 @@ codex mcp remove adaos-test-hub
 ### Не работают logs или healthchecks
 
 Сейчас эти методы зависят от `execution_mode=local_process`. Если target публикует только `reported_only`, status и observability tools будут работать, а bounded execution tools — нет.
+
+Выделенные log-tools `get_adaos_logs`, `get_events_logs`, `get_skill_logs` и `get_yjs_logs` теперь по умолчанию используют `scope=subnet_active`. Это нужно, чтобы пустые `root_local` ответы не маскировали рабочий hub-root путь observability. `scope=root_local` стоит указывать только тогда, когда нужны именно логи локальной машины, где запущен bridge или root service.
 
 ## Текущие границы MVP
 

@@ -308,6 +308,14 @@ Development-facing путь должен выглядеть так:
 - `policy and profile state`
 - `target summary`
 
+Operational observability reads also need explicit source provenance.
+For log-style reads, clients must be able to distinguish at least:
+
+- `root_local`
+- `subnet_active`
+
+so operators and agents can tell whether they are looking at logs from the root-hosting machine or aggregated logs from the currently active subnet runtime.
+
 ### What Should Be Logged
 
 Минимально каждый обработанный request должен записывать:

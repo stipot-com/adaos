@@ -452,15 +452,6 @@ def _echo_login_result(result: RootLoginResult) -> None:
     typer.echo(f"Workspace: {_display_path(result.workspace_path)}")
 
 
-def _repo_root_dir() -> Path:
-    ctx = get_ctx()
-    try:
-        raw = ctx.paths.repo_root()
-        return Path(raw() if callable(raw) else raw)
-    except Exception:
-        return Path.cwd()
-
-
 def _dev_root_http_client(*, root_url: str | None = None) -> tuple[RootHttpClient, Any]:
     from adaos.services.node_config import load_config, _expand_path as _expand_path
 
@@ -625,8 +616,7 @@ def prepare_codex(
     if not access_token:
         raise RootServiceError("Root MCP did not return an access_token for Codex setup.")
 
-    repo_root = _repo_root_dir()
-    default_profile_file, default_token_file = default_profile_paths(repo_root, name)
+    default_profile_file, default_token_file = default_profile_paths(get_ctx().paths.mcp_dir(), name)
     stored_profile = CodexBridgeProfile(
         root_url=str(root_url or getattr(cfg.root_settings, "base_url", None) or get_ctx().settings.api_base or "").strip(),
         target_id=effective_target_id,
