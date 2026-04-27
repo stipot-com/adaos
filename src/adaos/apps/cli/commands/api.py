@@ -72,9 +72,6 @@ def _configured_local_api_url(conf) -> str | None:
     local_api_url = str(getattr(conf, "local_api_url", "") or "").strip()
     if _is_local_url(local_api_url):
         return local_api_url
-    hub_url = str(getattr(conf, "hub_url", "") or "").strip()
-    if _is_local_url(hub_url):
-        return hub_url
     return None
 
 
@@ -91,7 +88,7 @@ def _resolve_bind(
         return host, int(port)
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
         # Supervisor-managed runtimes already pass the slot-specific port explicitly.
-        # Do not override it from persisted runtime `hub_url`, or slot A can get pulled onto slot B's port.
+        # Do not override it from persisted local_api_url, or slot A can get pulled onto slot B's port.
         return host, int(port)
     if explicit_host or explicit_port:
         return host, int(port)
@@ -512,8 +509,6 @@ def serve(
         try:
             if _is_local_url(advertised_base) and str(getattr(conf, "local_api_url", "") or "").strip() != advertised_base:
                 conf.local_api_url = advertised_base
-            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
-                conf.hub_url = advertised_base
             save_config(conf)
         except Exception:
             pass
@@ -547,7 +542,7 @@ def serve(
 
 @app.command("stop")
 def stop():
-    """Stop the AdaOS local HTTP API resolved from persisted runtime hub_url."""
+    """Stop the AdaOS local HTTP API resolved from persisted local_api_url."""
     try:
         conf = load_config()
     except Exception as exc:
@@ -557,7 +552,7 @@ def stop():
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local_api_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
@@ -609,7 +604,7 @@ def restart():
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local_api_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
