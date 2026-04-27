@@ -52,6 +52,15 @@ The backend may satisfy that obligation in either of these ways:
 
 The second form is preferred while the canonical `Root MCP` implementation remains in Python.
 
+That does not mean moving `Root MCP` into the hub runtime.
+The responsibility boundary should stay explicit even inside one shared codebase:
+
+- the zonal backend remains the external publication boundary for `/v1/root/mcp/*`
+- the local zonal AdaOS Python API remains the canonical root-side implementation
+- the hub remains only the target-side execution and observability surface for subnet-routed operational contracts
+
+The zonal backend should not maintain an independent hardcoded `Root MCP` tool inventory or duplicate route logic once the canonical local root implementation exists.
+
 The key rule is:
 
 - zonal backend publishes the stable external `Root MCP` URL family

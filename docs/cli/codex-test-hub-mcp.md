@@ -27,6 +27,7 @@ Important:
 - `setx` updates the user environment for new processes only.
 - already running VS Code, Codex, terminals, and MCP helper processes keep the old bearer
 - after rotating the bearer, fully restart VS Code if Codex keeps using the previous token
+- after switching a zone from the legacy backend-local Root MCP surface to the canonical proxied root surface, issue a fresh bearer; old backend-local MCP session leases are not expected to remain valid
 
 If you want to verify the issued bearer before wiring Codex, test it directly:
 

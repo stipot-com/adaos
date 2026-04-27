@@ -25,6 +25,7 @@ setx ADAOS_ROOT_MCP_AUTH "mcp_..."
 - `setx` обновляет окружение только для новых процессов
 - уже открытые VS Code, Codex, терминалы и MCP helper-процессы продолжают жить со старым bearer
 - после ротации bearer может понадобиться полный перезапуск VS Code, если Codex продолжает использовать старый токен
+- после переключения zone с legacy backend-local Root MCP surface на canonical proxied root surface нужно выпустить свежий bearer; старые backend-local MCP session lease не должны считаться валидными
 
 Перед подключением Codex bearer удобно проверить вручную:
 
