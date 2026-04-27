@@ -171,9 +171,9 @@ This means earlier phases do not need to be revoked, but some milestone reads sh
 - [ ] define `subnet operational history` as a first-class Root MCP product surface distinct from plain audit history
 - [x] expose an initial typed subnet timeline that links audit-backed lifecycle, control-report ingest, session activity, and profiler actions
 - [x] make `hub.get_activity_log` explicitly distinguish its `audit activity view` role from the richer `operational timeline` surface
-- [ ] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
+- [x] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
 - [x] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
-- [ ] expose route/backlog/ack/YJS pressure diagnostics through typed Root MCP reads rather than only indirect logs
+- [x] expose an initial typed route/backlog/ack/YJS pressure view through Root MCP reads rather than only indirect logs
 - [x] add an initial `adaosmcp` self-check or capability-health surface so operators and agents can verify which analysis channels are currently trustworthy
 
 ### Current Implementation Slice
@@ -185,7 +185,8 @@ The first Phase 7 implementation slice should improve observability provenance b
 - [x] add an initial subnet analysis self-check surface that scores current snapshot, control-report freshness, session-registry freshness, audit visibility, and subnet-active log aggregation
 - [x] add an initial typed subnet timeline surface over Root MCP audit plus report-ingest events
 - [x] normalize MCP session registry freshness in ordinary list/get/summary views by expiring stale `active` leases on read
-- [ ] add explicit log-source provenance and health scoring to the same bridge/tooling surface
+- [x] add an initial typed subnet diagnostics surface that projects compact route/backlog/ack, YJS pressure, and root-ingested memory-profile summaries
+- [x] add explicit log-source provenance and health scoring to the same bridge/tooling surface
 - [ ] enrich the typed subnet timeline with runtime switches, bounded log references, and deeper route-incident detail
 
 Phase is complete when:

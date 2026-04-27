@@ -85,6 +85,7 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - `get_subnet_info`
 - `get_subnet_analysis_health`
 - `get_subnet_timeline`
+- `get_subnet_diagnostics`
 
 ## Почему это локальный bridge, а не direct remote MCP
 
@@ -217,9 +218,13 @@ codex mcp remove adaos-test-hub
 
 Выделенные log-tools `get_adaos_logs`, `get_events_logs`, `get_skill_logs` и `get_yjs_logs` теперь по умолчанию используют `scope=subnet_active`. Это нужно, чтобы пустые `root_local` ответы не маскировали рабочий hub-root путь observability. `scope=root_local` стоит указывать только тогда, когда нужны именно логи локальной машины, где запущен bridge или root service.
 
+Эти log-tools теперь также возвращают явные блоки `provenance` и `health`. Так проще понять, читаете ли вы root-local логи, healthy subnet-active aggregation или degraded/partial subnet-active результат.
+
 Для Phase 7 анализа подсети теперь лучше начинать с `get_subnet_analysis_health`. Этот метод сводит в одну оценку доверие к snapshot state, session registry, audit history и `subnet_active` log channels перед более глубоким разбором memory или incident проблем.
 
 `get_activity_log` теперь лучше воспринимать как компактный audit-derived activity feed. Когда нужна более структурированная история, стоит использовать `get_subnet_timeline`, где события уже разложены по классам: control-report ingest, profile ops, session activity и target operations.
+
+`get_subnet_diagnostics` стоит использовать, когда нужны typed pressure-oriented projections вместо сырых логов. Теперь он сводит компактное состояние route backlog и pending ack, pressure по выбранному YJS webspace и недавние root-ingested memory-profile sessions для текущей подсети.
 
 Session-management views теперь нормализуют expired MCP session leases при чтении, поэтому в обычных list/get сценариях просроченные lease больше не должны оставаться видимыми как `active`.
 

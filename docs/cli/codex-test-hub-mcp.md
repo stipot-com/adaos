@@ -85,6 +85,7 @@ The bridge currently exposes these tools:
 - `get_subnet_info`
 - `get_subnet_analysis_health`
 - `get_subnet_timeline`
+- `get_subnet_diagnostics`
 
 ## Why This Is a Local Bridge
 
@@ -215,9 +216,13 @@ Those methods currently depend on `execution_mode=local_process`. If the target 
 
 The dedicated log tools such as `get_adaos_logs`, `get_events_logs`, `get_skill_logs`, and `get_yjs_logs` now default to `scope=subnet_active`. This is intended to avoid empty `root_local` answers masking a healthy hub-root observability path. Use `scope=root_local` only when you intentionally want logs from the local machine hosting the bridge or root service.
 
+Those log tools now also return explicit `provenance` and `health` blocks. This makes it easier to tell whether you are reading root-local logs, healthy subnet-active aggregation, or a degraded/partial subnet-active result.
+
 For Phase 7 subnet analysis, prefer `get_subnet_analysis_health` before deeper investigation. It summarizes whether current snapshot, session-registry, audit, and `subnet_active` log channels are trustworthy enough for memory or incident analysis.
 
 Use `get_activity_log` for a compact audit-derived activity feed. Use `get_subnet_timeline` when you need the richer typed history view that separates event classes such as control-report ingest, profile operations, session activity, and target operations.
+
+Use `get_subnet_diagnostics` when you need typed pressure-oriented projections rather than raw logs. It now summarizes compact route backlog and pending-ack state, selected YJS runtime pressure, and recent root-ingested memory-profile sessions for the current subnet.
 
 Session-management views now normalize expired MCP session leases on read, so ordinary list/get flows should no longer keep stale `active` sessions visible after TTL expiry.
 

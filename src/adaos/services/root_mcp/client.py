@@ -865,6 +865,19 @@ class RootMcpClient:
             params["target_id"] = target_id
         return dict(self._request("GET", "/v1/root/mcp/subnet/timeline", params=params))
 
+    def get_subnet_diagnostics(
+        self,
+        *,
+        target_id: str | None = None,
+        session_limit: int = 5,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "session_limit": int(session_limit),
+        }
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/diagnostics", params=params))
+
     def call(
         self,
         tool_id: str,

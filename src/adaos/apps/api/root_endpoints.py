@@ -825,6 +825,316 @@ def _current_control_report_ref(
     }
 
 
+def _profile_report_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+    reported_at = _parse_iso_datetime(report.get("reported_at"))
+    timestamp = int(reported_at.timestamp()) if reported_at is not None else 0
+    return (timestamp, str(item.get("session_id") or "").strip())
+
+
+def _compact_memory_profile_session(item: dict[str, Any], *, current_runtime_instance_id: str | None = None) -> dict[str, Any]:
+    report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+    session = dict(report.get("session") or {}) if isinstance(report.get("session"), dict) else {}
+    runtime_instance_id = str(report.get("runtime_instance_id") or "").strip() or None
+    artifact_refs = list(session.get("artifact_refs") or []) if isinstance(session.get("artifact_refs"), list) else []
+    return {
+        "session_id": str(item.get("session_id") or "").strip() or None,
+        "reported_at": report.get("reported_at"),
+        "runtime_instance_id": runtime_instance_id,
+        "current_runtime_match": bool(
+            current_runtime_instance_id
+            and runtime_instance_id
+            and current_runtime_instance_id == runtime_instance_id
+        ),
+        "profile_mode": str(session.get("profile_mode") or "").strip() or None,
+        "session_state": str(session.get("session_state") or "").strip() or None,
+        "suspected_leak": bool(session.get("suspected_leak")),
+        "baseline_rss_bytes": int(session.get("baseline_rss_bytes") or 0) if session.get("baseline_rss_bytes") is not None else None,
+        "peak_rss_bytes": int(session.get("peak_rss_bytes") or 0) if session.get("peak_rss_bytes") is not None else None,
+        "rss_growth_bytes": int(session.get("rss_growth_bytes") or 0) if session.get("rss_growth_bytes") is not None else None,
+        "retry_of_session_id": str(session.get("retry_of_session_id") or "").strip() or None,
+        "artifact_total": len([entry for entry in artifact_refs if isinstance(entry, dict)]),
+    }
+
+
+def _build_root_subnet_diagnostics(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    session_limit: int,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    reports = list_control_reports(hub_id=effective_target_id) if effective_target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    protocol_runtime = dict(latest_report_payload.get("protocol_runtime") or {}) if isinstance(latest_report_payload.get("protocol_runtime"), dict) else {}
+    yjs_runtime = dict(latest_report_payload.get("yjs_runtime") or {}) if isinstance(latest_report_payload.get("yjs_runtime"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    route = dict(latest_report_payload.get("route") or {}) if isinstance(latest_report_payload.get("route"), dict) else {}
+    current_runtime_instance_id = str(
+        latest_report_payload.get("runtime_instance_id")
+        or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("runtime_instance_id")
+        or target_meta.get("runtime_instance_id")
+        or ""
+    ).strip() or None
+
+    route_runtime = dict(protocol_runtime.get("route_runtime") or {}) if isinstance(protocol_runtime.get("route_runtime"), dict) else {}
+    route_flows = dict(route_runtime.get("flows") or {}) if isinstance(route_runtime.get("flows"), dict) else {}
+    route_control_flow = dict(route_flows.get("control") or {}) if isinstance(route_flows.get("control"), dict) else {}
+    route_frame_flow = dict(route_flows.get("frame") or {}) if isinstance(route_flows.get("frame"), dict) else {}
+    integration_outboxes = dict(protocol_runtime.get("integration_outboxes") or {}) if isinstance(protocol_runtime.get("integration_outboxes"), dict) else {}
+    telegram_outbox = dict(integration_outboxes.get("telegram") or {}) if isinstance(integration_outboxes.get("telegram"), dict) else {}
+    control_authority = dict(protocol_runtime.get("control_authority") or {}) if isinstance(protocol_runtime.get("control_authority"), dict) else {}
+    protocol_assessment = dict(protocol_runtime.get("assessment") or {}) if isinstance(protocol_runtime.get("assessment"), dict) else {}
+
+    yjs_assessment = dict(yjs_runtime.get("assessment") or {}) if isinstance(yjs_runtime.get("assessment"), dict) else {}
+    yjs_transport = dict(yjs_runtime.get("transport") or {}) if isinstance(yjs_runtime.get("transport"), dict) else {}
+    yjs_selected_webspace = dict(yjs_runtime.get("selected_webspace") or {}) if isinstance(yjs_runtime.get("selected_webspace"), dict) else {}
+    yjs_selected_store_runtime = dict(yjs_selected_webspace.get("store_runtime") or {}) if isinstance(yjs_selected_webspace.get("store_runtime"), dict) else {}
+    yjs_selected_gateway_room = dict(yjs_selected_webspace.get("gateway_room") or {}) if isinstance(yjs_selected_webspace.get("gateway_room"), dict) else {}
+    yjs_selected_room_diag = dict(yjs_selected_gateway_room.get("diagnostic") or {}) if isinstance(yjs_selected_gateway_room.get("diagnostic"), dict) else {}
+    yjs_selected_send_stream = dict(yjs_selected_gateway_room.get("send_stream") or {}) if isinstance(yjs_selected_gateway_room.get("send_stream"), dict) else {}
+    yjs_selected_ystore = dict(yjs_selected_gateway_room.get("ystore") or {}) if isinstance(yjs_selected_gateway_room.get("ystore"), dict) else {}
+
+    memory_reports = list_memory_profile_reports(
+        hub_id=effective_target_id,
+        subnet_id=effective_subnet_id,
+        zone=str(auth.get("zone") or "").strip() or None,
+    )
+    memory_reports.sort(key=_profile_report_sort_key, reverse=True)
+    recent_memory = memory_reports[: max(1, min(int(session_limit), 10))]
+    running_total = 0
+    suspected_total = 0
+    for item in memory_reports:
+        report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+        session = dict(report.get("session") or {}) if isinstance(report.get("session"), dict) else {}
+        if str(session.get("session_state") or "").strip().lower() == "running":
+            running_total += 1
+        if bool(session.get("suspected_leak")):
+            suspected_total += 1
+    latest_memory = _compact_memory_profile_session(recent_memory[0], current_runtime_instance_id=current_runtime_instance_id) if recent_memory else None
+    latest_suspected_raw = next(
+        (
+            item
+            for item in memory_reports
+            if isinstance(item, dict)
+            and bool(
+                (
+                    ((item.get("report") or {}) if isinstance(item.get("report"), dict) else {}).get("session")
+                    if isinstance(((item.get("report") or {}) if isinstance(item.get("report"), dict) else {}).get("session"), dict)
+                    else {}
+                ).get("suspected_leak")
+            )
+        ),
+        None,
+    )
+    latest_suspected = (
+        _compact_memory_profile_session(latest_suspected_raw, current_runtime_instance_id=current_runtime_instance_id)
+        if isinstance(latest_suspected_raw, dict)
+        else None
+    )
+    if suspected_total > 0:
+        memory_assessment = {
+            "state": "pressure",
+            "reason": "suspected memory leak sessions are present in the root-side report registry",
+        }
+    elif running_total > 0:
+        memory_assessment = {
+            "state": "observing",
+            "reason": "a runtime memory profile session is currently running or awaiting publish",
+        }
+    elif recent_memory:
+        memory_assessment = {
+            "state": "history_present",
+            "reason": "root has recent memory-profile history for this subnet",
+        }
+    else:
+        memory_assessment = {
+            "state": "idle",
+            "reason": "root has no published memory-profile sessions for this subnet yet",
+        }
+
+    return {
+        "target_id": effective_target_id,
+        "subnet_id": effective_subnet_id,
+        "current": {
+            "reported_at": latest_report_payload.get("reported_at") or target_meta.get("last_reported_at"),
+            "report_verified": bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified")),
+            "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+            "runtime_instance_id": current_runtime_instance_id,
+            "transition_role": str(
+                latest_report_payload.get("transition_role")
+                or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("transition_role")
+                or target_meta.get("transition_role")
+                or ""
+            ).strip() or None,
+        },
+        "route_pressure": {
+            "available": bool(protocol_runtime),
+            "provenance": "root_control_report",
+            "assessment": {
+                "state": str(protocol_assessment.get("state") or "").strip() or ("unavailable" if not protocol_runtime else None),
+                "reason": str(protocol_assessment.get("reason") or "").strip()
+                or ("control reports do not yet publish compact hub-root protocol diagnostics" if not protocol_runtime else None),
+            },
+            "root_control": {
+                "status": str(root_control.get("status") or "").strip() or None,
+                "stability_state": str(root_control.get("stability_state") or "").strip() or None,
+                "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+            },
+            "route": {
+                "status": str(route.get("status") or "").strip() or None,
+                "stability_state": str(route.get("stability_state") or "").strip() or None,
+                "last_incident_class": str(route.get("last_incident_class") or "").strip() or None,
+            },
+            "pending_ack_streams": int(protocol_runtime.get("pending_ack_streams") or 0),
+            "route_backlog": {
+                "pending_events": int(route_runtime.get("pending_events") or 0),
+                "max_pending_events": int(route_runtime.get("max_pending_events") or 0),
+                "pending_chunks": int(route_runtime.get("pending_chunks") or 0),
+                "active_tunnels": int(route_runtime.get("active_tunnels") or 0),
+                "pending_tunnels": int(route_runtime.get("pending_tunnels") or 0),
+                "updated_at": route_runtime.get("updated_at"),
+                "last_publish_fail_at": route_runtime.get("last_publish_fail_at"),
+                "last_no_upstream_at": route_runtime.get("last_no_upstream_at"),
+                "last_force_close_at": route_runtime.get("last_force_close_at"),
+                "last_reset_at": route_runtime.get("last_reset_at"),
+                "last_reset_reason": str(route_runtime.get("last_reset_reason") or "").strip() or None,
+            },
+            "flows": {
+                "control": {
+                    "state": str(route_control_flow.get("state") or "").strip() or None,
+                    "reason": str(route_control_flow.get("reason") or "").strip() or None,
+                    "last_event": str(route_control_flow.get("last_event") or "").strip() or None,
+                    "last_error": str(route_control_flow.get("last_error") or "").strip() or None,
+                },
+                "frame": {
+                    "state": str(route_frame_flow.get("state") or "").strip() or None,
+                    "reason": str(route_frame_flow.get("reason") or "").strip() or None,
+                    "last_event": str(route_frame_flow.get("last_event") or "").strip() or None,
+                    "last_error": str(route_frame_flow.get("last_error") or "").strip() or None,
+                },
+            },
+            "integration_outboxes": {
+                "telegram": {
+                    "size": int(telegram_outbox.get("size") or 0),
+                    "max_size": int(telegram_outbox.get("max_size") or 0) if telegram_outbox.get("max_size") is not None else None,
+                    "durable_store": bool(telegram_outbox.get("durable_store")),
+                    "publish_ok": int(telegram_outbox.get("publish_ok") or 0),
+                    "publish_fail": int(telegram_outbox.get("publish_fail") or 0),
+                    "last_error": str(telegram_outbox.get("last_error") or "").strip() or None,
+                    "last_error_at": telegram_outbox.get("last_error_at"),
+                }
+            },
+            "control_authority": {
+                "state": str(control_authority.get("state") or "").strip() or None,
+                "reason": str(control_authority.get("reason") or "").strip() or None,
+                "stale_after_s": control_authority.get("stale_after_s"),
+                "ack_age_s": control_authority.get("ack_age_s"),
+                "issue_age_s": control_authority.get("issue_age_s"),
+                "issued_cursor": int(control_authority.get("issued_cursor") or 0),
+                "acked_cursor": int(control_authority.get("acked_cursor") or 0),
+                "pending": bool(control_authority.get("pending")),
+            },
+        },
+        "yjs_pressure": {
+            "available": bool(yjs_runtime),
+            "provenance": "root_control_report",
+            "assessment": {
+                "state": str(yjs_assessment.get("state") or "").strip() or ("unavailable" if not yjs_runtime else None),
+                "reason": str(yjs_assessment.get("reason") or "").strip()
+                or ("control reports do not yet publish compact YJS runtime diagnostics" if not yjs_runtime else None),
+            },
+            "selected_webspace_id": str(yjs_runtime.get("selected_webspace_id") or "").strip() or None,
+            "webspace_total": int(yjs_runtime.get("webspace_total") or 0),
+            "active_webspace_total": int(yjs_runtime.get("active_webspace_total") or 0),
+            "compaction_eligible_webspace_total": int(yjs_runtime.get("compaction_eligible_webspace_total") or 0),
+            "update_log_total": int(yjs_runtime.get("update_log_total") or 0),
+            "replay_window_total": int(yjs_runtime.get("replay_window_total") or 0),
+            "replay_window_byte_total": int(yjs_runtime.get("replay_window_byte_total") or 0),
+            "transport": {
+                "active_yws_connections": int(yjs_transport.get("active_yws_connections") or 0),
+                "storm_detected": bool(yjs_transport.get("storm_detected")),
+                "recent_open_60s": int(yjs_transport.get("recent_open_60s") or 0),
+                "server_ready": bool(yjs_transport.get("server_ready")),
+                "active_room_total": int(yjs_transport.get("active_room_total") or 0),
+                "room_reset_total": int(yjs_transport.get("room_reset_total") or 0),
+                "reload_recent_60s": int(yjs_transport.get("reload_recent_60s") or 0),
+                "reset_recent_60s": int(yjs_transport.get("reset_recent_60s") or 0),
+                "update_stream_buffer_used_total": int(yjs_transport.get("update_stream_buffer_used_total") or 0),
+                "update_stream_waiting_send_total": int(yjs_transport.get("update_stream_waiting_send_total") or 0),
+                "update_stream_waiting_receive_total": int(yjs_transport.get("update_stream_waiting_receive_total") or 0),
+            },
+            "selected_webspace": {
+                "title": str(yjs_selected_webspace.get("title") or "").strip() or None,
+                "kind": str(yjs_selected_webspace.get("kind") or "").strip() or None,
+                "source_mode": str(yjs_selected_webspace.get("source_mode") or "").strip() or None,
+                "rebuild_status": str(yjs_selected_webspace.get("rebuild_status") or "").strip() or None,
+                "store_runtime": {
+                    "log_mode": str(yjs_selected_store_runtime.get("log_mode") or "").strip() or None,
+                    "update_log_entries": int(yjs_selected_store_runtime.get("update_log_entries") or 0),
+                    "max_update_log_entries": int(yjs_selected_store_runtime.get("max_update_log_entries") or 0),
+                    "replay_window_entries": int(yjs_selected_store_runtime.get("replay_window_entries") or 0),
+                    "replay_window_limit": int(yjs_selected_store_runtime.get("replay_window_limit") or 0),
+                    "replay_window_bytes": int(yjs_selected_store_runtime.get("replay_window_bytes") or 0),
+                    "replay_window_byte_limit": int(yjs_selected_store_runtime.get("replay_window_byte_limit") or 0),
+                    "runtime_compaction_eligible": bool(yjs_selected_store_runtime.get("runtime_compaction_eligible")),
+                    "snapshot_file_exists": bool(yjs_selected_store_runtime.get("snapshot_file_exists")),
+                    "snapshot_file_size": int(yjs_selected_store_runtime.get("snapshot_file_size") or 0),
+                },
+                "gateway_room": {
+                    "client_total": int(yjs_selected_gateway_room.get("client_total") or 0),
+                    "ready": bool(yjs_selected_gateway_room.get("ready")),
+                    "started": bool(yjs_selected_gateway_room.get("started")),
+                    "task_group_active": bool(yjs_selected_gateway_room.get("task_group_active")),
+                    "ystore_attached": bool(yjs_selected_gateway_room.get("ystore_attached")),
+                    "diagnostic": {
+                        "pending_send_tasks": int(yjs_selected_room_diag.get("pending_send_tasks") or 0),
+                        "pending_store_tasks": int(yjs_selected_room_diag.get("pending_store_tasks") or 0),
+                        "update_total": int(yjs_selected_room_diag.get("update_total") or 0),
+                        "update_bytes_total": int(yjs_selected_room_diag.get("update_bytes_total") or 0),
+                    },
+                    "send_stream": {
+                        "current_buffer_used": int(yjs_selected_send_stream.get("current_buffer_used") or 0),
+                        "max_buffer_size": int(yjs_selected_send_stream.get("max_buffer_size") or 0),
+                        "tasks_waiting_send": int(yjs_selected_send_stream.get("tasks_waiting_send") or 0),
+                        "tasks_waiting_receive": int(yjs_selected_send_stream.get("tasks_waiting_receive") or 0),
+                    },
+                    "ystore": {
+                        "update_log_entries": int(yjs_selected_ystore.get("update_log_entries") or 0),
+                        "update_log_bytes": int(yjs_selected_ystore.get("update_log_bytes") or 0),
+                        "replay_window_bytes": int(yjs_selected_ystore.get("replay_window_bytes") or 0),
+                        "last_update_bytes": int(yjs_selected_ystore.get("last_update_bytes") or 0),
+                    },
+                },
+            },
+        },
+        "memory_pressure": {
+            "available": True,
+            "provenance": "root_memory_profile_reports",
+            "assessment": memory_assessment,
+            "recent_session_total": len(memory_reports),
+            "running_session_total": running_total,
+            "suspected_session_total": suspected_total,
+            "latest_session": latest_memory,
+            "latest_suspected_session": latest_suspected,
+            "recent_sessions": [
+                _compact_memory_profile_session(item, current_runtime_instance_id=current_runtime_instance_id)
+                for item in recent_memory
+            ],
+        },
+    }
+
+
 def _build_root_subnet_timeline(
     *,
     auth: dict[str, Any],
@@ -1815,6 +2125,32 @@ async def root_mcp_subnet_timeline(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "timeline": timeline,
+    }
+
+
+@root_router.get("/mcp/subnet/diagnostics")
+async def root_mcp_subnet_diagnostics(
+    target_id: str | None = None,
+    session_limit: int = 5,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    diagnostics = _build_root_subnet_diagnostics(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        session_limit=max(1, min(int(session_limit), 10)),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "diagnostics": diagnostics,
     }
 
 

@@ -580,6 +580,41 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
                     "replay_window_bytes": int(raw.get("replay_window_bytes") or 0),
                     "last_update_bytes": int(raw.get("last_update_bytes") or 0),
                 }
+    room_diagnostic = {}
+    diagnostic_snapshot = getattr(room, "_diag_snapshot", None) if room is not None else None
+    if callable(diagnostic_snapshot):
+        try:
+            raw_diag = diagnostic_snapshot()
+        except Exception:
+            raw_diag = {}
+        if isinstance(raw_diag, dict):
+            send_stream = dict(raw_diag.get("send_stream") or {}) if isinstance(raw_diag.get("send_stream"), dict) else {}
+            receive_stream = dict(raw_diag.get("receive_stream") or {}) if isinstance(raw_diag.get("receive_stream"), dict) else {}
+            diag_ystore = dict(raw_diag.get("ystore") or {}) if isinstance(raw_diag.get("ystore"), dict) else {}
+            room_diagnostic = {
+                "pending_send_tasks": int(raw_diag.get("pending_send_tasks") or 0),
+                "pending_store_tasks": int(raw_diag.get("pending_store_tasks") or 0),
+                "update_total": int(raw_diag.get("update_total") or 0),
+                "update_bytes_total": int(raw_diag.get("update_bytes_total") or 0),
+                "send_stream": {
+                    "current_buffer_used": int(send_stream.get("current_buffer_used") or 0),
+                    "max_buffer_size": int(send_stream.get("max_buffer_size") or 0),
+                    "tasks_waiting_send": int(send_stream.get("tasks_waiting_send") or 0),
+                    "tasks_waiting_receive": int(send_stream.get("tasks_waiting_receive") or 0),
+                },
+                "receive_stream": {
+                    "current_buffer_used": int(receive_stream.get("current_buffer_used") or 0),
+                    "max_buffer_size": int(receive_stream.get("max_buffer_size") or 0),
+                    "tasks_waiting_send": int(receive_stream.get("tasks_waiting_send") or 0),
+                    "tasks_waiting_receive": int(receive_stream.get("tasks_waiting_receive") or 0),
+                },
+                "ystore": {
+                    "update_log_entries": int(diag_ystore.get("update_log_entries") or 0),
+                    "update_log_bytes": int(diag_ystore.get("update_log_bytes") or 0),
+                    "replay_window_bytes": int(diag_ystore.get("replay_window_bytes") or 0),
+                    "last_update_bytes": int(diag_ystore.get("last_update_bytes") or 0),
+                },
+            }
 
     return {
         "webspace_id": key,
@@ -619,6 +654,7 @@ def _room_debug_snapshot(webspace_id: str, room: Any | None, now: float) -> dict
         "task_group_active": bool(task_group is not None),
         "ystore_attached": bool(ystore is not None),
         "ystore_runtime": ystore_runtime,
+        "diagnostic": room_diagnostic,
         "update_send_stream": send_stream_stats,
         "update_receive_stream": recv_stream_stats,
     }

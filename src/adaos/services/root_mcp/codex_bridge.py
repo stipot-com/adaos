@@ -529,7 +529,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_yjs_logs",
-                "description": "Read bounded YJS log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested.",
+                "description": "Read bounded YJS log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -545,7 +545,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_skill_logs",
-                "description": "Read bounded skill service log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested.",
+                "description": "Read bounded skill service log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -562,7 +562,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_adaos_logs",
-                "description": "Read bounded adaos.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested.",
+                "description": "Read bounded adaos.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -578,7 +578,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_events_logs",
-                "description": "Read bounded events.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested.",
+                "description": "Read bounded events.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -627,6 +627,18 @@ class CodexRootMcpBridge:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 100},
                         "include_control_reports": {"type": "boolean", "default": True},
                         "include_profile_ops": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_diagnostics",
+                "description": "Read typed route, backlog, ack, YJS, and memory-profile diagnostics for the current subnet from Root MCP projections.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "session_limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
                     },
                     "additionalProperties": False,
                 },
@@ -829,6 +841,13 @@ class CodexRootMcpBridge:
                     limit=int(args.get("limit") or 100),
                     include_control_reports=bool(args["include_control_reports"]) if "include_control_reports" in args else True,
                     include_profile_ops=bool(args["include_profile_ops"]) if "include_profile_ops" in args else True,
+                )
+            )
+        if tool == "get_subnet_diagnostics":
+            return _tool_text(
+                client.get_subnet_diagnostics(
+                    target_id=_normalize_text(args.get("target_id")),
+                    session_limit=int(args.get("session_limit") or 5),
                 )
             )
         raise KeyError(tool)

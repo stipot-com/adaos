@@ -556,6 +556,7 @@ In Phase 1, this web surface should be able to bind directly to typed Root MCP t
 - `hub.list_access_tokens`
 - `get_subnet_analysis_health`
 - `get_subnet_timeline`
+- `get_subnet_diagnostics`
 
 As MCP session leases are introduced, web-facing operational views should also be able to bind to session-management data such as:
 
@@ -565,6 +566,12 @@ As MCP session leases are introduced, web-facing operational views should also b
 
 Ordinary session list and get views should freshness-normalize expired leases so they do not continue to appear operationally active after TTL expiry.
 
+Typed subnet diagnostics should also expose compact pressure-oriented projections for:
+
+- route backlog and pending ack streams
+- YJS transport and selected webspace pressure
+- root-ingested memory-profile summaries for the current subnet/runtime
+
 Operational observability reads should also carry explicit source provenance.
 In particular, log-style reads must distinguish at least:
 
@@ -572,6 +579,12 @@ In particular, log-style reads must distinguish at least:
 - `subnet_active`
 
 so operators and agents can tell whether they are seeing logs from the root-hosting machine or aggregated logs from the currently active subnet runtime.
+
+Those log-style reads should also publish a compact health summary for the chosen path, so an MCP client can tell whether it is looking at:
+
+- a healthy root-local read
+- a healthy subnet-active aggregation
+- a partial or degraded subnet-active aggregation that should not be treated as a complete picture
 
 ### What Should Be Logged
 
