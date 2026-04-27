@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import hashlib
 import os
@@ -426,6 +427,377 @@ def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = Non
                 "admin_route": "/api/admin/root_mcp/logs/{category}",
                 "member_route": "/api/node/logs/{category}",
             }
+        },
+    }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token.endswith("Z"):
+        token = token[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds_from_iso(value: Any) -> float | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _status_from_score(score: int) -> str:
+    bounded = max(0, min(int(score), 100))
+    if bounded >= 85:
+        return "healthy"
+    if bounded >= 60:
+        return "degraded"
+    return "unavailable"
+
+
+def _latest_timestamp(values: list[str]) -> str | None:
+    best: datetime | None = None
+    for value in values:
+        parsed = _parse_iso_datetime(value)
+        if parsed is None:
+            continue
+        if best is None or parsed > best:
+            best = parsed
+    if best is None:
+        return None
+    return best.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def _probe_subnet_log_health(
+    *,
+    subnet_id: str,
+    lines: int,
+    include_hub: bool,
+) -> dict[str, Any]:
+    categories = ["adaos", "events", "yjs", "skills"]
+    probes = await asyncio.gather(
+        *[
+            aggregate_subnet_logs(
+                category=category,
+                subnet_id=subnet_id,
+                limit=1,
+                lines=lines,
+                include_hub=include_hub,
+            )
+            for category in categories
+        ],
+        return_exceptions=True,
+    )
+    category_results: list[dict[str, Any]] = []
+    scores: list[int] = []
+
+    for category, probe in zip(categories, probes, strict=False):
+        if isinstance(probe, Exception):
+            category_results.append(
+                {
+                    "category": category,
+                    "status": "unavailable",
+                    "score": 10,
+                    "summary": f"log probe failed: {type(probe).__name__}",
+                    "error": f"{type(probe).__name__}: {probe}",
+                }
+            )
+            scores.append(10)
+            continue
+
+        aggregation = dict(probe.get("aggregation") or {}) if isinstance(probe, dict) else {}
+        included_total = int(aggregation.get("included_total") or 0)
+        ok_total = int(aggregation.get("ok_total") or 0)
+        active_total = int(aggregation.get("active_total") or 0)
+        error_total = int(aggregation.get("error_total") or 0)
+        item_total = 0
+        nodes_with_items = 0
+        for node in list(probe.get("nodes") or []) if isinstance(probe, dict) else []:
+            if not isinstance(node, dict):
+                continue
+            logs = dict(node.get("logs") or {}) if isinstance(node.get("logs"), dict) else {}
+            items = logs.get("items") if isinstance(logs.get("items"), list) else []
+            item_count = len(items)
+            item_total += item_count
+            if item_count > 0:
+                nodes_with_items += 1
+
+        if included_total <= 0 and active_total <= 0:
+            score = 30
+            summary = "no active subnet nodes were available for log aggregation"
+        elif included_total <= 0:
+            score = 35
+            summary = "active nodes exist but none were included in the log probe"
+        elif ok_total <= 0:
+            score = 35
+            summary = "log aggregation reached nodes but no probe succeeded"
+        elif ok_total == included_total and item_total > 0:
+            score = 100
+            summary = "log aggregation succeeded across all included nodes"
+        elif ok_total == included_total:
+            score = 78
+            summary = "log aggregation transport succeeded but no matching files were returned"
+        else:
+            score = 68
+            summary = "log aggregation returned partial results across included nodes"
+
+        category_results.append(
+            {
+                "category": category,
+                "status": _status_from_score(score),
+                "score": score,
+                "summary": summary,
+                "source_mode": probe.get("source_mode") if isinstance(probe, dict) else None,
+                "aggregation": aggregation,
+                "nodes_with_items": nodes_with_items,
+                "item_total": item_total,
+                "error_total": error_total,
+            }
+        )
+        scores.append(score)
+
+    overall_score = int(round(sum(scores) / len(scores))) if scores else 0
+    return {
+        "status": _status_from_score(overall_score),
+        "score": overall_score,
+        "provenance": "subnet_active",
+        "probe": {
+            "categories": categories,
+            "lines": lines,
+            "include_hub": include_hub,
+        },
+        "categories": category_results,
+    }
+
+
+async def _build_root_subnet_analysis_health(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    probe_logs: bool,
+    lines: int,
+    include_hub: bool,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    node_summary = dict(subnet_info.get("node_summary") or {}) if isinstance(subnet_info.get("node_summary"), dict) else {}
+    active_known = int(node_summary.get("active_known") or 0)
+    total_known = int(node_summary.get("total_known") or 0)
+    connected_members = int(node_summary.get("connected_members") or 0)
+
+    if active_known > 0:
+        subnet_score = 100
+        subnet_summary = "root currently sees active nodes in the subnet"
+    elif total_known > 0:
+        subnet_score = 55
+        subnet_summary = "root knows subnet nodes but none currently appear active"
+    else:
+        subnet_score = 25
+        subnet_summary = "root does not currently know any nodes for the subnet"
+    subnet_state_channel = {
+        "status": _status_from_score(subnet_score),
+        "score": subnet_score,
+        "summary": subnet_summary,
+        "known_total": total_known,
+        "active_total": active_known,
+        "connected_members": connected_members,
+    }
+
+    reports = list_control_reports(hub_id=effective_target_id) if effective_target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    reported_at = (
+        latest_report_payload.get("reported_at")
+        or target_meta.get("last_reported_at")
+    )
+    report_age_seconds = _age_seconds_from_iso(reported_at)
+    report_verified = bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified"))
+    if not reports and not reported_at:
+        report_score = 20
+        report_summary = "no control report is currently available on root"
+    elif report_age_seconds is None:
+        report_score = 55
+        report_summary = "control report exists but freshness could not be determined"
+    elif report_age_seconds <= 15 * 60 and report_verified:
+        report_score = 100
+        report_summary = "control report is fresh and verified"
+    elif report_age_seconds <= 60 * 60:
+        report_score = 70 if report_verified else 62
+        report_summary = "control report is available but no longer fresh"
+    else:
+        report_score = 45 if report_verified else 35
+        report_summary = "control report is stale for live operational analysis"
+    control_report_channel = {
+        "status": _status_from_score(report_score),
+        "score": report_score,
+        "summary": report_summary,
+        "reported_at": reported_at,
+        "age_seconds": report_age_seconds,
+        "verified": report_verified,
+        "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+        "runtime_instance_id": str(latest_report_payload.get("runtime_instance_id") or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("runtime_instance_id") or target_meta.get("runtime_instance_id") or "").strip() or None,
+        "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+    }
+
+    sessions = list_mcp_session_leases(limit=200, target_id=effective_target_id or None, active_only=False)
+    visible_sessions = [
+        item
+        for item in sessions
+        if (
+            effective_subnet_id
+            and str(item.get("subnet_id") or "").strip() == effective_subnet_id
+        )
+        or (
+            effective_target_id
+            and effective_target_id in list(item.get("target_ids") or [])
+        )
+    ]
+    now = datetime.now(timezone.utc)
+    stale_active_ids: list[str] = []
+    for item in visible_sessions:
+        expires_at = _parse_iso_datetime(item.get("expires_at"))
+        if str(item.get("status") or "").strip() == "active" and expires_at is not None and expires_at < now:
+            token = str(item.get("session_id") or "").strip()
+            if token:
+                stale_active_ids.append(token)
+    stale_active_count = len(stale_active_ids)
+    if stale_active_count <= 0:
+        session_score = 100
+        session_summary = "visible session registry is freshness-consistent"
+    elif stale_active_count <= 3:
+        session_score = 65
+        session_summary = "session registry shows a small number of stale active leases"
+    else:
+        session_score = 40
+        session_summary = "session registry shows multiple stale active leases"
+    session_registry_channel = {
+        "status": _status_from_score(session_score),
+        "score": session_score,
+        "summary": session_summary,
+        "visible_total": len(visible_sessions),
+        "active_total": sum(1 for item in visible_sessions if str(item.get("status") or "").strip() == "active"),
+        "stale_active_total": stale_active_count,
+        "stale_active_session_ids": stale_active_ids[:10],
+    }
+
+    audit_events = recent_audit_events(limit=50, target_id=effective_target_id, subnet_id=effective_subnet_id)
+    latest_audit_at = _latest_timestamp(
+        [
+            str(item.get("finished_at") or item.get("started_at") or "").strip()
+            for item in audit_events
+            if isinstance(item, dict)
+        ]
+    )
+    if audit_events:
+        audit_score = 100
+        audit_summary = "root audit history contains recent target-scoped events"
+    else:
+        audit_score = 80
+        audit_summary = "root audit channel is readable but the sampled window is empty"
+    audit_history_channel = {
+        "status": _status_from_score(audit_score),
+        "score": audit_score,
+        "summary": audit_summary,
+        "history_kind": "root_audit",
+        "recent_event_total": len(audit_events),
+        "latest_event_at": latest_audit_at,
+    }
+
+    if probe_logs and effective_subnet_id:
+        log_aggregation_channel = await _probe_subnet_log_health(
+            subnet_id=effective_subnet_id,
+            lines=max(1, min(int(lines), 200)),
+            include_hub=bool(include_hub),
+        )
+    else:
+        log_aggregation_channel = {
+            "status": "skipped",
+            "score": None,
+            "summary": "log aggregation probe was not requested" if not probe_logs else "log aggregation probe requires an effective subnet scope",
+            "provenance": "subnet_active",
+        }
+
+    channels = {
+        "subnet_state": subnet_state_channel,
+        "control_report": control_report_channel,
+        "session_registry": session_registry_channel,
+        "audit_history": audit_history_channel,
+        "log_aggregation": log_aggregation_channel,
+    }
+    implemented_scores = [
+        int(channel.get("score"))
+        for channel in channels.values()
+        if isinstance(channel, dict) and isinstance(channel.get("score"), int)
+    ]
+    overall_score = int(round(sum(implemented_scores) / len(implemented_scores))) if implemented_scores else 0
+    trustworthy_for: list[str] = []
+    if subnet_score >= 60 and report_score >= 60:
+        trustworthy_for.append("current subnet snapshot analysis")
+    if session_score >= 60:
+        trustworthy_for.append("session lease visibility")
+    if audit_score >= 60:
+        trustworthy_for.append("root audit review")
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) >= 60:
+        trustworthy_for.append("runtime log correlation")
+
+    not_reliable_for = ["complete operational history reconstruction"]
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) < 60:
+        not_reliable_for.append("runtime log-based diagnosis")
+    if report_score < 60:
+        not_reliable_for.append("fresh live-state inference")
+
+    recommendations: list[str] = []
+    if report_age_seconds is not None and report_age_seconds > 15 * 60:
+        recommendations.append("Treat control-report-derived state as stale until a fresh report is ingested.")
+    if reports and not report_verified:
+        recommendations.append("Control reports are present but not verified; trust them cautiously.")
+    if stale_active_count > 0:
+        recommendations.append("Normalize or validate MCP session leases before using active-session counts operationally.")
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) < 60:
+        recommendations.append("Prefer root-known snapshot data over subnet-active log analysis until log aggregation recovers.")
+
+    return {
+        "target_id": effective_target_id,
+        "subnet_id": effective_subnet_id,
+        "scope": {
+            "subnet_id": subnet_id,
+            "zone": auth.get("zone"),
+        },
+        "overall": {
+            "status": _status_from_score(overall_score),
+            "score": overall_score,
+            "trustworthy_for": trustworthy_for,
+            "not_reliable_for": not_reliable_for,
+        },
+        "channels": channels,
+        "gaps": [
+            {
+                "id": "operational_history_surface",
+                "status": "not_implemented",
+                "message": "Operational history is still inferred from Root MCP audit plus control reports rather than a dedicated typed subnet timeline.",
+            }
+        ],
+        "recommendations": recommendations,
+        "subnet": {
+            "source_mode": subnet_info.get("source_mode"),
+            "node_summary": node_summary,
+            "hub_link": subnet_info.get("hub_link"),
         },
     }
 
@@ -1322,6 +1694,37 @@ async def root_mcp_subnet_info(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "subnet": info,
+    }
+
+
+@root_router.get("/mcp/subnet/analysis-health")
+async def root_mcp_subnet_analysis_health(
+    target_id: str | None = None,
+    probe_logs: bool = True,
+    lines: int = 20,
+    include_hub: bool = True,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    analysis = await _build_root_subnet_analysis_health(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        probe_logs=bool(probe_logs),
+        lines=max(1, min(int(lines), 200)),
+        include_hub=bool(include_hub),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "analysis": analysis,
     }
 
 

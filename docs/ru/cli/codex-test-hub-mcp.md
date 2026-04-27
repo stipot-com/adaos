@@ -83,6 +83,7 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - `get_adaos_logs`
 - `get_events_logs`
 - `get_subnet_info`
+- `get_subnet_analysis_health`
 
 ## Почему это локальный bridge, а не direct remote MCP
 
@@ -214,6 +215,8 @@ codex mcp remove adaos-test-hub
 Сейчас эти методы зависят от `execution_mode=local_process`. Если target публикует только `reported_only`, status и observability tools будут работать, а bounded execution tools — нет.
 
 Выделенные log-tools `get_adaos_logs`, `get_events_logs`, `get_skill_logs` и `get_yjs_logs` теперь по умолчанию используют `scope=subnet_active`. Это нужно, чтобы пустые `root_local` ответы не маскировали рабочий hub-root путь observability. `scope=root_local` стоит указывать только тогда, когда нужны именно логи локальной машины, где запущен bridge или root service.
+
+Для Phase 7 анализа подсети теперь лучше начинать с `get_subnet_analysis_health`. Этот метод сводит в одну оценку доверие к snapshot state, session registry, audit history и `subnet_active` log channels перед более глубоким разбором memory или incident проблем.
 
 ## Текущие границы MVP
 

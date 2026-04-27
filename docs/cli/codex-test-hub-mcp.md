@@ -83,6 +83,7 @@ The bridge currently exposes these tools:
 - `get_adaos_logs`
 - `get_events_logs`
 - `get_subnet_info`
+- `get_subnet_analysis_health`
 
 ## Why This Is a Local Bridge
 
@@ -212,6 +213,8 @@ Check:
 Those methods currently depend on `execution_mode=local_process`. If the target publishes only `reported_only`, status and observability tools still work, but bounded execution tools do not.
 
 The dedicated log tools such as `get_adaos_logs`, `get_events_logs`, `get_skill_logs`, and `get_yjs_logs` now default to `scope=subnet_active`. This is intended to avoid empty `root_local` answers masking a healthy hub-root observability path. Use `scope=root_local` only when you intentionally want logs from the local machine hosting the bridge or root service.
+
+For Phase 7 subnet analysis, prefer `get_subnet_analysis_health` before deeper investigation. It summarizes whether current snapshot, session-registry, audit, and `subnet_active` log channels are trustworthy enough for memory or incident analysis.
 
 ## Current Boundaries
 

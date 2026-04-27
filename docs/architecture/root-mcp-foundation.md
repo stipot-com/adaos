@@ -554,6 +554,7 @@ In Phase 1, this web surface should be able to bind directly to typed Root MCP t
 - `hub.get_activity_log`
 - `hub.get_capability_usage_summary`
 - `hub.list_access_tokens`
+- `get_subnet_analysis_health`
 
 As MCP session leases are introduced, web-facing operational views should also be able to bind to session-management data such as:
 

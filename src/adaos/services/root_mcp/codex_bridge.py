@@ -603,6 +603,20 @@ class CodexRootMcpBridge:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "get_subnet_analysis_health",
+                "description": "Assess which subnet analysis channels are currently trustworthy, including control-report freshness, session freshness, and optional subnet-active log probes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "probe_logs": {"type": "boolean", "default": True},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -785,6 +799,15 @@ class CodexRootMcpBridge:
             )
         if tool == "get_subnet_info":
             return _tool_text(client.get_subnet_info(target_id=_normalize_text(args.get("target_id"))))
+        if tool == "get_subnet_analysis_health":
+            return _tool_text(
+                client.get_subnet_analysis_health(
+                    target_id=_normalize_text(args.get("target_id")),
+                    probe_logs=bool(args["probe_logs"]) if "probe_logs" in args else True,
+                    lines=int(args.get("lines") or 20),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else True,
+                )
+            )
         raise KeyError(tool)
 
     def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:

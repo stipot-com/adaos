@@ -174,7 +174,7 @@ This means earlier phases do not need to be revoked, but some milestone reads sh
 - [ ] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
 - [ ] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
 - [ ] expose route/backlog/ack/YJS pressure diagnostics through typed Root MCP reads rather than only indirect logs
-- [ ] add an `adaosmcp` self-check or capability-health surface so operators and agents can verify which analysis channels are currently trustworthy
+- [x] add an initial `adaosmcp` self-check or capability-health surface so operators and agents can verify which analysis channels are currently trustworthy
 
 ### Current Implementation Slice
 
@@ -182,6 +182,7 @@ The first Phase 7 implementation slice should improve observability provenance b
 
 - [x] formalize workspace-local MCP path layout with dedicated `.adaos/mcp/` bridge artifacts and `.adaos/state/root_mcp/` state storage
 - [x] make bridge log tools prefer `scope=subnet_active` by default so healthy hub-root aggregation is not hidden behind empty `root_local` reads
+- [x] add an initial subnet analysis self-check surface that scores current snapshot, control-report freshness, session-registry freshness, audit visibility, and subnet-active log aggregation
 - [ ] add explicit log-source provenance and health scoring to the same bridge/tooling surface
 - [ ] add typed `subnet operational history` and `subnet timeline` contracts over audit plus control-report data
 
