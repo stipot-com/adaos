@@ -24,6 +24,7 @@ from adaos.services.root_mcp.service import (
     foundation_snapshot,
     get_descriptor,
     get_managed_target,
+    get_target_operational_timeline,
     invoke_tool,
     list_descriptor_registry,
     list_managed_targets,
@@ -756,7 +757,7 @@ async def _build_root_subnet_analysis_health(
     if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) >= 60:
         trustworthy_for.append("runtime log correlation")
 
-    not_reliable_for = ["complete operational history reconstruction"]
+    not_reliable_for = ["full runtime-native operational history reconstruction"]
     if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) < 60:
         not_reliable_for.append("runtime log-based diagnosis")
     if report_score < 60:
@@ -789,8 +790,8 @@ async def _build_root_subnet_analysis_health(
         "gaps": [
             {
                 "id": "operational_history_surface",
-                "status": "not_implemented",
-                "message": "Operational history is still inferred from Root MCP audit plus control reports rather than a dedicated typed subnet timeline.",
+                "status": "partial",
+                "message": "A typed subnet timeline is now available, but it is still derived mainly from Root MCP audit plus report-ingest events rather than full runtime-native history.",
             }
         ],
         "recommendations": recommendations,
@@ -800,6 +801,64 @@ async def _build_root_subnet_analysis_health(
             "hub_link": subnet_info.get("hub_link"),
         },
     }
+
+
+def _current_control_report_ref(
+    *,
+    managed_target: dict[str, Any],
+    target_id: str | None,
+) -> dict[str, Any]:
+    reports = list_control_reports(hub_id=target_id) if target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    runtime = dict(latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}
+    reported_at = latest_report_payload.get("reported_at") or target_meta.get("last_reported_at")
+    return {
+        "reported_at": reported_at,
+        "report_verified": bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified")),
+        "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+        "runtime_instance_id": str(latest_report_payload.get("runtime_instance_id") or runtime.get("runtime_instance_id") or target_meta.get("runtime_instance_id") or "").strip() or None,
+        "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+    }
+
+
+def _build_root_subnet_timeline(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    limit: int,
+    include_control_reports: bool,
+    include_profile_ops: bool,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    if not effective_target_id:
+        raise HTTPException(status_code=400, detail={"code": "missing_target", "message": "Unable to resolve target_id for subnet timeline."})
+    timeline = get_target_operational_timeline(
+        target_id=effective_target_id,
+        limit=max(1, min(int(limit), 300)),
+        include_control_reports=bool(include_control_reports),
+        include_profile_ops=bool(include_profile_ops),
+    )
+    summary = dict(timeline.get("summary") or {}) if isinstance(timeline.get("summary"), dict) else {}
+    current_control_report = _current_control_report_ref(managed_target=managed_target, target_id=effective_target_id)
+    summary["latest_control_report_at"] = current_control_report.get("reported_at")
+    timeline["summary"] = summary
+    timeline["subnet_id"] = effective_subnet_id
+    timeline["target_id"] = effective_target_id
+    timeline["current"] = {
+        "managed_target_status": managed_target.get("status"),
+        "control_report": current_control_report,
+    }
+    return timeline
 
 
 def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
@@ -1725,6 +1784,37 @@ async def root_mcp_subnet_analysis_health(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "analysis": analysis,
+    }
+
+
+@root_router.get("/mcp/subnet/timeline")
+async def root_mcp_subnet_timeline(
+    target_id: str | None = None,
+    limit: int = 100,
+    include_control_reports: bool = True,
+    include_profile_ops: bool = True,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    timeline = _build_root_subnet_timeline(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        limit=max(1, min(int(limit), 300)),
+        include_control_reports=bool(include_control_reports),
+        include_profile_ops=bool(include_profile_ops),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "timeline": timeline,
     }
 
 

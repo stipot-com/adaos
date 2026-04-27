@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +11,16 @@ from adaos.services.agent_context import get_ctx
 from .model import RootMcpAuditEvent
 
 
-def _audit_path() -> Path:
+def _root_mcp_state_dir() -> Path:
     ctx = get_ctx()
-    raw = ctx.paths.state_dir()
-    state_dir = Path(raw() if callable(raw) else raw)
-    path = state_dir / "root_mcp" / "audit.jsonl"
+    raw = ctx.paths.root_mcp_state_dir()
+    path = Path(raw() if callable(raw) else raw)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _audit_path() -> Path:
+    path = _root_mcp_state_dir() / "audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -139,6 +145,94 @@ def _event_summary(payload: dict[str, Any]) -> str:
     return f"{tool_id} -> {status}"
 
 
+def _event_class(payload: dict[str, Any]) -> str:
+    tool_id = str(payload.get("tool_id") or "").strip()
+    if tool_id == "hub.control_report.ingest":
+        return "control_report_ingest"
+    if tool_id == "hub.memory_profile_report.ingest":
+        return "profile_report_ingest"
+    if tool_id.startswith("hub.memory."):
+        return "profile_ops"
+    if tool_id in {"hub.issue_mcp_session", "hub.list_mcp_sessions", "hub.revoke_mcp_session"} or tool_id.startswith("root.mcp_sessions."):
+        return "mcp_session"
+    if tool_id in {"hub.issue_access_token", "hub.list_access_tokens", "hub.revoke_access_token"} or tool_id.startswith("root.access_tokens."):
+        return "access_token"
+    if tool_id.startswith("hub."):
+        return "target_operation"
+    if tool_id.startswith("development.") or tool_id.startswith("adaos_dev."):
+        return "development"
+    return "audit_event"
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token.endswith("Z"):
+        token = token[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_timestamp(values: list[str]) -> str | None:
+    best: datetime | None = None
+    for value in values:
+        parsed = _parse_iso_datetime(value)
+        if parsed is None:
+            continue
+        if best is None or parsed > best:
+            best = parsed
+    if best is None:
+        return None
+    return best.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _timeline_details(payload: dict[str, Any]) -> dict[str, Any]:
+    tool_id = str(payload.get("tool_id") or "").strip()
+    meta = dict(payload.get("meta") or {}) if isinstance(payload.get("meta"), dict) else {}
+    result_summary = dict(payload.get("result_summary") or {}) if isinstance(payload.get("result_summary"), dict) else {}
+    details: dict[str, Any] = {}
+    subnet_id = str(meta.get("subnet_id") or "").strip()
+    zone = str(meta.get("zone") or "").strip()
+    if subnet_id:
+        details["subnet_id"] = subnet_id
+    if zone:
+        details["zone"] = zone
+    if tool_id == "hub.control_report.ingest":
+        details.update(
+            {
+                "report_verified": bool(meta.get("report_verified")),
+                "report_auth_method": str(meta.get("report_auth_method") or "").strip() or None,
+                "message_id": str(meta.get("message_id") or "").strip() or None,
+                "duplicate": bool(result_summary.get("duplicate")),
+            }
+        )
+    profile_ops = dict(meta.get("profile_ops") or {}) if isinstance(meta.get("profile_ops"), dict) else {}
+    if tool_id == "hub.memory_profile_report.ingest" or tool_id.startswith("hub.memory."):
+        session_id = str(profile_ops.get("session_id") or meta.get("session_id") or "").strip()
+        profile_mode = str(profile_ops.get("profile_mode") or "").strip()
+        artifact_id = str(profile_ops.get("artifact_id") or "").strip()
+        action = str(profile_ops.get("action") or tool_id.removeprefix("hub.memory.") or "unknown").strip()
+        if action:
+            details["profile_action"] = action
+        if session_id:
+            details["session_id"] = session_id
+        if profile_mode:
+            details["profile_mode"] = profile_mode
+        if artifact_id:
+            details["artifact_id"] = artifact_id
+    if tool_id.startswith("root.access_tokens.") or tool_id.startswith("root.mcp_sessions."):
+        token_or_session_id = str(result_summary.get("token_id") or result_summary.get("session_id") or "").strip()
+        if token_or_session_id:
+            details["resource_id"] = token_or_session_id
+    return {key: value for key, value in details.items() if value is not None}
+
+
 def target_activity_feed(
     *,
     target_id: str,
@@ -191,7 +285,92 @@ def target_activity_feed(
             break
     return {
         "target_id": target_token,
+        "history_kind": "audit_activity_view",
+        "derived_from": ["root_audit", *([] if not include_control_reports else ["control_report_ingest_events"])],
+        "limitations": [
+            "This feed is optimized for recent activity summaries.",
+            "Use the typed subnet timeline surface for richer operational history reconstruction.",
+        ],
         "count": len(items),
+        "items": items,
+    }
+
+
+def target_operational_timeline(
+    *,
+    target_id: str,
+    limit: int = 100,
+    include_control_reports: bool = True,
+    include_profile_ops: bool = True,
+) -> dict[str, Any]:
+    target_token = str(target_id or "").strip()
+    if not target_token:
+        raise ValueError("target_id is required")
+
+    max_items = max(1, min(int(limit), 300))
+    raw_items = list_audit_events(limit=max(200, max_items * 8), target_id=target_token)
+    items: list[dict[str, Any]] = []
+    counts_by_class: dict[str, int] = {}
+    recorded_values: list[str] = []
+
+    for payload in raw_items:
+        tool_id = str(payload.get("tool_id") or "").strip()
+        if not include_control_reports and tool_id == "hub.control_report.ingest":
+            continue
+        if not include_profile_ops and (tool_id == "hub.memory_profile_report.ingest" or tool_id.startswith("hub.memory.")):
+            continue
+
+        event_class = _event_class(payload)
+        recorded_at = str(payload.get("finished_at") or payload.get("started_at") or "").strip() or None
+        if recorded_at:
+            recorded_values.append(recorded_at)
+        counts_by_class[event_class] = int(counts_by_class.get(event_class) or 0) + 1
+        items.append(
+            {
+                "event_id": payload.get("event_id"),
+                "trace_id": payload.get("trace_id"),
+                "request_id": payload.get("request_id"),
+                "target_id": target_token,
+                "recorded_at": recorded_at,
+                "source_kind": "root_audit",
+                "event_class": event_class,
+                "tool_id": tool_id,
+                "status": str(payload.get("status") or "").strip().lower() or "unknown",
+                "actor": payload.get("actor"),
+                "execution_adapter": payload.get("execution_adapter"),
+                "policy_decision": payload.get("policy_decision"),
+                "summary": _event_summary(payload),
+                "details": _timeline_details(payload),
+                "error": dict(payload.get("error") or {}) if isinstance(payload.get("error"), dict) else {},
+            }
+        )
+        if len(items) >= max_items:
+            break
+
+    derived_from = ["root_audit"]
+    if include_control_reports:
+        derived_from.append("control_report_ingest_events")
+    if include_profile_ops:
+        derived_from.append("memory_profile_report_ingest_events")
+
+    return {
+        "target_id": target_token,
+        "timeline_kind": "typed_subnet_timeline",
+        "history_kind": "operational_timeline",
+        "derived_from": derived_from,
+        "coverage": {
+            "event_history": "audit_backed",
+            "control_report_snapshot": "latest_only",
+            "limitations": [
+                "Timeline items are currently reconstructed from Root MCP audit plus report-ingest events.",
+                "Full runtime-only history and bounded log references are not yet attached as first-class timeline entries.",
+            ],
+        },
+        "summary": {
+            "item_count": len(items),
+            "latest_event_at": _latest_timestamp(recorded_values),
+            "classes": counts_by_class,
+        },
         "items": items,
     }
 
@@ -264,5 +443,6 @@ __all__ = [
     "append_audit_event",
     "list_audit_events",
     "target_activity_feed",
+    "target_operational_timeline",
     "target_capability_usage_summary",
 ]

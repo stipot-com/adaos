@@ -447,7 +447,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_activity_log",
-                "description": "Read recent Root MCP activity and control-report events for the target.",
+                "description": "Read the audit-derived recent activity view for the target. For richer operational history, prefer get_subnet_timeline.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -613,6 +613,20 @@ class CodexRootMcpBridge:
                         "probe_logs": {"type": "boolean", "default": True},
                         "lines": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
                         "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_timeline",
+                "description": "Read the typed subnet operational timeline derived from Root MCP audit and report-ingest events, with current control-report references attached.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 100},
+                        "include_control_reports": {"type": "boolean", "default": True},
+                        "include_profile_ops": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },
@@ -806,6 +820,15 @@ class CodexRootMcpBridge:
                     probe_logs=bool(args["probe_logs"]) if "probe_logs" in args else True,
                     lines=int(args.get("lines") or 20),
                     include_hub=bool(args["include_hub"]) if "include_hub" in args else True,
+                )
+            )
+        if tool == "get_subnet_timeline":
+            return _tool_text(
+                client.get_subnet_timeline(
+                    target_id=_normalize_text(args.get("target_id")),
+                    limit=int(args.get("limit") or 100),
+                    include_control_reports=bool(args["include_control_reports"]) if "include_control_reports" in args else True,
+                    include_profile_ops=bool(args["include_profile_ops"]) if "include_profile_ops" in args else True,
                 )
             )
         raise KeyError(tool)

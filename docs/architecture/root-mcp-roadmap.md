@@ -169,8 +169,8 @@ This means earlier phases do not need to be revoked, but some milestone reads sh
 ## Phase 7. Subnet Observability and Historical Analysis Maturity
 
 - [ ] define `subnet operational history` as a first-class Root MCP product surface distinct from plain audit history
-- [ ] expose a typed subnet timeline that links lifecycle reports, route incidents, runtime switches, profiler actions, and bounded log references
-- [ ] make `hub.get_activity_log` explicitly return or distinguish `audit history` versus `operational history`
+- [x] expose an initial typed subnet timeline that links audit-backed lifecycle, control-report ingest, session activity, and profiler actions
+- [x] make `hub.get_activity_log` explicitly distinguish its `audit activity view` role from the richer `operational timeline` surface
 - [ ] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
 - [ ] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
 - [ ] expose route/backlog/ack/YJS pressure diagnostics through typed Root MCP reads rather than only indirect logs
@@ -183,8 +183,9 @@ The first Phase 7 implementation slice should improve observability provenance b
 - [x] formalize workspace-local MCP path layout with dedicated `.adaos/mcp/` bridge artifacts and `.adaos/state/root_mcp/` state storage
 - [x] make bridge log tools prefer `scope=subnet_active` by default so healthy hub-root aggregation is not hidden behind empty `root_local` reads
 - [x] add an initial subnet analysis self-check surface that scores current snapshot, control-report freshness, session-registry freshness, audit visibility, and subnet-active log aggregation
+- [x] add an initial typed subnet timeline surface over Root MCP audit plus report-ingest events
 - [ ] add explicit log-source provenance and health scoring to the same bridge/tooling surface
-- [ ] add typed `subnet operational history` and `subnet timeline` contracts over audit plus control-report data
+- [ ] enrich the typed subnet timeline with runtime switches, bounded log references, and deeper route-incident detail
 
 Phase is complete when:
 

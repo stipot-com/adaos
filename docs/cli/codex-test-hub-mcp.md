@@ -84,6 +84,7 @@ The bridge currently exposes these tools:
 - `get_events_logs`
 - `get_subnet_info`
 - `get_subnet_analysis_health`
+- `get_subnet_timeline`
 
 ## Why This Is a Local Bridge
 
@@ -215,6 +216,8 @@ Those methods currently depend on `execution_mode=local_process`. If the target 
 The dedicated log tools such as `get_adaos_logs`, `get_events_logs`, `get_skill_logs`, and `get_yjs_logs` now default to `scope=subnet_active`. This is intended to avoid empty `root_local` answers masking a healthy hub-root observability path. Use `scope=root_local` only when you intentionally want logs from the local machine hosting the bridge or root service.
 
 For Phase 7 subnet analysis, prefer `get_subnet_analysis_health` before deeper investigation. It summarizes whether current snapshot, session-registry, audit, and `subnet_active` log channels are trustworthy enough for memory or incident analysis.
+
+Use `get_activity_log` for a compact audit-derived activity feed. Use `get_subnet_timeline` when you need the richer typed history view that separates event classes such as control-report ingest, profile operations, session activity, and target operations.
 
 ## Current Boundaries
 

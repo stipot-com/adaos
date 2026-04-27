@@ -848,6 +848,23 @@ class RootMcpClient:
             params["target_id"] = target_id
         return dict(self._request("GET", "/v1/root/mcp/subnet/analysis-health", params=params))
 
+    def get_subnet_timeline(
+        self,
+        *,
+        target_id: str | None = None,
+        limit: int = 100,
+        include_control_reports: bool = True,
+        include_profile_ops: bool = True,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": int(limit),
+            "include_control_reports": bool(include_control_reports),
+            "include_profile_ops": bool(include_profile_ops),
+        }
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/timeline", params=params))
+
     def call(
         self,
         tool_id: str,

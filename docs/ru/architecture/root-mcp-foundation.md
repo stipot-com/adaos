@@ -517,6 +517,7 @@ Phase 0 считается завершенной, когда:
   - `hub.list_access_tokens`
   - `hub.revoke_access_token`
   - `get_subnet_analysis_health`
+  - `get_subnet_timeline`
 - first local-pilot `infra_access_skill` execution adapters для:
   - `hub.get_logs`
   - `hub.run_healthchecks`
