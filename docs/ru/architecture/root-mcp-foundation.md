@@ -316,6 +316,8 @@ For log-style reads, clients must be able to distinguish at least:
 
 so operators and agents can tell whether they are looking at logs from the root-hosting machine or aggregated logs from the currently active subnet runtime.
 
+Обычные session list/get views также должны freshness-нормализовать expired leases, чтобы после истечения TTL они не продолжали выглядеть operationally active.
+
 ### What Should Be Logged
 
 Минимально каждый обработанный request должен записывать:

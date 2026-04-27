@@ -219,6 +219,8 @@ For Phase 7 subnet analysis, prefer `get_subnet_analysis_health` before deeper i
 
 Use `get_activity_log` for a compact audit-derived activity feed. Use `get_subnet_timeline` when you need the richer typed history view that separates event classes such as control-report ingest, profile operations, session activity, and target operations.
 
+Session-management views now normalize expired MCP session leases on read, so ordinary list/get flows should no longer keep stale `active` sessions visible after TTL expiry.
+
 ## Current Boundaries
 
 This MVP intentionally does not yet provide:

@@ -221,6 +221,8 @@ codex mcp remove adaos-test-hub
 
 `get_activity_log` теперь лучше воспринимать как компактный audit-derived activity feed. Когда нужна более структурированная история, стоит использовать `get_subnet_timeline`, где события уже разложены по классам: control-report ingest, profile ops, session activity и target operations.
 
+Session-management views теперь нормализуют expired MCP session leases при чтении, поэтому в обычных list/get сценариях просроченные lease больше не должны оставаться видимыми как `active`.
+
 ## Текущие границы MVP
 
 Этот MVP пока намеренно не включает:

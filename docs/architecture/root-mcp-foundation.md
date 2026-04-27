@@ -563,6 +563,8 @@ As MCP session leases are introduced, web-facing operational views should also b
 - show target, deadline, last use, and usage count
 - revoke or rotate sessions
 
+Ordinary session list and get views should freshness-normalize expired leases so they do not continue to appear operationally active after TTL expiry.
+
 Operational observability reads should also carry explicit source provenance.
 In particular, log-style reads must distinguish at least:
 

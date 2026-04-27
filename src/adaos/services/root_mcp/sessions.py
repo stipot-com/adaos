@@ -68,7 +68,35 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
 
-def _read_records() -> list[dict[str, Any]]:
+def _coerce_datetime(value: Any) -> datetime | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    try:
+        parsed = datetime.fromisoformat(token)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_expired_records(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    now = datetime.now(timezone.utc)
+    changed = False
+    normalized: list[dict[str, Any]] = []
+    for raw in items:
+        item = dict(raw)
+        status = str(item.get("status") or "").strip().lower() or "unknown"
+        expires_at = _coerce_datetime(item.get("expires_at"))
+        if status == "active" and expires_at is not None and expires_at <= now:
+            item["status"] = "expired"
+            changed = True
+        normalized.append(item)
+    return normalized, changed
+
+
+def _read_records(*, normalize_expired: bool = False) -> list[dict[str, Any]]:
     path = _sessions_path()
     if not path.exists():
         return []
@@ -79,7 +107,13 @@ def _read_records() -> list[dict[str, Any]]:
     raw_items = payload if isinstance(payload, list) else payload.get("sessions") if isinstance(payload, dict) else []
     if not isinstance(raw_items, list):
         return []
-    return [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    items = [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    if not normalize_expired:
+        return items
+    normalized, changed = _normalize_expired_records(items)
+    if changed:
+        _write_records(normalized)
+    return normalized
 
 
 def _write_records(items: list[dict[str, Any]]) -> None:
@@ -117,7 +151,7 @@ def get_mcp_session_lease_record(session_id: str) -> dict[str, Any] | None:
     token = str(session_id or "").strip()
     if not token:
         return None
-    for item in reversed(_read_records()):
+    for item in reversed(_read_records(normalize_expired=True)):
         if str(item.get("session_id") or "").strip() == token:
             return _sanitize_record(item)
     return None
@@ -207,7 +241,7 @@ def validate_mcp_session_lease(token: str, *, tool_id: str | None = None) -> dic
     if not token_hash:
         return None
     now = datetime.now(timezone.utc)
-    items = _read_records()
+    items = _read_records(normalize_expired=True)
     matched: dict[str, Any] | None = None
     changed = False
     for item in reversed(items):
@@ -215,12 +249,9 @@ def validate_mcp_session_lease(token: str, *, tool_id: str | None = None) -> dic
             continue
         if str(item.get("token_hash") or "").strip() != token_hash:
             continue
-        try:
-            expires_at = datetime.fromisoformat(str(item.get("expires_at") or ""))
-        except Exception:
+        expires_at = _coerce_datetime(item.get("expires_at"))
+        if expires_at is None:
             continue
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at <= now:
             item["status"] = "expired"
             changed = True
@@ -245,7 +276,7 @@ def list_mcp_session_leases(
     capability_profile: str | None = None,
     active_only: bool = False,
 ) -> list[dict[str, Any]]:
-    items = list(reversed(_read_records()))
+    items = list(reversed(_read_records(normalize_expired=True)))
     out: list[dict[str, Any]] = []
     status_filter = str(status or "").strip().lower() or None
     audience_filter = str(audience or "").strip() or None
@@ -265,12 +296,9 @@ def list_mcp_session_leases(
         if active_only:
             if record_status != "active":
                 continue
-            try:
-                expires_at = datetime.fromisoformat(str(item.get("expires_at") or ""))
-            except Exception:
+            expires_at = _coerce_datetime(item.get("expires_at"))
+            if expires_at is None:
                 continue
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at <= now:
                 continue
         out.append(_sanitize_record(item))
@@ -289,7 +317,7 @@ def revoke_mcp_session_lease(
     token = str(session_id or "").strip()
     if not token:
         raise ValueError("session_id is required")
-    items = _read_records()
+    items = _read_records(normalize_expired=True)
     revoked: dict[str, Any] | None = None
     for item in items:
         if str(item.get("session_id") or "").strip() != token:
@@ -311,25 +339,36 @@ def revoke_mcp_session_lease(
 
 
 def mcp_session_registry_summary() -> dict[str, Any]:
-    items = _read_records()
+    items = _read_records(normalize_expired=True)
     active = 0
+    expired = 0
+    revoked = 0
     now = datetime.now(timezone.utc)
     for item in items:
-        if str(item.get("status") or "").strip().lower() != "active":
+        record_status = str(item.get("status") or "").strip().lower()
+        if record_status == "revoked":
+            revoked += 1
             continue
-        try:
-            expires_at = datetime.fromisoformat(str(item.get("expires_at") or ""))
-        except Exception:
+        if record_status == "expired":
+            expired += 1
             continue
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if record_status != "active":
+            continue
+        expires_at = _coerce_datetime(item.get("expires_at"))
+        if expires_at is None:
+            continue
         if expires_at > now:
             active += 1
+        else:
+            expired += 1
     return {
         "available": True,
         "registry_path": str(_sessions_path()),
         "issued_count": len(items),
         "active_count": active,
+        "expired_count": expired,
+        "revoked_count": revoked,
+        "freshness_mode": "normalized_on_read",
         "profiles": sorted(DEFAULT_CAPABILITY_PROFILES.keys()),
     }
 

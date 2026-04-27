@@ -158,7 +158,7 @@ But it is not yet strong enough to treat `adaosmcp` as a fully mature subnet-ana
 
 - `activity_log` is still primarily a `Root MCP audit history`, not a full subnet operational timeline
 - subnet log aggregation may be degraded or runtime-dependent even when the contract is published
-- session-registry projections can remain slightly stale until validation paths normalize expired leases
+- session-registry freshness is now normalized in ordinary list/get views, but that alone does not complete broader subnet observability
 - current subnet-state inspection is richer for snapshot analysis than for deep historical reconstruction
 
 This means earlier phases do not need to be revoked, but some milestone reads should be interpreted as:
@@ -172,7 +172,7 @@ This means earlier phases do not need to be revoked, but some milestone reads sh
 - [x] expose an initial typed subnet timeline that links audit-backed lifecycle, control-report ingest, session activity, and profiler actions
 - [x] make `hub.get_activity_log` explicitly distinguish its `audit activity view` role from the richer `operational timeline` surface
 - [ ] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
-- [ ] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
+- [x] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
 - [ ] expose route/backlog/ack/YJS pressure diagnostics through typed Root MCP reads rather than only indirect logs
 - [x] add an initial `adaosmcp` self-check or capability-health surface so operators and agents can verify which analysis channels are currently trustworthy
 
@@ -184,6 +184,7 @@ The first Phase 7 implementation slice should improve observability provenance b
 - [x] make bridge log tools prefer `scope=subnet_active` by default so healthy hub-root aggregation is not hidden behind empty `root_local` reads
 - [x] add an initial subnet analysis self-check surface that scores current snapshot, control-report freshness, session-registry freshness, audit visibility, and subnet-active log aggregation
 - [x] add an initial typed subnet timeline surface over Root MCP audit plus report-ingest events
+- [x] normalize MCP session registry freshness in ordinary list/get/summary views by expiring stale `active` leases on read
 - [ ] add explicit log-source provenance and health scoring to the same bridge/tooling surface
 - [ ] enrich the typed subnet timeline with runtime switches, bounded log references, and deeper route-incident detail
 
@@ -212,7 +213,7 @@ It should still be read as a bridge-functionality milestone, not as proof of com
 - [x] Codex bootstrap no longer depends on explicit `subnet_id` transport parameters
 
 This milestone is the first clean live-approval point for `Codex in VS Code` with target-scoped bearer access that matches MCP client limitations.
-It does not by itself guarantee that session-state projections are fully freshness-normalized for operator analysis.
+It does not by itself guarantee full subnet observability, even though ordinary session-state projections are now freshness-normalized for operator analysis.
 
 ### Milestone C. Descriptive Codex Trial
 
