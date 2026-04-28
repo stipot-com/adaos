@@ -1463,12 +1463,21 @@ class SkillManager:
         version = env.resolve_active_version()
         if not version:
             raise RuntimeError("no versions installed")
-        env.prepare_version(version)
-        active_slot = env.read_active_slot(version)
-        metadata = env.read_version_metadata(version)
-        slot_paths = env.build_slot_paths(version, active_slot)
+        version_root = env.runtime_root / version
+        active_marker = version_root / "active"
+        active_slot = "A"
+        if active_marker.exists():
+            value = active_marker.read_text(encoding="utf-8").strip().upper()
+            if value in {"A", "B"}:
+                active_slot = value
+        metadata_path = version_root / "meta.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+        except json.JSONDecodeError:
+            metadata = {}
+        slot_root = version_root / "slots" / active_slot
         slot_meta = metadata.get("slots", {}).get(active_slot, {})
-        resolved_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+        resolved_path = Path(slot_meta.get("resolved_manifest") or (slot_root / "resolved.manifest.json"))
         ready = resolved_path.exists()
         history = metadata.get("history", {})
         deactivation = env.read_deactivation()
@@ -1504,12 +1513,21 @@ class SkillManager:
         version = env.resolve_active_version()
         if not version:
             raise RuntimeError("no versions installed")
-        env.prepare_version(version)
-        active_slot = env.read_active_slot(version)
-        metadata = env.read_version_metadata(version)
-        slot_paths = env.build_slot_paths(version, active_slot)
+        version_root = env.runtime_root / version
+        active_marker = version_root / "active"
+        active_slot = "A"
+        if active_marker.exists():
+            value = active_marker.read_text(encoding="utf-8").strip().upper()
+            if value in {"A", "B"}:
+                active_slot = value
+        metadata_path = version_root / "meta.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+        except json.JSONDecodeError:
+            metadata = {}
+        slot_root = version_root / "slots" / active_slot
         slot_meta = metadata.get("slots", {}).get(active_slot, {})
-        resolved_path = Path(slot_meta.get("resolved_manifest") or slot_paths.resolved_manifest)
+        resolved_path = Path(slot_meta.get("resolved_manifest") or (slot_root / "resolved.manifest.json"))
         ready = resolved_path.exists()
         history = metadata.get("history", {})
         deactivation = env.read_deactivation()

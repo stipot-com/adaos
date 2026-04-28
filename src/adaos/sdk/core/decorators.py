@@ -1,7 +1,9 @@
 from __future__ import annotations
 from typing import Callable, Dict, List, Tuple, Optional
+import asyncio
 import inspect
 import logging
+import os
 from pathlib import Path
 from adaos.sdk.data.bus import on, emit
 from adaos.sdk.data.context import set_current_skill, clear_current_skill
@@ -20,6 +22,42 @@ _registered: bool = False  # внутренняя защита от двойно
 _SUBSCRIPTIONS = subscriptions
 _TOOLS = tools_registry
 _LOG = logging.getLogger("adaos.sdk.subscriptions")
+
+
+def _topic_matches_any(topic: str, patterns: str) -> bool:
+    try:
+        topic0 = str(topic or "")
+        for raw in str(patterns or "").split(","):
+            pat = raw.strip()
+            if not pat:
+                continue
+            if pat == "*" or topic0 == pat:
+                return True
+            if pat.endswith("*") and topic0.startswith(pat[:-1]):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _run_sync_subscription_in_thread(topic: str) -> bool:
+    """Keep known expensive synchronous skill handlers off the main event loop."""
+
+    try:
+        if str(os.getenv("ADAOS_SYNC_SUBSCRIPTION_TO_THREAD", "1") or "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return False
+        patterns = os.getenv(
+            "ADAOS_SYNC_SUBSCRIPTION_THREAD_TOPICS",
+            "sys.ready,webio.stream.snapshot.requested",
+        )
+        return _topic_matches_any(topic, patterns)
+    except Exception:
+        return False
 
 
 def subscribe(topic: str):
@@ -76,13 +114,17 @@ async def register_subscriptions():
             async def _wrap(evt, _fn=fn, _skill=skill_name, _topic=topic):
                 pushed = _maybe_push_skill(_fn, _skill)
                 try:
-                    payload = getattr(evt, "payload", None) if hasattr(evt, "payload") else None
-                    meta = payload.get("_meta") if isinstance(payload, dict) else None
-                    if isinstance(meta, dict):
-                        with io_meta(meta):
-                            _fn(evt)
-                    else:
-                        _fn(evt)
+                    def _call_sync_handler():
+                        payload = getattr(evt, "payload", None) if hasattr(evt, "payload") else None
+                        meta = payload.get("_meta") if isinstance(payload, dict) else None
+                        if isinstance(meta, dict):
+                            with io_meta(meta):
+                                return _fn(evt)
+                        return _fn(evt)
+
+                    if _run_sync_subscription_in_thread(_topic):
+                        return await asyncio.to_thread(_call_sync_handler)
+                    return _call_sync_handler()
                 finally:
                     if pushed:
                         clear_current_skill()

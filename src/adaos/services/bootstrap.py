@@ -4294,6 +4294,30 @@ class BootstrapService:
                             _route_flush_timeout_s = float(os.getenv("HUB_ROUTE_FLUSH_TIMEOUT_S", "1.0") or "1.0")
                         except Exception:
                             _route_flush_timeout_s = 1.0
+                        try:
+                            _route_publish_slow_warn_s = float(
+                                os.getenv("HUB_ROUTE_PUBLISH_SLOW_WARN_S", "0.250") or "0.250"
+                            )
+                        except Exception:
+                            _route_publish_slow_warn_s = 0.250
+                        if _route_publish_slow_warn_s < 0.01:
+                            _route_publish_slow_warn_s = 0.01
+                        try:
+                            _route_starvation_warn_s = float(
+                                os.getenv("HUB_ROUTE_STARVATION_WARN_S", "1.000") or "1.000"
+                            )
+                        except Exception:
+                            _route_starvation_warn_s = 1.0
+                        if _route_starvation_warn_s < 0.05:
+                            _route_starvation_warn_s = 0.05
+                        try:
+                            _route_pending_data_warn_bytes = int(
+                                os.getenv("HUB_ROUTE_PENDING_DATA_WARN_BYTES", str(256 * 1024)) or str(256 * 1024)
+                            )
+                        except Exception:
+                            _route_pending_data_warn_bytes = 256 * 1024
+                        if _route_pending_data_warn_bytes < 0:
+                            _route_pending_data_warn_bytes = 0
 
                         # Optional probe mitigation: resend inline probe replies after short delays.
                         # Useful when NATS-over-WS intermittently drops a single PUB frame and Root times out.
@@ -4339,10 +4363,69 @@ class BootstrapService:
                             "last_open_base_total": 0,
                             "last_http_path": "",
                             "last_http_method": "",
+                            "pending_oldest_age_s": 0.0,
+                            "pending_oldest_key_tag": "",
+                            "pending_starved_total": 0,
+                            "last_pending_key_tag": "",
+                            "last_nc_pending_data_size": 0,
+                            "reply_publish_slow_total": 0,
+                            "reply_flush_slow_total": 0,
+                            "reply_publish_fail_total": 0,
+                            "last_publish_slow_key_tag": "",
+                            "last_publish_slow_ms": 0.0,
+                            "last_flush_slow_key_tag": "",
+                            "last_flush_slow_ms": 0.0,
                         }
+
+                        def _route_refresh_starvation_state() -> None:
+                            try:
+                                oldest_age_s = 0.0
+                                oldest_key_tag = ""
+                                now = time.monotonic()
+                                for key0, st0 in pending_tunnel_meta.items():
+                                    if not isinstance(st0, dict):
+                                        continue
+                                    first_at0 = float(st0.get("first_at") or 0.0)
+                                    if first_at0 <= 0:
+                                        continue
+                                    age0 = max(0.0, now - first_at0)
+                                    if age0 > oldest_age_s:
+                                        oldest_age_s = age0
+                                        oldest_key_tag = _key_tag(str(key0))
+                                route_diag_state["pending_oldest_age_s"] = round(oldest_age_s, 3)
+                                route_diag_state["pending_oldest_key_tag"] = oldest_key_tag
+                            except Exception:
+                                pass
+                            try:
+                                route_diag_state["last_nc_pending_data_size"] = int(
+                                    getattr(nc, "_pending_data_size", 0) or 0
+                                )
+                            except Exception:
+                                pass
+
+                        def _route_note_starvation(
+                            reason: str,
+                            *,
+                            key: str | None = None,
+                            extra: str | None = None,
+                        ) -> None:
+                            try:
+                                msg = (
+                                    f"[hub-route] starvation reason={reason} "
+                                    f"key={_key_tag(key or '')} "
+                                    f"pending_oldest_age_s={route_diag_state.get('pending_oldest_age_s')} "
+                                    f"pending_oldest_key={route_diag_state.get('pending_oldest_key_tag')} "
+                                    f"pending_data_size={route_diag_state.get('last_nc_pending_data_size')}"
+                                )
+                                if extra:
+                                    msg += f" {extra}"
+                                _rl_log(f"hub-route.starvation.{reason}", msg, every_s=1.0)
+                            except Exception:
+                                pass
 
                         def _update_route_protocol_runtime(**details: Any) -> None:
                             try:
+                                _route_refresh_starvation_state()
                                 pending_events = 0
                                 for items0 in pending_tunnel_events.values():
                                     try:
@@ -4388,6 +4471,42 @@ class BootstrapService:
                             except Exception:
                                 return "?"
 
+                        def _route_lifecycle_log(
+                            phase: str,
+                            key: str,
+                            *,
+                            subject: str | None = None,
+                            payload: dict[str, Any] | None = None,
+                            extra: str | None = None,
+                        ) -> None:
+                            try:
+                                p0 = payload or {}
+                                t0 = str(p0.get("t") or "")
+                                should_log = False
+                                if t0 in ("http", "http_resp", "open", "open_ack", "close"):
+                                    should_log = bool(_route_http_trace or _route_trace)
+                                elif t0 in ("frame", "chunk"):
+                                    should_log = bool(_route_frame_verbose)
+                                elif _route_trace:
+                                    should_log = True
+                                if not should_log:
+                                    return
+                                subj0 = str(subject or "").strip()
+                                msg = (
+                                    f"[hub-route] lifecycle phase={phase} key={_key_tag(key)} "
+                                    f"t={t0 or '?'}"
+                                )
+                                if subj0:
+                                    msg += f" subj={subj0}"
+                                summary = _route_payload_summary(p0)
+                                if summary:
+                                    msg += f" {summary}"
+                                if extra:
+                                    msg += f" {extra}"
+                                _route_log(msg)
+                            except Exception:
+                                pass
+
                         def _route_payload_summary(payload: dict[str, Any] | None) -> str:
                             try:
                                 p0 = payload or {}
@@ -4428,6 +4547,27 @@ class BootstrapService:
                                 return f"t={t0}"
                             except Exception:
                                 return "t=?"
+
+                        route_key_prefixes: set[str] = set()
+                        try:
+                            if hub_id:
+                                route_key_prefixes.add(f"{hub_id}--")
+                            cfg0 = getattr(self.ctx, "config", None)
+                            cfg_hub_id = str(getattr(cfg0, "subnet_id", "") or "").strip() if cfg0 is not None else ""
+                            if cfg_hub_id:
+                                route_key_prefixes.add(f"{cfg_hub_id}--")
+                            extra_prefixes = str(os.getenv("HUB_ROUTE_KEY_PREFIXES", "") or "")
+                            for item in extra_prefixes.split(","):
+                                item = item.strip()
+                                if not item:
+                                    continue
+                                route_key_prefixes.add(item if item.endswith("--") else f"{item}--")
+                        except Exception:
+                            route_key_prefixes = {f"{hub_id}--"} if hub_id else set()
+                        try:
+                            route_diag_state["accepted_key_prefixes"] = sorted(route_key_prefixes)
+                        except Exception:
+                            pass
 
                         def _query_has_token(query: str) -> bool:
                             if not isinstance(query, str) or not query:
@@ -4525,6 +4665,18 @@ class BootstrapService:
                                     pending_tunnel_close_tasks[key] = asyncio.create_task(
                                         _pending_tunnel_force_close_task(key),
                                         name=f"hub-route-pending-close-{_key_tag(key)}",
+                                    )
+                                _route_refresh_starvation_state()
+                                age_now = float(route_diag_state.get("pending_oldest_age_s") or 0.0)
+                                route_diag_state["last_pending_key_tag"] = _key_tag(key)
+                                if age_now >= _route_starvation_warn_s:
+                                    route_diag_state["pending_starved_total"] = int(
+                                        route_diag_state.get("pending_starved_total") or 0
+                                    ) + 1
+                                    _route_note_starvation(
+                                        "pending_age",
+                                        key=key,
+                                        extra=f"age_s={age_now:.3f} threshold_s={_route_starvation_warn_s:.3f}",
                                     )
                             except Exception:
                                 pass
@@ -4827,15 +4979,11 @@ class BootstrapService:
                                 t0 = (payload or {}).get("t")
                             except Exception:
                                 t0 = None
-                            if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
-                                try:
-                                    _route_log(
-                                        f"[hub-route] reply.start key={_key_tag(key)} subj={reply_subject} {_route_payload_summary(payload)}"
-                                    )
-                                except Exception:
-                                    pass
+                            _route_lifecycle_log("reply.start", key, subject=reply_subject, payload=payload)
+                            publish_elapsed_s = 0.0
                             try:
                                 try:
+                                    publish_step_started = time.monotonic()
                                     await asyncio.wait_for(
                                         nc.publish(
                                             reply_subject,
@@ -4843,8 +4991,24 @@ class BootstrapService:
                                         ),
                                         timeout=max(0.1, float(_route_send_timeout_s)),
                                     )
+                                    publish_elapsed_s = max(0.0, time.monotonic() - publish_step_started)
                                 except asyncio.TimeoutError:
                                     raise RuntimeError("publish timeout")
+                                if publish_elapsed_s >= _route_publish_slow_warn_s:
+                                    route_diag_state["reply_publish_slow_total"] = int(
+                                        route_diag_state.get("reply_publish_slow_total") or 0
+                                    ) + 1
+                                    route_diag_state["last_publish_slow_key_tag"] = _key_tag(key)
+                                    route_diag_state["last_publish_slow_ms"] = round(publish_elapsed_s * 1000.0, 1)
+                                    _route_refresh_starvation_state()
+                                    _route_note_starvation(
+                                        "publish_slow",
+                                        key=key,
+                                        extra=(
+                                            f"publish_ms={publish_elapsed_s * 1000.0:.1f} "
+                                            f"threshold_ms={_route_publish_slow_warn_s * 1000.0:.1f}"
+                                        ),
+                                    )
                                 try:
                                     observe_hub_root_protocol_publish(
                                         reply_subject,
@@ -4869,14 +5033,14 @@ class BootstrapService:
                                         direction="to_browser",
                                         payload=payload,
                                     )
-                                if _route_http_trace and (t0 in ("http_resp", "close") or _route_frame_verbose):
-                                    try:
-                                        took_ms = (time.monotonic() - reply_started) * 1000.0
-                                        _route_log(
-                                            f"[hub-route] reply.published key={_key_tag(key)} subj={reply_subject} took_ms={took_ms:.1f} {_route_payload_summary(payload)}"
-                                        )
-                                    except Exception:
-                                        pass
+                                took_ms = (time.monotonic() - reply_started) * 1000.0
+                                _route_lifecycle_log(
+                                    "reply.published",
+                                    key,
+                                    subject=reply_subject,
+                                    payload=payload,
+                                    extra=f"took_ms={took_ms:.1f}",
+                                )
                                 # Ensure the reply is actually flushed quickly; otherwise Root may time out
                                 # waiting on `route.to_browser.<key>` (especially over websocket-proxied NATS).
                                 t = (payload or {}).get("t")
@@ -4940,6 +5104,28 @@ class BootstrapService:
                                             )
                                         except Exception:
                                             pass
+                                    elif flush_took_s >= max(0.5, float(tout) * 0.9) and t in ("http_resp", "close", "open_ack"):
+                                        route_diag_state["reply_flush_slow_total"] = int(
+                                            route_diag_state.get("reply_flush_slow_total") or 0
+                                        ) + 1
+                                        route_diag_state["last_flush_slow_key_tag"] = _key_tag(key)
+                                        route_diag_state["last_flush_slow_ms"] = round(flush_took_s * 1000.0, 1)
+                                        _route_refresh_starvation_state()
+                                        _route_note_starvation(
+                                            "flush_slow",
+                                            key=key,
+                                            extra=f"flush_ms={flush_took_s * 1000.0:.1f} timeout_ms={tout * 1000.0:.1f}",
+                                        )
+                                    if (
+                                        _route_pending_data_warn_bytes > 0
+                                        and int(route_diag_state.get("last_nc_pending_data_size") or 0)
+                                        >= _route_pending_data_warn_bytes
+                                    ):
+                                        _route_note_starvation(
+                                            "pending_data",
+                                            key=key,
+                                            extra=f"threshold_bytes={_route_pending_data_warn_bytes}",
+                                        )
                                     elif flush_took_s >= max(0.5, float(tout) * 0.9) and t == "http_resp":
                                         # Slow flush can still cause root timeouts even if publish succeeds.
                                         try:
@@ -4955,13 +5141,14 @@ class BootstrapService:
                                             print(f"[hub-route] tx {t} key={key}")
                                         except Exception:
                                             pass
-                                    elif _route_http_trace and t in ("http_resp", "close"):
-                                        try:
-                                            _route_log(
-                                                f"[hub-route] reply.flushed key={_key_tag(key)} subj={reply_subject} flush_ms={flush_took_s * 1000.0:.1f} {_route_payload_summary(payload)}"
-                                            )
-                                        except Exception:
-                                            pass
+                                    elif t in ("http_resp", "close", "open_ack"):
+                                        _route_lifecycle_log(
+                                            "reply.flushed",
+                                            key,
+                                            subject=reply_subject,
+                                            payload=payload,
+                                            extra=f"flush_ms={flush_took_s * 1000.0:.1f}",
+                                        )
                                 try:
                                     _update_route_protocol_runtime()
                                 except Exception:
@@ -4991,6 +5178,9 @@ class BootstrapService:
                                         payload=payload,
                                         error=str(e),
                                     )
+                                route_diag_state["reply_publish_fail_total"] = int(
+                                    route_diag_state.get("reply_publish_fail_total") or 0
+                                ) + 1
                                 try:
                                     _update_route_protocol_runtime(last_publish_fail_at=time.time())
                                 except Exception:
@@ -5019,13 +5209,13 @@ class BootstrapService:
                                         )
                                     except Exception:
                                         pass
-                                if _route_http_trace:
-                                    try:
-                                        _route_log(
-                                            f"[hub-route] reply.fail key={_key_tag(key)} subj={reply_subject} err={type(e).__name__}: {e} {_route_payload_summary(payload)} {_route_nc_diag()}"
-                                        )
-                                    except Exception:
-                                        pass
+                                _route_lifecycle_log(
+                                    "reply.fail",
+                                    key,
+                                    subject=reply_subject,
+                                    payload=payload,
+                                    extra=f"err={type(e).__name__}: {e} {_route_nc_diag()}",
+                                )
 
                         def _cleanup_media_relay_session(key: str, *, remove_temp: bool) -> None:
                             session = media_relay_sessions.pop(key, None)
@@ -5207,14 +5397,11 @@ class BootstrapService:
                             pass
 
                         def _hub_key_match(key: str) -> bool:
-                            current_hub_id = hub_id
                             try:
-                                cfg_now = load_config(ctx=self.ctx)
-                                current_hub_id = str(getattr(cfg_now, "subnet_id", "") or current_hub_id)
-                            except Exception:
-                                current_hub_id = hub_id
-                            try:
-                                return isinstance(key, str) and bool(current_hub_id) and key.startswith(f"{current_hub_id}--")
+                                if not isinstance(key, str) or not key:
+                                    return False
+                                prefixes = route_key_prefixes or ({f"{hub_id}--"} if hub_id else set())
+                                return any(key.startswith(prefix) for prefix in prefixes if prefix)
                             except Exception:
                                 return False
 
@@ -5508,7 +5695,7 @@ class BootstrapService:
                                         try:
                                             _rl_log(
                                                 "hub-route.drop_key",
-                                                f"[hub-route] drop: key mismatch subject={subject!s} key={key!s} expected_prefix={hub_id}--",
+                                                f"[hub-route] drop: key mismatch subject={subject!s} key={key!s} expected_prefixes={sorted(route_key_prefixes) or [f'{hub_id}--']}",
                                                 every_s=2.0,
                                             )
                                         except Exception:
@@ -5608,12 +5795,13 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                 if _route_http_trace and (is_http_key or t in ("open", "close")):
-                                    try:
-                                        _route_log(
-                                            f"[hub-route] cb.start key={_key_tag(key)} subj={subject} bytes={len(raw)} {_route_payload_summary(data)}"
-                                        )
-                                    except Exception:
-                                        pass
+                                    _route_lifecycle_log(
+                                        "request.rx",
+                                        key,
+                                        subject=subject,
+                                        payload=data,
+                                        extra=f"bytes={len(raw)}",
+                                    )
                                 if _route_verbose or _route_trace:
                                     try:
                                         if t == "http":
@@ -7319,21 +7507,53 @@ class BootstrapService:
                                                     )
                                                     try:
                                                         extract_log = logging.getLogger("adaos.hub-io.root-log-extract")
+                                                        interesting_lines: list[str] = []
+                                                        interesting_markers = (
+                                                            "http route: timeout",
+                                                            "http proxy failed",
+                                                            "ws route: open ack fallback elapsed",
+                                                            "ws route: open ack received",
+                                                            "closing superseded hub ws-nats connection",
+                                                            "hub ws-nats auth ok",
+                                                            "upstream close",
+                                                            "nats route downstream send failed",
+                                                            "nats route upstream write missing",
+                                                        )
+                                                        for tail_line in tail_lines:
+                                                            text = str(tail_line)
+                                                            if any(marker in text for marker in interesting_markers):
+                                                                interesting_lines.append(text)
+                                                        interesting_lines = interesting_lines[-12:]
                                                         extract_log.warning(
-                                                            "root log extract tail file=%s lines=%s newest_age_s=%s",
+                                                            "root log extract tail file=%s lines=%s newest_age_s=%s interesting_lines=%s",
                                                             fn2,
                                                             len(tail_lines),
                                                             age_s,
+                                                            len(interesting_lines),
                                                         )
-                                                        for tail_line in tail_lines:
+                                                        for tail_line in interesting_lines:
                                                             extract_log.warning(
                                                                 "root log extract line file=%s line=%s",
                                                                 fn2,
-                                                                str(tail_line),
+                                                                tail_line,
                                                             )
+                                                        if (
+                                                            os.getenv("HUB_ROOT_LOG_EXTRACT_VERBOSE", "0") == "1"
+                                                            or trace0
+                                                        ):
+                                                            for tail_line in tail_lines:
+                                                                extract_log.debug(
+                                                                    "root log extract raw file=%s line=%s",
+                                                                    fn2,
+                                                                    str(tail_line),
+                                                                )
                                                     except Exception:
                                                         pass
-                                                    print(tail)
+                                                    if (
+                                                        os.getenv("HUB_ROOT_LOG_EXTRACT_VERBOSE", "0") == "1"
+                                                        or trace0
+                                                    ):
+                                                        print(tail)
                                         except Exception:
                                             pass
                                 except Exception:
