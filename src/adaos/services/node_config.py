@@ -189,6 +189,7 @@ class NodeConfig:
     role: str
     zone_id: str | None = None
     hub_url: str | None = None
+    local_api_url: str | None = None
     token: str | None = None
     root_state: RootState | None = None
     root_settings: RootSettings = field(default_factory=RootSettings)
@@ -291,6 +292,7 @@ class NodeConfig:
             "node_id": self.node_id,
             "subnet_id": self.subnet_id,
             "role": self.role,
+            "local_api_url": self.local_api_url,
             "root": _settings_to_dict(self.root_settings),
             "subnet": _settings_to_dict(self.subnet_settings),
             "node": _settings_to_dict(self.node_settings),
@@ -794,6 +796,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
     legacy_hub_url = data.get("hub_url")
     legacy_token = data.get("token")
     hub_url = runtime_state.get("hub_url") if isinstance(runtime_state.get("hub_url"), str) else legacy_hub_url
+    local_api_url = data.get("local_api_url") if isinstance(data.get("local_api_url"), str) else None
     token = (
         runtime_state.get("token")
         if isinstance(runtime_state.get("token"), str) and str(runtime_state.get("token") or "").strip()
@@ -808,6 +811,7 @@ def load_node(ctx: AgentContext | None = None) -> NodeConfig:
         subnet_id=subnet_id,
         role=role,
         hub_url=hub_url,
+        local_api_url=local_api_url,
         token=token,
         root_state=root_state,
         root_settings=root_settings,

@@ -140,6 +140,61 @@ Phase is complete when:
 - [x] keep capability profiles and tool catalogs plane-scoped where appropriate
 - [x] avoid coupling feature-specific product surfaces directly to the foundation implementation
 
+## Readiness Correction
+
+The completed phases above should currently be read as:
+
+- `implemented architectural slice`, not `production-complete operational maturity`
+- foundation, descriptor, session-lease, and plane-registration contracts are present and working
+- subnet observability and historical reconstruction are still weaker than the roadmap originally implied
+
+In particular, the current implementation is strong enough for:
+
+- root-hosted foundation and descriptor reads
+- managed-target discovery and scoped session issuance
+- target status and operational-surface inspection through Root MCP
+
+But it is not yet strong enough to treat `adaosmcp` as a fully mature subnet-analysis surface because:
+
+- `activity_log` is still primarily a `Root MCP audit history`, not a full subnet operational timeline
+- subnet log aggregation may be degraded or runtime-dependent even when the contract is published
+- session-registry freshness is now normalized in ordinary list/get views, but that alone does not complete broader subnet observability
+- current subnet-state inspection is richer for snapshot analysis than for deep historical reconstruction
+
+This means earlier phases do not need to be revoked, but some milestone reads should be interpreted as:
+
+- `feature exists`
+- not yet `observability-complete` or `incident-analysis-complete`
+
+## Phase 7. Subnet Observability and Historical Analysis Maturity
+
+- [ ] define `subnet operational history` as a first-class Root MCP product surface distinct from plain audit history
+- [x] expose an initial typed subnet timeline that links audit-backed lifecycle, control-report ingest, session activity, and profiler actions
+- [x] make `hub.get_activity_log` explicitly distinguish its `audit activity view` role from the richer `operational timeline` surface
+- [x] make subnet log aggregation verifiable and health-scored, with clear `root_local` versus `subnet_active` provenance
+- [x] normalize session-registry freshness so expired leases cannot continue to appear operationally active in ordinary list views
+- [x] expose an initial typed route/backlog/ack/YJS pressure view through Root MCP reads rather than only indirect logs
+- [x] add an initial `adaosmcp` self-check or capability-health surface so operators and agents can verify which analysis channels are currently trustworthy
+
+### Current Implementation Slice
+
+The first Phase 7 implementation slice should improve observability provenance before larger history APIs land.
+
+- [x] formalize workspace-local MCP path layout with dedicated `.adaos/mcp/` bridge artifacts and `.adaos/state/root_mcp/` state storage
+- [x] make bridge log tools prefer `scope=subnet_active` by default so healthy hub-root aggregation is not hidden behind empty `root_local` reads
+- [x] add an initial subnet analysis self-check surface that scores current snapshot, control-report freshness, session-registry freshness, audit visibility, and subnet-active log aggregation
+- [x] add an initial typed subnet timeline surface over Root MCP audit plus report-ingest events
+- [x] normalize MCP session registry freshness in ordinary list/get/summary views by expiring stale `active` leases on read
+- [x] add an initial typed subnet diagnostics surface that projects compact route/backlog/ack, YJS pressure, and root-ingested memory-profile summaries
+- [x] add explicit log-source provenance and health scoring to the same bridge/tooling surface
+- [ ] enrich the typed subnet timeline with runtime switches, bounded log references, and deeper route-incident detail
+
+Phase is complete when:
+
+- an MCP client can reconstruct recent subnet state transitions without relying on ad hoc local log inspection
+- audit, control-report, runtime-summary, and log-derived history are clearly distinguished but linkable
+- the system can report when an observability channel is degraded because of runtime conditions rather than silently returning an incomplete picture
+
 ## Functional Maturity Milestones
 
 ### Milestone A. VS Code Codex Local Bridge Trial
@@ -149,6 +204,7 @@ Phase is complete when:
 - [x] Codex can use named session/capability bootstrap instead of only workspace-local profile/token preparation
 
 This milestone is the earliest point for repeated live trials with `Codex in VS Code` through the current local bridge model.
+It should still be read as a bridge-functionality milestone, not as proof of complete subnet observability.
 
 ### Milestone B. VS Code Codex Session-Lease Trial
 
@@ -157,7 +213,8 @@ This milestone is the earliest point for repeated live trials with `Codex in VS 
 - [x] session list/revoke UX is available for operators through `infra_access_skill`
 - [x] Codex bootstrap no longer depends on explicit `subnet_id` transport parameters
 
-This milestone is the first clean live-aprroval point for `Codex in VS Code` with target-scoped bearer access that matches MCP client limitations.
+This milestone is the first clean live-approval point for `Codex in VS Code` with target-scoped bearer access that matches MCP client limitations.
+It does not by itself guarantee full subnet observability, even though ordinary session-state projections are now freshness-normalized for operator analysis.
 
 ### Milestone C. Descriptive Codex Trial
 
@@ -175,6 +232,7 @@ This milestone is the first point where live Codex trials should cover AdaOS arc
 - [x] Infrascope and Codex consume the same profiler contracts
 
 This milestone is the first live approval point for real supervisor-profiler MCP workflows.
+It should not yet be read as proof that the broader subnet-analysis and observability surface is equally mature.
 
 Phase is complete when:
 

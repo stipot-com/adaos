@@ -12,6 +12,7 @@ import psutil
 import requests
 import typer
 import uvicorn
+from click.core import ParameterSource
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import load_config, save_config
@@ -65,21 +66,39 @@ def _advertise_base(host: str, port: int) -> str:
     return f"http://{advertised_host}:{int(port)}"
 
 
-def _resolve_bind(conf, host: str, port: int) -> tuple[str, int]:
+def _configured_local_api_url(conf) -> str | None:
+    if conf is None:
+        return None
+    local_api_url = str(getattr(conf, "local_api_url", "") or "").strip()
+    if _is_local_url(local_api_url):
+        return local_api_url
+    return None
+
+
+def _resolve_bind(
+    conf,
+    host: str,
+    port: int,
+    *,
+    explicit_host: bool = False,
+    explicit_port: bool = False,
+) -> tuple[str, int]:
     role = str(getattr(conf, "role", "") or "").strip().lower() if conf is not None else ""
     if role != "hub":
         return host, int(port)
     if str(os.getenv("ADAOS_SUPERVISOR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
         # Supervisor-managed runtimes already pass the slot-specific port explicitly.
-        # Do not override it from persisted runtime `hub_url`, or slot A can get pulled onto slot B's port.
+        # Do not override it from persisted local_api_url, or slot A can get pulled onto slot B's port.
+        return host, int(port)
+    if explicit_host or explicit_port:
         return host, int(port)
     if host != "127.0.0.1" or int(port) != 8777:
         return host, int(port)
-    hub_url = str(getattr(conf, "hub_url", "") or "").strip()
-    if not _is_local_url(hub_url):
+    local_api_url = _configured_local_api_url(conf)
+    if not local_api_url:
         return host, int(port)
     try:
-        parsed = urlparse(hub_url)
+        parsed = urlparse(local_api_url)
         if parsed.hostname and parsed.port:
             return parsed.hostname, int(parsed.port)
     except Exception:
@@ -90,15 +109,15 @@ def _resolve_bind(conf, host: str, port: int) -> tuple[str, int]:
 def _resolve_stop_bind(conf) -> tuple[str, int] | None:
     if conf is None:
         return None
-    hub_url = str(getattr(conf, "hub_url", "") or "").strip()
-    if not hub_url:
+    local_api_url = _configured_local_api_url(conf)
+    if not local_api_url:
         return None
     try:
-        parsed = urlparse(hub_url)
+        parsed = urlparse(local_api_url)
     except Exception:
         return None
     hostname = str(parsed.hostname or "").strip()
-    if not hostname or not parsed.port or not _is_local_url(hub_url):
+    if not hostname or not parsed.port or not _is_local_url(local_api_url):
         return None
     return hostname, int(parsed.port)
 
@@ -448,6 +467,7 @@ def _request_graceful_shutdown(host: str, port: int, *, token: str | None, reaso
 
 @app.command("serve")
 def serve(
+    ctx: typer.Context,
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8777, "--port"),
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn autoreload"),
@@ -462,7 +482,22 @@ def serve(
     except Exception:
         conf = None
 
-    host, port = _resolve_bind(conf, host, port)
+    try:
+        explicit_host = ctx.get_parameter_source("host") == ParameterSource.COMMANDLINE
+    except Exception:
+        explicit_host = False
+    try:
+        explicit_port = ctx.get_parameter_source("port") == ParameterSource.COMMANDLINE
+    except Exception:
+        explicit_port = False
+
+    host, port = _resolve_bind(
+        conf,
+        host,
+        port,
+        explicit_host=explicit_host,
+        explicit_port=explicit_port,
+    )
     advertised_base = _advertise_base(host, port)
     pidfile = _pidfile_path(host, port)
 
@@ -472,9 +507,9 @@ def serve(
 
     if conf is not None and str(getattr(conf, "role", "") or "").strip().lower() == "hub":
         try:
-            if str(getattr(conf, "hub_url", "") or "").strip() != advertised_base:
-                conf.hub_url = advertised_base
-                save_config(conf)
+            if _is_local_url(advertised_base) and str(getattr(conf, "local_api_url", "") or "").strip() != advertised_base:
+                conf.local_api_url = advertised_base
+            save_config(conf)
         except Exception:
             pass
 
@@ -482,6 +517,10 @@ def serve(
         os.environ["ADAOS_TOKEN"] = token
     try:
         os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
+    except Exception:
+        pass
+    try:
+        os.environ["ADAOS_RUNTIME_LAUNCH_MODE"] = "api_serve"
     except Exception:
         pass
 
@@ -507,7 +546,7 @@ def serve(
 
 @app.command("stop")
 def stop():
-    """Stop the AdaOS local HTTP API resolved from persisted runtime hub_url."""
+    """Stop the AdaOS local HTTP API resolved from persisted local_api_url."""
     try:
         conf = load_config()
     except Exception as exc:
@@ -517,7 +556,7 @@ def stop():
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local_api_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
@@ -569,7 +608,7 @@ def restart():
     bind = _resolve_stop_bind(conf)
     if bind is None:
         typer.secho(
-            "[AdaOS] local runtime state does not contain a local hub_url with explicit host:port",
+            "[AdaOS] local runtime state does not contain a local_api_url with explicit host:port",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)

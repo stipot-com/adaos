@@ -834,11 +834,6 @@ class WebSocketTransportWebsockets:
                 return
             if self._ws is None:
                 return
-            direct_recv_task = getattr(self, "_direct_recv_task", None)
-            if isinstance(direct_recv_task, asyncio.Task) and not direct_recv_task.done():
-                return
-            if getattr(self, "_adaos_nc", None) is None:
-                return
             while not self._recv_queue.empty():
                 self._recv_queue.get_nowait()
         except Exception:
@@ -1373,11 +1368,27 @@ class WebSocketTransportWebsockets:
             return
         if self._ws is None:
             return
-        if self._pending_empty() and not self._io_sending:
-            self._drain_event.set()
-            return
-        self._pending_event.set()
-        await self._drain_event.wait()
+        poll_s = float(getattr(self, "_io_poll_s", 0.2) or 0.2)
+        while True:
+            if self._ws is None or self.at_eof():
+                return
+            io_task = self._io_task
+            if io_task is None:
+                await self._direct_drain()
+                return
+            if io_task.done():
+                err = getattr(self, "_adaos_last_recv_error", None)
+                if isinstance(err, BaseException):
+                    raise err
+                return
+            if self._pending_empty() and not self._io_sending:
+                self._drain_event.set()
+                return
+            self._pending_event.set()
+            try:
+                await asyncio.wait_for(self._drain_event.wait(), timeout=poll_s)
+            except asyncio.TimeoutError:
+                continue
 
     async def wait_closed(self) -> None:
         try:
@@ -1694,6 +1705,9 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._io_task = None
+        # `websockets` doesn't allow concurrent `recv()` calls. Start the shared reader task
+        # as soon as the socket is ready so we don't fall back to ad-hoc direct reads first.
+        self._ensure_io_task()
         self._start_ws_heartbeat_task()
 
         # Optional NATS-data heartbeat (send PONG) to keep end-to-end hub->root traffic visible.

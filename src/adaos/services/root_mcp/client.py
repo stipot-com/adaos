@@ -831,6 +831,53 @@ class RootMcpClient:
             params["target_id"] = target_id
         return dict(self._request("GET", "/v1/root/mcp/subnet/info", params=params))
 
+    def get_subnet_analysis_health(
+        self,
+        *,
+        target_id: str | None = None,
+        probe_logs: bool = True,
+        lines: int = 20,
+        include_hub: bool = True,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "probe_logs": bool(probe_logs),
+            "lines": int(lines),
+            "include_hub": bool(include_hub),
+        }
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/analysis-health", params=params))
+
+    def get_subnet_timeline(
+        self,
+        *,
+        target_id: str | None = None,
+        limit: int = 100,
+        include_control_reports: bool = True,
+        include_profile_ops: bool = True,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": int(limit),
+            "include_control_reports": bool(include_control_reports),
+            "include_profile_ops": bool(include_profile_ops),
+        }
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/timeline", params=params))
+
+    def get_subnet_diagnostics(
+        self,
+        *,
+        target_id: str | None = None,
+        session_limit: int = 5,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "session_limit": int(session_limit),
+        }
+        if target_id:
+            params["target_id"] = target_id
+        return dict(self._request("GET", "/v1/root/mcp/subnet/diagnostics", params=params))
+
     def call(
         self,
         tool_id: str,

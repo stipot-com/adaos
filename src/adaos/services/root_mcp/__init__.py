@@ -1,4 +1,4 @@
-from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
+from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary, target_operational_timeline
 from .client import RootMcpClient, RootMcpClientConfig
 from .codex_bridge import (
     CodexBridgeProfile,
@@ -39,6 +39,7 @@ from .service import (
     foundation_snapshot,
     get_descriptor,
     get_managed_target,
+    get_target_operational_timeline,
     get_tool_contract,
     invoke_tool,
     list_descriptor_registry,
@@ -81,6 +82,7 @@ __all__ = [
     "get_descriptor",
     "get_descriptor_set",
     "get_managed_target",
+    "get_target_operational_timeline",
     "get_tool_contract",
     "invoke_tool",
     "list_audit_events",
@@ -113,5 +115,6 @@ __all__ = [
     "sync_target_from_control_report",
     "target_activity_feed",
     "target_capability_usage_summary",
+    "target_operational_timeline",
     "write_codex_bridge_profile",
 ]

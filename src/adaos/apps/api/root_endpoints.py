@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import hashlib
 import os
@@ -23,6 +24,7 @@ from adaos.services.root_mcp.service import (
     foundation_snapshot,
     get_descriptor,
     get_managed_target,
+    get_target_operational_timeline,
     invoke_tool,
     list_descriptor_registry,
     list_managed_targets,
@@ -428,6 +430,745 @@ def _build_root_subnet_info(*, auth: dict[str, Any], subnet_id: str | None = Non
             }
         },
     }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token.endswith("Z"):
+        token = token[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds_from_iso(value: Any) -> float | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _status_from_score(score: int) -> str:
+    bounded = max(0, min(int(score), 100))
+    if bounded >= 85:
+        return "healthy"
+    if bounded >= 60:
+        return "degraded"
+    return "unavailable"
+
+
+def _latest_timestamp(values: list[str]) -> str | None:
+    best: datetime | None = None
+    for value in values:
+        parsed = _parse_iso_datetime(value)
+        if parsed is None:
+            continue
+        if best is None or parsed > best:
+            best = parsed
+    if best is None:
+        return None
+    return best.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def _probe_subnet_log_health(
+    *,
+    subnet_id: str,
+    lines: int,
+    include_hub: bool,
+) -> dict[str, Any]:
+    categories = ["adaos", "events", "yjs", "skills"]
+    probes = await asyncio.gather(
+        *[
+            aggregate_subnet_logs(
+                category=category,
+                subnet_id=subnet_id,
+                limit=1,
+                lines=lines,
+                include_hub=include_hub,
+            )
+            for category in categories
+        ],
+        return_exceptions=True,
+    )
+    category_results: list[dict[str, Any]] = []
+    scores: list[int] = []
+
+    for category, probe in zip(categories, probes, strict=False):
+        if isinstance(probe, Exception):
+            category_results.append(
+                {
+                    "category": category,
+                    "status": "unavailable",
+                    "score": 10,
+                    "summary": f"log probe failed: {type(probe).__name__}",
+                    "error": f"{type(probe).__name__}: {probe}",
+                }
+            )
+            scores.append(10)
+            continue
+
+        aggregation = dict(probe.get("aggregation") or {}) if isinstance(probe, dict) else {}
+        included_total = int(aggregation.get("included_total") or 0)
+        ok_total = int(aggregation.get("ok_total") or 0)
+        active_total = int(aggregation.get("active_total") or 0)
+        error_total = int(aggregation.get("error_total") or 0)
+        item_total = 0
+        nodes_with_items = 0
+        for node in list(probe.get("nodes") or []) if isinstance(probe, dict) else []:
+            if not isinstance(node, dict):
+                continue
+            logs = dict(node.get("logs") or {}) if isinstance(node.get("logs"), dict) else {}
+            items = logs.get("items") if isinstance(logs.get("items"), list) else []
+            item_count = len(items)
+            item_total += item_count
+            if item_count > 0:
+                nodes_with_items += 1
+
+        if included_total <= 0 and active_total <= 0:
+            score = 30
+            summary = "no active subnet nodes were available for log aggregation"
+        elif included_total <= 0:
+            score = 35
+            summary = "active nodes exist but none were included in the log probe"
+        elif ok_total <= 0:
+            score = 35
+            summary = "log aggregation reached nodes but no probe succeeded"
+        elif ok_total == included_total and item_total > 0:
+            score = 100
+            summary = "log aggregation succeeded across all included nodes"
+        elif ok_total == included_total:
+            score = 78
+            summary = "log aggregation transport succeeded but no matching files were returned"
+        else:
+            score = 68
+            summary = "log aggregation returned partial results across included nodes"
+
+        category_results.append(
+            {
+                "category": category,
+                "status": _status_from_score(score),
+                "score": score,
+                "summary": summary,
+                "source_mode": probe.get("source_mode") if isinstance(probe, dict) else None,
+                "aggregation": aggregation,
+                "nodes_with_items": nodes_with_items,
+                "item_total": item_total,
+                "error_total": error_total,
+            }
+        )
+        scores.append(score)
+
+    overall_score = int(round(sum(scores) / len(scores))) if scores else 0
+    return {
+        "status": _status_from_score(overall_score),
+        "score": overall_score,
+        "provenance": "subnet_active",
+        "probe": {
+            "categories": categories,
+            "lines": lines,
+            "include_hub": include_hub,
+        },
+        "categories": category_results,
+    }
+
+
+async def _build_root_subnet_analysis_health(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    probe_logs: bool,
+    lines: int,
+    include_hub: bool,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    node_summary = dict(subnet_info.get("node_summary") or {}) if isinstance(subnet_info.get("node_summary"), dict) else {}
+    active_known = int(node_summary.get("active_known") or 0)
+    total_known = int(node_summary.get("total_known") or 0)
+    connected_members = int(node_summary.get("connected_members") or 0)
+
+    if active_known > 0:
+        subnet_score = 100
+        subnet_summary = "root currently sees active nodes in the subnet"
+    elif total_known > 0:
+        subnet_score = 55
+        subnet_summary = "root knows subnet nodes but none currently appear active"
+    else:
+        subnet_score = 25
+        subnet_summary = "root does not currently know any nodes for the subnet"
+    subnet_state_channel = {
+        "status": _status_from_score(subnet_score),
+        "score": subnet_score,
+        "summary": subnet_summary,
+        "known_total": total_known,
+        "active_total": active_known,
+        "connected_members": connected_members,
+    }
+
+    reports = list_control_reports(hub_id=effective_target_id) if effective_target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    reported_at = (
+        latest_report_payload.get("reported_at")
+        or target_meta.get("last_reported_at")
+    )
+    report_age_seconds = _age_seconds_from_iso(reported_at)
+    report_verified = bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified"))
+    if not reports and not reported_at:
+        report_score = 20
+        report_summary = "no control report is currently available on root"
+    elif report_age_seconds is None:
+        report_score = 55
+        report_summary = "control report exists but freshness could not be determined"
+    elif report_age_seconds <= 15 * 60 and report_verified:
+        report_score = 100
+        report_summary = "control report is fresh and verified"
+    elif report_age_seconds <= 60 * 60:
+        report_score = 70 if report_verified else 62
+        report_summary = "control report is available but no longer fresh"
+    else:
+        report_score = 45 if report_verified else 35
+        report_summary = "control report is stale for live operational analysis"
+    control_report_channel = {
+        "status": _status_from_score(report_score),
+        "score": report_score,
+        "summary": report_summary,
+        "reported_at": reported_at,
+        "age_seconds": report_age_seconds,
+        "verified": report_verified,
+        "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+        "runtime_instance_id": str(latest_report_payload.get("runtime_instance_id") or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("runtime_instance_id") or target_meta.get("runtime_instance_id") or "").strip() or None,
+        "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+    }
+
+    sessions = list_mcp_session_leases(limit=200, target_id=effective_target_id or None, active_only=False)
+    visible_sessions = [
+        item
+        for item in sessions
+        if (
+            effective_subnet_id
+            and str(item.get("subnet_id") or "").strip() == effective_subnet_id
+        )
+        or (
+            effective_target_id
+            and effective_target_id in list(item.get("target_ids") or [])
+        )
+    ]
+    now = datetime.now(timezone.utc)
+    stale_active_ids: list[str] = []
+    for item in visible_sessions:
+        expires_at = _parse_iso_datetime(item.get("expires_at"))
+        if str(item.get("status") or "").strip() == "active" and expires_at is not None and expires_at < now:
+            token = str(item.get("session_id") or "").strip()
+            if token:
+                stale_active_ids.append(token)
+    stale_active_count = len(stale_active_ids)
+    if stale_active_count <= 0:
+        session_score = 100
+        session_summary = "visible session registry is freshness-consistent"
+    elif stale_active_count <= 3:
+        session_score = 65
+        session_summary = "session registry shows a small number of stale active leases"
+    else:
+        session_score = 40
+        session_summary = "session registry shows multiple stale active leases"
+    session_registry_channel = {
+        "status": _status_from_score(session_score),
+        "score": session_score,
+        "summary": session_summary,
+        "visible_total": len(visible_sessions),
+        "active_total": sum(1 for item in visible_sessions if str(item.get("status") or "").strip() == "active"),
+        "stale_active_total": stale_active_count,
+        "stale_active_session_ids": stale_active_ids[:10],
+    }
+
+    audit_events = recent_audit_events(limit=50, target_id=effective_target_id, subnet_id=effective_subnet_id)
+    latest_audit_at = _latest_timestamp(
+        [
+            str(item.get("finished_at") or item.get("started_at") or "").strip()
+            for item in audit_events
+            if isinstance(item, dict)
+        ]
+    )
+    if audit_events:
+        audit_score = 100
+        audit_summary = "root audit history contains recent target-scoped events"
+    else:
+        audit_score = 80
+        audit_summary = "root audit channel is readable but the sampled window is empty"
+    audit_history_channel = {
+        "status": _status_from_score(audit_score),
+        "score": audit_score,
+        "summary": audit_summary,
+        "history_kind": "root_audit",
+        "recent_event_total": len(audit_events),
+        "latest_event_at": latest_audit_at,
+    }
+
+    if probe_logs and effective_subnet_id:
+        log_aggregation_channel = await _probe_subnet_log_health(
+            subnet_id=effective_subnet_id,
+            lines=max(1, min(int(lines), 200)),
+            include_hub=bool(include_hub),
+        )
+    else:
+        log_aggregation_channel = {
+            "status": "skipped",
+            "score": None,
+            "summary": "log aggregation probe was not requested" if not probe_logs else "log aggregation probe requires an effective subnet scope",
+            "provenance": "subnet_active",
+        }
+
+    channels = {
+        "subnet_state": subnet_state_channel,
+        "control_report": control_report_channel,
+        "session_registry": session_registry_channel,
+        "audit_history": audit_history_channel,
+        "log_aggregation": log_aggregation_channel,
+    }
+    implemented_scores = [
+        int(channel.get("score"))
+        for channel in channels.values()
+        if isinstance(channel, dict) and isinstance(channel.get("score"), int)
+    ]
+    overall_score = int(round(sum(implemented_scores) / len(implemented_scores))) if implemented_scores else 0
+    trustworthy_for: list[str] = []
+    if subnet_score >= 60 and report_score >= 60:
+        trustworthy_for.append("current subnet snapshot analysis")
+    if session_score >= 60:
+        trustworthy_for.append("session lease visibility")
+    if audit_score >= 60:
+        trustworthy_for.append("root audit review")
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) >= 60:
+        trustworthy_for.append("runtime log correlation")
+
+    not_reliable_for = ["full runtime-native operational history reconstruction"]
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) < 60:
+        not_reliable_for.append("runtime log-based diagnosis")
+    if report_score < 60:
+        not_reliable_for.append("fresh live-state inference")
+
+    recommendations: list[str] = []
+    if report_age_seconds is not None and report_age_seconds > 15 * 60:
+        recommendations.append("Treat control-report-derived state as stale until a fresh report is ingested.")
+    if reports and not report_verified:
+        recommendations.append("Control reports are present but not verified; trust them cautiously.")
+    if stale_active_count > 0:
+        recommendations.append("Normalize or validate MCP session leases before using active-session counts operationally.")
+    if isinstance(log_aggregation_channel.get("score"), int) and int(log_aggregation_channel.get("score")) < 60:
+        recommendations.append("Prefer root-known snapshot data over subnet-active log analysis until log aggregation recovers.")
+
+    return {
+        "target_id": effective_target_id,
+        "subnet_id": effective_subnet_id,
+        "scope": {
+            "subnet_id": subnet_id,
+            "zone": auth.get("zone"),
+        },
+        "overall": {
+            "status": _status_from_score(overall_score),
+            "score": overall_score,
+            "trustworthy_for": trustworthy_for,
+            "not_reliable_for": not_reliable_for,
+        },
+        "channels": channels,
+        "gaps": [
+            {
+                "id": "operational_history_surface",
+                "status": "partial",
+                "message": "A typed subnet timeline is now available, but it is still derived mainly from Root MCP audit plus report-ingest events rather than full runtime-native history.",
+            }
+        ],
+        "recommendations": recommendations,
+        "subnet": {
+            "source_mode": subnet_info.get("source_mode"),
+            "node_summary": node_summary,
+            "hub_link": subnet_info.get("hub_link"),
+        },
+    }
+
+
+def _current_control_report_ref(
+    *,
+    managed_target: dict[str, Any],
+    target_id: str | None,
+) -> dict[str, Any]:
+    reports = list_control_reports(hub_id=target_id) if target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    runtime = dict(latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}
+    reported_at = latest_report_payload.get("reported_at") or target_meta.get("last_reported_at")
+    return {
+        "reported_at": reported_at,
+        "report_verified": bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified")),
+        "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+        "runtime_instance_id": str(latest_report_payload.get("runtime_instance_id") or runtime.get("runtime_instance_id") or target_meta.get("runtime_instance_id") or "").strip() or None,
+        "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+    }
+
+
+def _profile_report_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+    reported_at = _parse_iso_datetime(report.get("reported_at"))
+    timestamp = int(reported_at.timestamp()) if reported_at is not None else 0
+    return (timestamp, str(item.get("session_id") or "").strip())
+
+
+def _compact_memory_profile_session(item: dict[str, Any], *, current_runtime_instance_id: str | None = None) -> dict[str, Any]:
+    report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+    session = dict(report.get("session") or {}) if isinstance(report.get("session"), dict) else {}
+    runtime_instance_id = str(report.get("runtime_instance_id") or "").strip() or None
+    artifact_refs = list(session.get("artifact_refs") or []) if isinstance(session.get("artifact_refs"), list) else []
+    return {
+        "session_id": str(item.get("session_id") or "").strip() or None,
+        "reported_at": report.get("reported_at"),
+        "runtime_instance_id": runtime_instance_id,
+        "current_runtime_match": bool(
+            current_runtime_instance_id
+            and runtime_instance_id
+            and current_runtime_instance_id == runtime_instance_id
+        ),
+        "profile_mode": str(session.get("profile_mode") or "").strip() or None,
+        "session_state": str(session.get("session_state") or "").strip() or None,
+        "suspected_leak": bool(session.get("suspected_leak")),
+        "baseline_rss_bytes": int(session.get("baseline_rss_bytes") or 0) if session.get("baseline_rss_bytes") is not None else None,
+        "peak_rss_bytes": int(session.get("peak_rss_bytes") or 0) if session.get("peak_rss_bytes") is not None else None,
+        "rss_growth_bytes": int(session.get("rss_growth_bytes") or 0) if session.get("rss_growth_bytes") is not None else None,
+        "retry_of_session_id": str(session.get("retry_of_session_id") or "").strip() or None,
+        "artifact_total": len([entry for entry in artifact_refs if isinstance(entry, dict)]),
+    }
+
+
+def _build_root_subnet_diagnostics(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    session_limit: int,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    reports = list_control_reports(hub_id=effective_target_id) if effective_target_id else []
+    latest_report = dict(reports[0] or {}) if reports else {}
+    latest_report_payload = dict(latest_report.get("report") or {}) if isinstance(latest_report.get("report"), dict) else {}
+    latest_ingest_auth = dict(latest_report.get("ingest_auth") or {}) if isinstance(latest_report.get("ingest_auth"), dict) else {}
+    target_meta = dict(managed_target.get("meta") or {}) if isinstance(managed_target.get("meta"), dict) else {}
+    protocol_runtime = dict(latest_report_payload.get("protocol_runtime") or {}) if isinstance(latest_report_payload.get("protocol_runtime"), dict) else {}
+    yjs_runtime = dict(latest_report_payload.get("yjs_runtime") or {}) if isinstance(latest_report_payload.get("yjs_runtime"), dict) else {}
+    root_control = dict(latest_report_payload.get("root_control") or {}) if isinstance(latest_report_payload.get("root_control"), dict) else {}
+    route = dict(latest_report_payload.get("route") or {}) if isinstance(latest_report_payload.get("route"), dict) else {}
+    current_runtime_instance_id = str(
+        latest_report_payload.get("runtime_instance_id")
+        or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("runtime_instance_id")
+        or target_meta.get("runtime_instance_id")
+        or ""
+    ).strip() or None
+
+    route_runtime = dict(protocol_runtime.get("route_runtime") or {}) if isinstance(protocol_runtime.get("route_runtime"), dict) else {}
+    route_flows = dict(route_runtime.get("flows") or {}) if isinstance(route_runtime.get("flows"), dict) else {}
+    route_control_flow = dict(route_flows.get("control") or {}) if isinstance(route_flows.get("control"), dict) else {}
+    route_frame_flow = dict(route_flows.get("frame") or {}) if isinstance(route_flows.get("frame"), dict) else {}
+    integration_outboxes = dict(protocol_runtime.get("integration_outboxes") or {}) if isinstance(protocol_runtime.get("integration_outboxes"), dict) else {}
+    telegram_outbox = dict(integration_outboxes.get("telegram") or {}) if isinstance(integration_outboxes.get("telegram"), dict) else {}
+    control_authority = dict(protocol_runtime.get("control_authority") or {}) if isinstance(protocol_runtime.get("control_authority"), dict) else {}
+    protocol_assessment = dict(protocol_runtime.get("assessment") or {}) if isinstance(protocol_runtime.get("assessment"), dict) else {}
+
+    yjs_assessment = dict(yjs_runtime.get("assessment") or {}) if isinstance(yjs_runtime.get("assessment"), dict) else {}
+    yjs_transport = dict(yjs_runtime.get("transport") or {}) if isinstance(yjs_runtime.get("transport"), dict) else {}
+    yjs_selected_webspace = dict(yjs_runtime.get("selected_webspace") or {}) if isinstance(yjs_runtime.get("selected_webspace"), dict) else {}
+    yjs_selected_store_runtime = dict(yjs_selected_webspace.get("store_runtime") or {}) if isinstance(yjs_selected_webspace.get("store_runtime"), dict) else {}
+    yjs_selected_gateway_room = dict(yjs_selected_webspace.get("gateway_room") or {}) if isinstance(yjs_selected_webspace.get("gateway_room"), dict) else {}
+    yjs_selected_room_diag = dict(yjs_selected_gateway_room.get("diagnostic") or {}) if isinstance(yjs_selected_gateway_room.get("diagnostic"), dict) else {}
+    yjs_selected_send_stream = dict(yjs_selected_gateway_room.get("send_stream") or {}) if isinstance(yjs_selected_gateway_room.get("send_stream"), dict) else {}
+    yjs_selected_ystore = dict(yjs_selected_gateway_room.get("ystore") or {}) if isinstance(yjs_selected_gateway_room.get("ystore"), dict) else {}
+
+    memory_reports = list_memory_profile_reports(
+        hub_id=effective_target_id,
+        subnet_id=effective_subnet_id,
+        zone=str(auth.get("zone") or "").strip() or None,
+    )
+    memory_reports.sort(key=_profile_report_sort_key, reverse=True)
+    recent_memory = memory_reports[: max(1, min(int(session_limit), 10))]
+    running_total = 0
+    suspected_total = 0
+    for item in memory_reports:
+        report = dict(item.get("report") or {}) if isinstance(item.get("report"), dict) else {}
+        session = dict(report.get("session") or {}) if isinstance(report.get("session"), dict) else {}
+        if str(session.get("session_state") or "").strip().lower() == "running":
+            running_total += 1
+        if bool(session.get("suspected_leak")):
+            suspected_total += 1
+    latest_memory = _compact_memory_profile_session(recent_memory[0], current_runtime_instance_id=current_runtime_instance_id) if recent_memory else None
+    latest_suspected_raw = next(
+        (
+            item
+            for item in memory_reports
+            if isinstance(item, dict)
+            and bool(
+                (
+                    ((item.get("report") or {}) if isinstance(item.get("report"), dict) else {}).get("session")
+                    if isinstance(((item.get("report") or {}) if isinstance(item.get("report"), dict) else {}).get("session"), dict)
+                    else {}
+                ).get("suspected_leak")
+            )
+        ),
+        None,
+    )
+    latest_suspected = (
+        _compact_memory_profile_session(latest_suspected_raw, current_runtime_instance_id=current_runtime_instance_id)
+        if isinstance(latest_suspected_raw, dict)
+        else None
+    )
+    if suspected_total > 0:
+        memory_assessment = {
+            "state": "pressure",
+            "reason": "suspected memory leak sessions are present in the root-side report registry",
+        }
+    elif running_total > 0:
+        memory_assessment = {
+            "state": "observing",
+            "reason": "a runtime memory profile session is currently running or awaiting publish",
+        }
+    elif recent_memory:
+        memory_assessment = {
+            "state": "history_present",
+            "reason": "root has recent memory-profile history for this subnet",
+        }
+    else:
+        memory_assessment = {
+            "state": "idle",
+            "reason": "root has no published memory-profile sessions for this subnet yet",
+        }
+
+    return {
+        "target_id": effective_target_id,
+        "subnet_id": effective_subnet_id,
+        "current": {
+            "reported_at": latest_report_payload.get("reported_at") or target_meta.get("last_reported_at"),
+            "report_verified": bool(latest_ingest_auth.get("verified") or target_meta.get("report_verified")),
+            "report_auth_method": str(latest_ingest_auth.get("method") or target_meta.get("report_auth_method") or "").strip() or None,
+            "runtime_instance_id": current_runtime_instance_id,
+            "transition_role": str(
+                latest_report_payload.get("transition_role")
+                or ((latest_report_payload.get("runtime") or {}) if isinstance(latest_report_payload.get("runtime"), dict) else {}).get("transition_role")
+                or target_meta.get("transition_role")
+                or ""
+            ).strip() or None,
+        },
+        "route_pressure": {
+            "available": bool(protocol_runtime),
+            "provenance": "root_control_report",
+            "assessment": {
+                "state": str(protocol_assessment.get("state") or "").strip() or ("unavailable" if not protocol_runtime else None),
+                "reason": str(protocol_assessment.get("reason") or "").strip()
+                or ("control reports do not yet publish compact hub-root protocol diagnostics" if not protocol_runtime else None),
+            },
+            "root_control": {
+                "status": str(root_control.get("status") or "").strip() or None,
+                "stability_state": str(root_control.get("stability_state") or "").strip() or None,
+                "last_incident_class": str(root_control.get("last_incident_class") or "").strip() or None,
+            },
+            "route": {
+                "status": str(route.get("status") or "").strip() or None,
+                "stability_state": str(route.get("stability_state") or "").strip() or None,
+                "last_incident_class": str(route.get("last_incident_class") or "").strip() or None,
+            },
+            "pending_ack_streams": int(protocol_runtime.get("pending_ack_streams") or 0),
+            "route_backlog": {
+                "pending_events": int(route_runtime.get("pending_events") or 0),
+                "max_pending_events": int(route_runtime.get("max_pending_events") or 0),
+                "pending_chunks": int(route_runtime.get("pending_chunks") or 0),
+                "active_tunnels": int(route_runtime.get("active_tunnels") or 0),
+                "pending_tunnels": int(route_runtime.get("pending_tunnels") or 0),
+                "updated_at": route_runtime.get("updated_at"),
+                "last_publish_fail_at": route_runtime.get("last_publish_fail_at"),
+                "last_no_upstream_at": route_runtime.get("last_no_upstream_at"),
+                "last_force_close_at": route_runtime.get("last_force_close_at"),
+                "last_reset_at": route_runtime.get("last_reset_at"),
+                "last_reset_reason": str(route_runtime.get("last_reset_reason") or "").strip() or None,
+            },
+            "flows": {
+                "control": {
+                    "state": str(route_control_flow.get("state") or "").strip() or None,
+                    "reason": str(route_control_flow.get("reason") or "").strip() or None,
+                    "last_event": str(route_control_flow.get("last_event") or "").strip() or None,
+                    "last_error": str(route_control_flow.get("last_error") or "").strip() or None,
+                },
+                "frame": {
+                    "state": str(route_frame_flow.get("state") or "").strip() or None,
+                    "reason": str(route_frame_flow.get("reason") or "").strip() or None,
+                    "last_event": str(route_frame_flow.get("last_event") or "").strip() or None,
+                    "last_error": str(route_frame_flow.get("last_error") or "").strip() or None,
+                },
+            },
+            "integration_outboxes": {
+                "telegram": {
+                    "size": int(telegram_outbox.get("size") or 0),
+                    "max_size": int(telegram_outbox.get("max_size") or 0) if telegram_outbox.get("max_size") is not None else None,
+                    "durable_store": bool(telegram_outbox.get("durable_store")),
+                    "publish_ok": int(telegram_outbox.get("publish_ok") or 0),
+                    "publish_fail": int(telegram_outbox.get("publish_fail") or 0),
+                    "last_error": str(telegram_outbox.get("last_error") or "").strip() or None,
+                    "last_error_at": telegram_outbox.get("last_error_at"),
+                }
+            },
+            "control_authority": {
+                "state": str(control_authority.get("state") or "").strip() or None,
+                "reason": str(control_authority.get("reason") or "").strip() or None,
+                "stale_after_s": control_authority.get("stale_after_s"),
+                "ack_age_s": control_authority.get("ack_age_s"),
+                "issue_age_s": control_authority.get("issue_age_s"),
+                "issued_cursor": int(control_authority.get("issued_cursor") or 0),
+                "acked_cursor": int(control_authority.get("acked_cursor") or 0),
+                "pending": bool(control_authority.get("pending")),
+            },
+        },
+        "yjs_pressure": {
+            "available": bool(yjs_runtime),
+            "provenance": "root_control_report",
+            "assessment": {
+                "state": str(yjs_assessment.get("state") or "").strip() or ("unavailable" if not yjs_runtime else None),
+                "reason": str(yjs_assessment.get("reason") or "").strip()
+                or ("control reports do not yet publish compact YJS runtime diagnostics" if not yjs_runtime else None),
+            },
+            "selected_webspace_id": str(yjs_runtime.get("selected_webspace_id") or "").strip() or None,
+            "webspace_total": int(yjs_runtime.get("webspace_total") or 0),
+            "active_webspace_total": int(yjs_runtime.get("active_webspace_total") or 0),
+            "compaction_eligible_webspace_total": int(yjs_runtime.get("compaction_eligible_webspace_total") or 0),
+            "update_log_total": int(yjs_runtime.get("update_log_total") or 0),
+            "replay_window_total": int(yjs_runtime.get("replay_window_total") or 0),
+            "replay_window_byte_total": int(yjs_runtime.get("replay_window_byte_total") or 0),
+            "transport": {
+                "active_yws_connections": int(yjs_transport.get("active_yws_connections") or 0),
+                "storm_detected": bool(yjs_transport.get("storm_detected")),
+                "recent_open_60s": int(yjs_transport.get("recent_open_60s") or 0),
+                "server_ready": bool(yjs_transport.get("server_ready")),
+                "active_room_total": int(yjs_transport.get("active_room_total") or 0),
+                "room_reset_total": int(yjs_transport.get("room_reset_total") or 0),
+                "reload_recent_60s": int(yjs_transport.get("reload_recent_60s") or 0),
+                "reset_recent_60s": int(yjs_transport.get("reset_recent_60s") or 0),
+                "update_stream_buffer_used_total": int(yjs_transport.get("update_stream_buffer_used_total") or 0),
+                "update_stream_waiting_send_total": int(yjs_transport.get("update_stream_waiting_send_total") or 0),
+                "update_stream_waiting_receive_total": int(yjs_transport.get("update_stream_waiting_receive_total") or 0),
+            },
+            "selected_webspace": {
+                "title": str(yjs_selected_webspace.get("title") or "").strip() or None,
+                "kind": str(yjs_selected_webspace.get("kind") or "").strip() or None,
+                "source_mode": str(yjs_selected_webspace.get("source_mode") or "").strip() or None,
+                "rebuild_status": str(yjs_selected_webspace.get("rebuild_status") or "").strip() or None,
+                "store_runtime": {
+                    "log_mode": str(yjs_selected_store_runtime.get("log_mode") or "").strip() or None,
+                    "update_log_entries": int(yjs_selected_store_runtime.get("update_log_entries") or 0),
+                    "max_update_log_entries": int(yjs_selected_store_runtime.get("max_update_log_entries") or 0),
+                    "replay_window_entries": int(yjs_selected_store_runtime.get("replay_window_entries") or 0),
+                    "replay_window_limit": int(yjs_selected_store_runtime.get("replay_window_limit") or 0),
+                    "replay_window_bytes": int(yjs_selected_store_runtime.get("replay_window_bytes") or 0),
+                    "replay_window_byte_limit": int(yjs_selected_store_runtime.get("replay_window_byte_limit") or 0),
+                    "runtime_compaction_eligible": bool(yjs_selected_store_runtime.get("runtime_compaction_eligible")),
+                    "snapshot_file_exists": bool(yjs_selected_store_runtime.get("snapshot_file_exists")),
+                    "snapshot_file_size": int(yjs_selected_store_runtime.get("snapshot_file_size") or 0),
+                },
+                "gateway_room": {
+                    "client_total": int(yjs_selected_gateway_room.get("client_total") or 0),
+                    "ready": bool(yjs_selected_gateway_room.get("ready")),
+                    "started": bool(yjs_selected_gateway_room.get("started")),
+                    "task_group_active": bool(yjs_selected_gateway_room.get("task_group_active")),
+                    "ystore_attached": bool(yjs_selected_gateway_room.get("ystore_attached")),
+                    "diagnostic": {
+                        "pending_send_tasks": int(yjs_selected_room_diag.get("pending_send_tasks") or 0),
+                        "pending_store_tasks": int(yjs_selected_room_diag.get("pending_store_tasks") or 0),
+                        "update_total": int(yjs_selected_room_diag.get("update_total") or 0),
+                        "update_bytes_total": int(yjs_selected_room_diag.get("update_bytes_total") or 0),
+                    },
+                    "send_stream": {
+                        "current_buffer_used": int(yjs_selected_send_stream.get("current_buffer_used") or 0),
+                        "max_buffer_size": int(yjs_selected_send_stream.get("max_buffer_size") or 0),
+                        "tasks_waiting_send": int(yjs_selected_send_stream.get("tasks_waiting_send") or 0),
+                        "tasks_waiting_receive": int(yjs_selected_send_stream.get("tasks_waiting_receive") or 0),
+                    },
+                    "ystore": {
+                        "update_log_entries": int(yjs_selected_ystore.get("update_log_entries") or 0),
+                        "update_log_bytes": int(yjs_selected_ystore.get("update_log_bytes") or 0),
+                        "replay_window_bytes": int(yjs_selected_ystore.get("replay_window_bytes") or 0),
+                        "last_update_bytes": int(yjs_selected_ystore.get("last_update_bytes") or 0),
+                    },
+                },
+            },
+        },
+        "memory_pressure": {
+            "available": True,
+            "provenance": "root_memory_profile_reports",
+            "assessment": memory_assessment,
+            "recent_session_total": len(memory_reports),
+            "running_session_total": running_total,
+            "suspected_session_total": suspected_total,
+            "latest_session": latest_memory,
+            "latest_suspected_session": latest_suspected,
+            "recent_sessions": [
+                _compact_memory_profile_session(item, current_runtime_instance_id=current_runtime_instance_id)
+                for item in recent_memory
+            ],
+        },
+    }
+
+
+def _build_root_subnet_timeline(
+    *,
+    auth: dict[str, Any],
+    subnet_id: str | None,
+    target_id: str | None,
+    limit: int,
+    include_control_reports: bool,
+    include_profile_ops: bool,
+) -> dict[str, Any]:
+    subnet_info = _build_root_subnet_info(auth=auth, subnet_id=subnet_id, target_id=target_id)
+    effective_subnet_id = str(subnet_info.get("subnet_id") or "").strip() or None
+    effective_target_id = str(subnet_info.get("target_id") or "").strip() or None
+    if not effective_target_id and effective_subnet_id:
+        effective_target_id = f"hub:{effective_subnet_id}"
+    managed_target = dict(subnet_info.get("managed_target") or {}) if isinstance(subnet_info.get("managed_target"), dict) else {}
+    if not effective_target_id:
+        raise HTTPException(status_code=400, detail={"code": "missing_target", "message": "Unable to resolve target_id for subnet timeline."})
+    timeline = get_target_operational_timeline(
+        target_id=effective_target_id,
+        limit=max(1, min(int(limit), 300)),
+        include_control_reports=bool(include_control_reports),
+        include_profile_ops=bool(include_profile_ops),
+    )
+    summary = dict(timeline.get("summary") or {}) if isinstance(timeline.get("summary"), dict) else {}
+    current_control_report = _current_control_report_ref(managed_target=managed_target, target_id=effective_target_id)
+    summary["latest_control_report_at"] = current_control_report.get("reported_at")
+    timeline["summary"] = summary
+    timeline["subnet_id"] = effective_subnet_id
+    timeline["target_id"] = effective_target_id
+    timeline["current"] = {
+        "managed_target_status": managed_target.get("status"),
+        "control_report": current_control_report,
+    }
+    return timeline
 
 
 def _enforce_mcp_capability(required_capability: str, *, auth: dict[str, Any]) -> None:
@@ -1322,6 +2063,94 @@ async def root_mcp_subnet_info(
         "auth": {"method": auth.get("method")},
         "scope": scope,
         "subnet": info,
+    }
+
+
+@root_router.get("/mcp/subnet/analysis-health")
+async def root_mcp_subnet_analysis_health(
+    target_id: str | None = None,
+    probe_logs: bool = True,
+    lines: int = 20,
+    include_hub: bool = True,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    analysis = await _build_root_subnet_analysis_health(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        probe_logs=bool(probe_logs),
+        lines=max(1, min(int(lines), 200)),
+        include_hub=bool(include_hub),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "analysis": analysis,
+    }
+
+
+@root_router.get("/mcp/subnet/timeline")
+async def root_mcp_subnet_timeline(
+    target_id: str | None = None,
+    limit: int = 100,
+    include_control_reports: bool = True,
+    include_profile_ops: bool = True,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    _enforce_mcp_capability("audit.read", auth=auth)
+    timeline = _build_root_subnet_timeline(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        limit=max(1, min(int(limit), 300)),
+        include_control_reports=bool(include_control_reports),
+        include_profile_ops=bool(include_profile_ops),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "timeline": timeline,
+    }
+
+
+@root_router.get("/mcp/subnet/diagnostics")
+async def root_mcp_subnet_diagnostics(
+    target_id: str | None = None,
+    session_limit: int = 5,
+    authorization: str | None = Header(default=None),
+    owner_token: str | None = Header(default=None, alias="X-Owner-Token"),
+    subnet_id: str | None = Header(default=None, alias="X-AdaOS-Subnet-Id"),
+    zone: str | None = Header(default=None, alias="X-AdaOS-Zone"),
+) -> dict[str, Any]:
+    auth = _require_root_access_auth(authorization=authorization, owner_token=owner_token)
+    scope = _effective_mcp_scope(auth=auth, subnet_id=subnet_id, zone=zone)
+    _enforce_mcp_capability("operations.read.targets", auth=auth)
+    diagnostics = _build_root_subnet_diagnostics(
+        auth=auth,
+        subnet_id=scope.get("subnet_id"),
+        target_id=target_id,
+        session_limit=max(1, min(int(session_limit), 10)),
+    )
+    return {
+        "ok": True,
+        "auth": {"method": auth.get("method")},
+        "scope": scope,
+        "diagnostics": diagnostics,
     }
 
 

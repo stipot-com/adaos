@@ -40,6 +40,122 @@ def _get_hub_link_manager():
     return get_hub_link_manager()
 
 
+def _status_from_score(score: int) -> str:
+    bounded = max(0, min(int(score), 100))
+    if bounded >= 85:
+        return "healthy"
+    if bounded >= 60:
+        return "degraded"
+    return "unavailable"
+
+
+def _annotate_log_payload(payload: dict[str, Any], *, scope: str) -> dict[str, Any]:
+    source_mode = str(payload.get("source_mode") or "").strip() or None
+    items = list(payload.get("items") or []) if isinstance(payload.get("items"), list) else []
+    available = bool(payload.get("available"))
+    requested_scope = str(scope or "").strip().lower() or "root_local"
+
+    if requested_scope == "subnet_active":
+        aggregation = dict(payload.get("aggregation") or {}) if isinstance(payload.get("aggregation"), dict) else {}
+        nodes = list(payload.get("nodes") or []) if isinstance(payload.get("nodes"), list) else []
+        included_total = int(aggregation.get("included_total") or 0)
+        active_total = int(aggregation.get("active_total") or 0)
+        ok_total = int(aggregation.get("ok_total") or 0)
+        error_total = int(aggregation.get("error_total") or 0)
+        item_total = 0
+        nodes_with_items = 0
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            logs = dict(node.get("logs") or {}) if isinstance(node.get("logs"), dict) else {}
+            node_items = list(logs.get("items") or []) if isinstance(logs.get("items"), list) else []
+            item_count = len(node_items)
+            item_total += item_count
+            if item_count > 0:
+                nodes_with_items += 1
+        if included_total <= 0 and active_total <= 0:
+            score = 30
+            summary = "no active subnet nodes were available for this log read"
+        elif included_total <= 0:
+            score = 35
+            summary = "active subnet nodes exist but none were included in this log read"
+        elif ok_total <= 0:
+            score = 35
+            summary = "subnet log transport reached no successful node responses"
+        elif ok_total == included_total and item_total > 0:
+            score = 100
+            summary = "subnet-active log aggregation succeeded and returned matching files"
+        elif ok_total == included_total:
+            score = 78
+            summary = "subnet-active log aggregation transport succeeded but returned no matching files"
+        else:
+            score = 68
+            summary = "subnet-active log aggregation returned partial results"
+        payload["provenance"] = {
+            "scope": "subnet_active",
+            "source_mode": source_mode or "hub_active_subnet_nodes",
+            "summary": "aggregated from the currently active subnet runtime through hub/root visibility",
+            "runtime_dependency": "active_subnet_runtime",
+        }
+        payload["health"] = {
+            "status": _status_from_score(score),
+            "score": score,
+            "summary": summary,
+            "signals": {
+                "active_total": active_total,
+                "included_total": included_total,
+                "ok_total": ok_total,
+                "error_total": error_total,
+                "nodes_with_items": nodes_with_items,
+                "item_total": item_total,
+            },
+        }
+        return payload
+
+    error = str(payload.get("error") or "").strip() or None
+    requested_file = str(((payload.get("query") or {}) if isinstance(payload.get("query"), dict) else {}).get("file") or "").strip() or None
+    if error == "path_outside_logs_dir":
+        score = 5
+        summary = "requested path was outside the allowed local logs directory"
+    elif requested_file and items:
+        score = 100
+        summary = "requested file was resolved inside the local logs directory"
+    elif requested_file:
+        score = 55
+        summary = "requested file was not available as a matching local log"
+    elif available and items:
+        score = 100
+        summary = "local logs directory returned matching files"
+    elif available:
+        score = 72
+        summary = "local logs directory was readable but no matching files were found"
+    else:
+        score = 35
+        summary = "local logs were unavailable for this request"
+    provenance_summary = "read from a local logs directory visible to the current source node"
+    if source_mode == "root_local_logs_dir":
+        provenance_summary = "read from the root-hosting machine's local logs directory"
+    elif source_mode == "node_local_logs_dir":
+        provenance_summary = "read from a subnet node's local logs directory"
+    payload["provenance"] = {
+        "scope": "root_local",
+        "source_mode": source_mode or "root_local_logs_dir",
+        "summary": provenance_summary,
+        "runtime_dependency": "none",
+    }
+    payload["health"] = {
+        "status": _status_from_score(score),
+        "score": score,
+        "summary": summary,
+        "signals": {
+            "item_total": len(items),
+            "requested_file": requested_file,
+            "error": error,
+        },
+    }
+    return payload
+
+
 def tail_text_lines(path: Path, *, max_lines: int) -> list[str]:
     if max_lines <= 0 or not path.exists():
         return []
@@ -91,14 +207,14 @@ def list_local_logs(
     if requested_file:
         path = (target_logs_dir / requested_file).resolve()
         if target_logs_dir.resolve() not in [path, *path.parents]:
-            return {
+            return _annotate_log_payload({
                 "category": category_token,
                 "source_mode": source_mode,
                 "available": False,
                 "error": "path_outside_logs_dir",
                 "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": requested_file},
                 "items": [],
-            }
+            }, scope="root_local")
         if path.exists() and path.is_file() and match_log_category(category_token, path.name, contains=contains, skill=skill):
             stat = path.stat()
             items.append(
@@ -111,13 +227,13 @@ def list_local_logs(
                     "tail": tail_text_lines(path, max_lines=max_lines),
                 }
             )
-        return {
+        return _annotate_log_payload({
             "category": category_token,
             "source_mode": source_mode,
             "available": bool(items),
             "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": requested_file},
             "items": items,
-        }
+        }, scope="root_local")
 
     candidates: list[Path] = []
     for entry in target_logs_dir.iterdir():
@@ -138,13 +254,13 @@ def list_local_logs(
                 "tail": tail_text_lines(path, max_lines=max_lines),
             }
         )
-    return {
+    return _annotate_log_payload({
         "category": category_token,
         "source_mode": source_mode,
         "available": True,
         "query": {"limit": max_files, "lines": max_lines, "contains": contains, "skill": skill, "file": None},
         "items": items,
-    }
+    }, scope="root_local")
 
 
 def _member_log_url(base_url: str, category: str) -> str:
@@ -314,7 +430,7 @@ async def aggregate_subnet_logs(
         nodes.extend(await asyncio.gather(*[_collect_member(item) for item in member_nodes]))
 
     ok_total = sum(1 for item in nodes if bool(item.get("ok")))
-    return {
+    return _annotate_log_payload({
         "category": category_token,
         "source_mode": "hub_active_subnet_nodes",
         "available": bool(nodes),
@@ -338,4 +454,4 @@ async def aggregate_subnet_logs(
             "error_total": max(0, len(nodes) - ok_total),
         },
         "nodes": nodes,
-    }
+    }, scope="subnet_active")

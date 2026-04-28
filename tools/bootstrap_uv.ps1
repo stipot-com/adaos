@@ -200,6 +200,7 @@ if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
 }
 if ($Dev) {
   Write-EnvVar -Key "ENV_TYPE" -Value "dev" -EnvFile ".env"
+  Write-EnvVar -Key "ADAOS_SUPERVISOR_ENABLED" -Value "0" -EnvFile ".env"
 }
 
 # 5) Short command: add .venv\Scripts to PATH for current session

@@ -8,7 +8,7 @@ from adaos.build_info import BUILD_INFO
 from adaos.services.agent_context import get_ctx
 from adaos.services.id_gen import new_id
 
-from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary
+from .audit import append_audit_event, list_audit_events, target_activity_feed, target_capability_usage_summary, target_operational_timeline
 from .infra_access import (
     deploy_local_ref,
     publish_local_memory_profile,
@@ -383,7 +383,7 @@ def _implemented_tool_contracts() -> list[RootMcpToolContract]:
             id="hub.get_activity_log",
             title="Get target activity log",
             surface=RootMcpSurface.OPERATIONS,
-            summary="Return recent target activity derived from Root MCP audit and control-report history for infra_access_skill observability.",
+            summary="Return the audit-derived recent activity view for infra_access_skill observability. This is not the full typed subnet timeline.",
             input_schema=schema_object(
                 properties={
                     "target_id": {"type": "string"},
@@ -965,6 +965,21 @@ def recent_audit_events(
         actor=actor,
         target_id=target_id,
         subnet_id=subnet_id,
+    )
+
+
+def get_target_operational_timeline(
+    *,
+    target_id: str,
+    limit: int = 100,
+    include_control_reports: bool = True,
+    include_profile_ops: bool = True,
+) -> dict[str, Any]:
+    return target_operational_timeline(
+        target_id=target_id,
+        limit=limit,
+        include_control_reports=include_control_reports,
+        include_profile_ops=include_profile_ops,
     )
 
 
@@ -2168,6 +2183,7 @@ __all__ = [
     "foundation_snapshot",
     "get_descriptor",
     "get_managed_target",
+    "get_target_operational_timeline",
     "get_tool_contract",
     "invoke_tool",
     "list_descriptor_registry",

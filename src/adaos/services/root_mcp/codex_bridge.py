@@ -42,6 +42,17 @@ def _normalize_unique(items: list[str] | None) -> list[str]:
     return out
 
 
+def _resolve_mcp_dir(base_dir: str | Path) -> Path:
+    root = Path(base_dir)
+    if root.name == "mcp" and root.parent.name == ".adaos":
+        return root
+    return root / ".adaos" / "mcp"
+
+
+def _default_log_scope(value: Any) -> str:
+    return _normalize_text(value) or "subnet_active"
+
+
 def _json_text(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -109,7 +120,7 @@ class CodexBridgeProfile:
 def default_profile_paths(base_dir: str | Path, server_name: str) -> tuple[Path, Path]:
     token = str(server_name or "adaos-test-hub").strip() or "adaos-test-hub"
     safe_name = token.replace(":", "-").replace("/", "-").replace("\\", "-").replace(" ", "-")
-    root = Path(base_dir) / ".adaos" / "mcp"
+    root = _resolve_mcp_dir(base_dir)
     return root / f"{safe_name}.profile.json", root / f"{safe_name}.token"
 
 
@@ -436,7 +447,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_activity_log",
-                "description": "Read recent Root MCP activity and control-report events for the target.",
+                "description": "Read the audit-derived recent activity view for the target. For richer operational history, prefer get_subnet_timeline.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -518,7 +529,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_yjs_logs",
-                "description": "Read bounded YJS log tails either from root-local logs or aggregated across active subnet nodes.",
+                "description": "Read bounded YJS log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -526,7 +537,7 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
-                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"], "default": "subnet_active"},
                         "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
@@ -534,7 +545,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_skill_logs",
-                "description": "Read bounded skill service log tails either from root-local logs or aggregated across active subnet nodes.",
+                "description": "Read bounded skill service log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -543,7 +554,7 @@ class CodexRootMcpBridge:
                         "skill": {"type": "string"},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
-                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"], "default": "subnet_active"},
                         "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
@@ -551,7 +562,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_adaos_logs",
-                "description": "Read bounded adaos.log tails either from root-local logs or aggregated across active subnet nodes.",
+                "description": "Read bounded adaos.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -559,7 +570,7 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
-                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"], "default": "subnet_active"},
                         "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
@@ -567,7 +578,7 @@ class CodexRootMcpBridge:
             },
             {
                 "name": "get_events_logs",
-                "description": "Read bounded events.log tails either from root-local logs or aggregated across active subnet nodes.",
+                "description": "Read bounded events.log tails. Defaults to aggregated logs from active subnet nodes unless scope=root_local is requested, and returns explicit provenance and health for the selected log path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -575,7 +586,7 @@ class CodexRootMcpBridge:
                         "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
                         "contains": {"type": "string"},
                         "file": {"type": "string"},
-                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"]},
+                        "scope": {"type": "string", "enum": ["root_local", "subnet_active"], "default": "subnet_active"},
                         "include_hub": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
@@ -588,6 +599,46 @@ class CodexRootMcpBridge:
                     "type": "object",
                     "properties": {
                         "target_id": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_analysis_health",
+                "description": "Assess which subnet analysis channels are currently trustworthy, including control-report freshness, session freshness, and optional subnet-active log probes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "probe_logs": {"type": "boolean", "default": True},
+                        "lines": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "include_hub": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_timeline",
+                "description": "Read the typed subnet operational timeline derived from Root MCP audit and report-ingest events, with current control-report references attached.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 100},
+                        "include_control_reports": {"type": "boolean", "default": True},
+                        "include_profile_ops": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "get_subnet_diagnostics",
+                "description": "Read typed route, backlog, ack, YJS, and memory-profile diagnostics for the current subnet from Root MCP projections.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {"type": "string"},
+                        "session_limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
                     },
                     "additionalProperties": False,
                 },
@@ -734,7 +785,7 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
-                    scope=_normalize_text(args.get("scope")),
+                    scope=_default_log_scope(args.get("scope")),
                     include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
@@ -746,7 +797,7 @@ class CodexRootMcpBridge:
                     skill=_normalize_text(args.get("skill")),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
-                    scope=_normalize_text(args.get("scope")),
+                    scope=_default_log_scope(args.get("scope")),
                     include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
@@ -757,7 +808,7 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
-                    scope=_normalize_text(args.get("scope")),
+                    scope=_default_log_scope(args.get("scope")),
                     include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
@@ -768,12 +819,37 @@ class CodexRootMcpBridge:
                     lines=int(args.get("lines") or 200),
                     contains=_normalize_text(args.get("contains")),
                     file=_normalize_text(args.get("file")),
-                    scope=_normalize_text(args.get("scope")),
+                    scope=_default_log_scope(args.get("scope")),
                     include_hub=bool(args["include_hub"]) if "include_hub" in args else None,
                 )
             )
         if tool == "get_subnet_info":
             return _tool_text(client.get_subnet_info(target_id=_normalize_text(args.get("target_id"))))
+        if tool == "get_subnet_analysis_health":
+            return _tool_text(
+                client.get_subnet_analysis_health(
+                    target_id=_normalize_text(args.get("target_id")),
+                    probe_logs=bool(args["probe_logs"]) if "probe_logs" in args else True,
+                    lines=int(args.get("lines") or 20),
+                    include_hub=bool(args["include_hub"]) if "include_hub" in args else True,
+                )
+            )
+        if tool == "get_subnet_timeline":
+            return _tool_text(
+                client.get_subnet_timeline(
+                    target_id=_normalize_text(args.get("target_id")),
+                    limit=int(args.get("limit") or 100),
+                    include_control_reports=bool(args["include_control_reports"]) if "include_control_reports" in args else True,
+                    include_profile_ops=bool(args["include_profile_ops"]) if "include_profile_ops" in args else True,
+                )
+            )
+        if tool == "get_subnet_diagnostics":
+            return _tool_text(
+                client.get_subnet_diagnostics(
+                    target_id=_normalize_text(args.get("target_id")),
+                    session_limit=int(args.get("session_limit") or 5),
+                )
+            )
         raise KeyError(tool)
 
     def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:

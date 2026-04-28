@@ -308,6 +308,28 @@ Development-facing путь должен выглядеть так:
 - `policy and profile state`
 - `target summary`
 
+Operational observability reads also need explicit source provenance.
+For log-style reads, clients must be able to distinguish at least:
+
+- `root_local`
+- `subnet_active`
+
+so operators and agents can tell whether they are looking at logs from the root-hosting machine or aggregated logs from the currently active subnet runtime.
+
+Такие log-style reads также должны публиковать compact health summary для выбранного path, чтобы MCP client мог отличать:
+
+- healthy root-local read
+- healthy subnet-active aggregation
+- partial или degraded subnet-active aggregation, которую нельзя считать полной картиной
+
+Обычные session list/get views также должны freshness-нормализовать expired leases, чтобы после истечения TTL они не продолжали выглядеть operationally active.
+
+Typed subnet diagnostics С‚Р°РєР¶Рµ РґРѕР»Р¶РЅС‹ РѕС‚РґР°РІР°С‚СЊ compact pressure-oriented projections РґР»СЏ:
+
+- route backlog Рё pending ack streams
+- YJS transport Рё pressure РІС‹Р±СЂР°РЅРЅРѕРіРѕ webspace
+- root-ingested memory-profile summaries РґР»СЏ С‚РµРєСѓС‰РµР№ РїРѕРґСЃРµС‚Рё/runtime
+
 ### What Should Be Logged
 
 Минимально каждый обработанный request должен записывать:
@@ -508,6 +530,9 @@ Phase 0 считается завершенной, когда:
   - `hub.issue_access_token`
   - `hub.list_access_tokens`
   - `hub.revoke_access_token`
+  - `get_subnet_analysis_health`
+  - `get_subnet_timeline`
+  - `get_subnet_diagnostics`
 - first local-pilot `infra_access_skill` execution adapters для:
   - `hub.get_logs`
   - `hub.run_healthchecks`

@@ -40,16 +40,16 @@ def _logs_dir() -> Path:
     return path
 
 
-def _state_dir() -> Path:
+def _root_mcp_state_dir() -> Path:
     ctx = get_ctx()
-    raw = ctx.paths.state_dir()
+    raw = ctx.paths.root_mcp_state_dir()
     path = Path(raw() if callable(raw) else raw)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _results_path() -> Path:
-    path = _state_dir() / "root_mcp" / "infra_access_results.json"
+    path = _root_mcp_state_dir() / "infra_access_results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

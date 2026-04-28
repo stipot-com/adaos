@@ -108,7 +108,7 @@ def _json_hash(payload: Any) -> str:
 
 def _descriptor_cache_state_path() -> Path:
     ctx = get_ctx()
-    path = Path(ctx.paths.state_dir()) / "root_mcp" / "descriptor_cache.json"
+    path = Path(ctx.paths.root_mcp_state_dir()) / "descriptor_cache.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -25,6 +25,7 @@ setx ADAOS_ROOT_MCP_AUTH "mcp_..."
 - `setx` обновляет окружение только для новых процессов
 - уже открытые VS Code, Codex, терминалы и MCP helper-процессы продолжают жить со старым bearer
 - после ротации bearer может понадобиться полный перезапуск VS Code, если Codex продолжает использовать старый токен
+- после переключения zone с legacy backend-local Root MCP surface на canonical proxied root surface нужно выпустить свежий bearer; старые backend-local MCP session lease не должны считаться валидными
 
 Перед подключением Codex bearer удобно проверить вручную:
 
@@ -57,11 +58,16 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - scoped-подключение Codex к одному managed target, обычно `hub:<subnet_id>`
 - базовые read-first operational methods для target
 - выдачу токена через опубликованный target-side surface `infra_access_skill`
-- хранение profile и token files в локальном runtime state workspace
+- хранение profile и token files в workspace-local каталоге `.adaos/mcp/`
 
 Сейчас bridge публикует такие tools:
 
 - `foundation`
+- `get_architecture_catalog`
+- `get_sdk_metadata`
+- `get_template_catalog`
+- `get_public_skill_registry`
+- `get_public_scenario_registry`
 - `list_managed_targets`
 - `get_managed_target`
 - `get_operational_surface`
@@ -72,6 +78,15 @@ curl -i https://ru.api.inimatic.com/v1/root/mcp `
 - `get_logs`
 - `run_healthchecks`
 - `recent_audit`
+- `get_yjs_load_mark_history`
+- `get_yjs_logs`
+- `get_skill_logs`
+- `get_adaos_logs`
+- `get_events_logs`
+- `get_subnet_info`
+- `get_subnet_analysis_health`
+- `get_subnet_timeline`
+- `get_subnet_diagnostics`
 
 ## Почему это локальный bridge, а не direct remote MCP
 
@@ -136,6 +151,17 @@ codex mcp add adaos-test-hub --env ADAOS_MCP_PROFILE=D:\git\adaos\.adaos\mcp\ada
 
 Сам токен не хранится в `~/.codex/config.toml`; bridge читает его из token file, на который ссылается profile.
 
+## Каталоги workspace
+
+Локальный bridge теперь использует явное разделение директорий:
+
+- `.adaos/mcp/`
+  profile и token files для Codex bridge
+- `.adaos/state/root_mcp/`
+  state и cache Root MCP: descriptor cache, session registry, control reports
+- `.adaos/logs/`
+  локальные логи AdaOS-процессов на текущей машине; это не cache ответов MCP
+
 ### 3. Проверить регистрацию в Codex
 
 ```powershell
@@ -190,6 +216,18 @@ codex mcp remove adaos-test-hub
 ### Не работают logs или healthchecks
 
 Сейчас эти методы зависят от `execution_mode=local_process`. Если target публикует только `reported_only`, status и observability tools будут работать, а bounded execution tools — нет.
+
+Выделенные log-tools `get_adaos_logs`, `get_events_logs`, `get_skill_logs` и `get_yjs_logs` теперь по умолчанию используют `scope=subnet_active`. Это нужно, чтобы пустые `root_local` ответы не маскировали рабочий hub-root путь observability. `scope=root_local` стоит указывать только тогда, когда нужны именно логи локальной машины, где запущен bridge или root service.
+
+Эти log-tools теперь также возвращают явные блоки `provenance` и `health`. Так проще понять, читаете ли вы root-local логи, healthy subnet-active aggregation или degraded/partial subnet-active результат.
+
+Для Phase 7 анализа подсети теперь лучше начинать с `get_subnet_analysis_health`. Этот метод сводит в одну оценку доверие к snapshot state, session registry, audit history и `subnet_active` log channels перед более глубоким разбором memory или incident проблем.
+
+`get_activity_log` теперь лучше воспринимать как компактный audit-derived activity feed. Когда нужна более структурированная история, стоит использовать `get_subnet_timeline`, где события уже разложены по классам: control-report ingest, profile ops, session activity и target operations.
+
+`get_subnet_diagnostics` стоит использовать, когда нужны typed pressure-oriented projections вместо сырых логов. Теперь он сводит компактное состояние route backlog и pending ack, pressure по выбранному YJS webspace и недавние root-ingested memory-profile sessions для текущей подсети.
+
+Session-management views теперь нормализуют expired MCP session leases при чтении, поэтому в обычных list/get сценариях просроченные lease больше не должны оставаться видимыми как `active`.
 
 ## Текущие границы MVP
 
