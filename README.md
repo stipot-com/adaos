@@ -196,7 +196,7 @@ adaos --help
 Using `pip`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1
+powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -ZoneId ru -Dev
 .\.venv\Scripts\Activate.ps1
 adaos --help
 # powershell -ExecutionPolicy Bypass -File tools/bootstrap.ps1 -ZoneId ru -Dev

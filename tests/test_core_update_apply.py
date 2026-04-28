@@ -84,6 +84,31 @@ def test_repair_moved_venv_rewrites_script_paths(tmp_path: Path) -> None:
     assert str(final_venv) in activate_script.read_text(encoding="utf-8")
 
 
+def test_repair_moved_venv_preserves_windows_crlf_in_pyvenv_cfg(tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    original_venv = tmp_path / "tmp-build" / "B" / "venv"
+    final_venv = tmp_path / "slots" / "B" / "venv"
+    final_venv.mkdir(parents=True, exist_ok=True)
+    pyvenv_cfg = final_venv / "pyvenv.cfg"
+    pyvenv_cfg.write_bytes(
+        (
+            f"home = {original_venv}\r\n"
+            "include-system-site-packages = false\r\n"
+            "version = 3.11.15\r\n"
+        ).encode("utf-8")
+    )
+
+    result = mod._repair_moved_venv(final_venv, original_venv_dir=original_venv)
+
+    assert result["ok"] is True
+    assert str(pyvenv_cfg) in result["repaired_files"]
+    raw = pyvenv_cfg.read_bytes()
+    assert str(final_venv).encode("utf-8") in raw
+    assert b"\r\r\n" not in raw
+    assert raw.count(b"\r\n") == 3
+
+
 def test_replace_slot_dir_refuses_nested_move_when_cleanup_leaves_destination(
     monkeypatch, tmp_path: Path
 ) -> None:
