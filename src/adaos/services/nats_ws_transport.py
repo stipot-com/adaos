@@ -126,7 +126,42 @@ def _ws_heartbeat_s_from_env() -> float | None:
     return v
 
 
-def _ws_data_heartbeat_s_from_env() -> float | None:
+def _effective_ws_heartbeat_s(*, ws_impl: str | None = None) -> float | None:
+    """
+    Resolve WS-level heartbeat with transport-specific safety rules.
+
+    On Windows, the `websockets` client is stable in our isolated diagnostics without
+    client-originated WS PINGs, but the full AdaOS runtime can wedge after a few
+    keepalive cycles when those control frames are enabled. Root already sends its own
+    WS/NATS keepalives, so suppress client WS heartbeats for this transport by default.
+
+    Operators can still force-enable the behavior for targeted diagnostics via
+    `HUB_NATS_WS_HEARTBEAT_FORCE=1`.
+    """
+    heartbeat_s = _ws_heartbeat_s_from_env()
+    if heartbeat_s is None:
+        return None
+    try:
+        force = str(os.getenv("HUB_NATS_WS_HEARTBEAT_FORCE", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    except Exception:
+        force = False
+    if force:
+        return heartbeat_s
+    try:
+        impl = (ws_impl or _ws_impl_from_env()).strip().lower()
+    except Exception:
+        impl = "websockets"
+    if os.name == "nt" and impl == "websockets":
+        return None
+    return heartbeat_s
+
+
+def _ws_data_heartbeat_s_from_env(*, ws_impl: str | None = None) -> float | None:
     """
     NATS protocol heartbeat for WS transports (send `PONG\\r\\n` as WS *data*).
 
@@ -142,9 +177,24 @@ def _ws_data_heartbeat_s_from_env() -> float | None:
         * empty         -> disable
         * <= 0          -> disable
         * > 0           -> enable with that interval (seconds; min 5)
+
+    Transport safety:
+    - On Windows, WS transports already receive Root-originated NATS keepalives. An extra
+      implicit client-originated `PONG\\r\\n` data heartbeat can interfere with Root's
+      keepalive accounting by injecting standalone NATS `PONG` frames that are unrelated
+      to a preceding Root `PING`.
+    - Therefore when the env var is *unset*, suppress the implicit default on Windows for
+      NATS-over-WS transports. Operators can still explicitly opt back in by setting
+      `HUB_NATS_WS_DATA_HEARTBEAT_S` to a positive value.
     """
     raw = os.getenv("HUB_NATS_WS_DATA_HEARTBEAT_S")
     if raw is None:
+        try:
+            impl = (ws_impl or _ws_impl_from_env()).strip().lower()
+        except Exception:
+            impl = "websockets"
+        if os.name == "nt" and impl in {"websockets", "aiohttp"}:
+            return None
         return 15.0
     try:
         s = str(raw).strip()
@@ -196,6 +246,41 @@ def _ws_recv_timeout_s_from_env() -> float | None:
     if v < 5.0:
         v = 5.0
     return v
+
+
+def _effective_ws_recv_timeout_s(*, ws_impl: str | None = None) -> float | None:
+    """
+    Resolve WS read timeout with transport-specific safety rules.
+
+    For `websockets` on Windows, the tunnel can legitimately spend long periods with only
+    control traffic (`PING`/`PONG`) while no NATS data frames are delivered to the parser.
+    Treating that as a stalled tunnel causes the hub to close a still-healthy connection
+    itself, which root then reports as a clean close (code 1000).
+
+    Keep the timeout enabled for aiohttp and for explicit diagnostics, but suppress it for
+    websockets-on-Windows unless the operator force-enables it.
+    """
+    recv_timeout_s = _ws_recv_timeout_s_from_env()
+    if recv_timeout_s is None:
+        return None
+    try:
+        force = str(os.getenv("HUB_NATS_WS_RECV_TIMEOUT_FORCE", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    except Exception:
+        force = False
+    if force:
+        return recv_timeout_s
+    try:
+        impl = (ws_impl or _ws_impl_from_env()).strip().lower()
+    except Exception:
+        impl = "websockets"
+    if os.name == "nt" and impl == "websockets":
+        return None
+    return recv_timeout_s
 
 
 def _ws_io_poll_s_from_env() -> float:
@@ -726,15 +811,18 @@ class WebSocketTransportWebsockets:
                     self._adaos_last_ping_rx_at = time.monotonic()
                 except Exception:
                     pass
-                handler = getattr(nc, "_process_ping", None) if nc is not None else None
-                if callable(handler):
-                    if self._adaos_ws_trace:
-                        self._trace("nats ws direct control dispatch kind=PING handler=nats_client")
-                    await handler()
-                else:
-                    if self._adaos_ws_trace:
-                        self._trace("nats ws direct control dispatch kind=PING handler=raw_pong")
-                    await self._send_nats_pong(reason="ping")
+                # Reply inline at the transport layer.
+                #
+                # Routing server PING through `nats-py` (`_process_ping`) queues the matching
+                # PONG onto the client's normal flusher path. Under Windows/WS this can delay or
+                # wedge the response long enough for Root's keepalive watchdog to declare
+                # `nats keepalive pong missing`, even though the socket itself is still open.
+                #
+                # A direct raw `PONG\r\n` keeps the control-frame round-trip independent from
+                # user traffic / flusher timing and mirrors the already-stable aiohttp path.
+                if self._adaos_ws_trace:
+                    self._trace("nats ws direct control dispatch kind=PING handler=raw_pong")
+                await self._send_nats_pong(reason="ping")
             else:
                 if nc is None:
                     return False
@@ -761,9 +849,16 @@ class WebSocketTransportWebsockets:
         except Exception:
             io_task = None
             current_task = None
-        if io_task is not None and current_task is not io_task:
+        # Route raw NATS PONG through the same prioritized send path that the transport uses
+        # for other outbound frames. On Windows `websockets`, sending inline from the recv
+        # handler can appear successful in logs while the small binary frame doesn't reliably
+        # reach Root's ws-nats-proxy after a few keepalive cycles.
+        if io_task is not None:
             self.write(payload)
-            await self.drain()
+            if current_task is io_task:
+                await self._direct_drain()
+            else:
+                await self.drain()
             try:
                 self._adaos_pongs_tx += 1
                 self._adaos_last_pong_tx_wait_s = 0.0
@@ -1101,7 +1196,6 @@ class WebSocketTransportWebsockets:
 
     async def _io_loop(self, ws0: Any) -> None:
         recv_task: asyncio.Task | None = None
-        wake_task: asyncio.Task | None = None
         try:
             recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
             while True:
@@ -1171,24 +1265,12 @@ class WebSocketTransportWebsockets:
                         return
                     continue
 
-                self._pending_event.clear()
-                wake_task = asyncio.create_task(self._pending_event.wait(), name="adaos-nats-ws-pending")
-                done, pending = await asyncio.wait(
-                    {recv_task, wake_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in pending:
-                    task.cancel()
-
-                if wake_task in done:
-                    wake_task = None
-                    continue
-
-                wake_task = None
-                if recv_task not in done:
-                    continue
                 try:
-                    raw = await recv_task
+                    if recv_task is None:
+                        recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
+                    await asyncio.wait_for(asyncio.shield(recv_task), timeout=self._io_poll_s)
+                except asyncio.TimeoutError:
+                    continue
                 except asyncio.CancelledError:
                     return
                 except Exception as e:
@@ -1202,38 +1284,10 @@ class WebSocketTransportWebsockets:
                     except Exception:
                         pass
                     return
-                finally:
-                    recv_task = None
-
-                try:
-                    self._adaos_last_rx_at = time.monotonic()
-                except Exception:
-                    pass
-                if isinstance(raw, str):
-                    data = raw.encode("utf-8")
-                elif isinstance(raw, (bytes, bytearray, memoryview)):
-                    data = bytes(raw)
-                else:
-                    data = b""
-
-                if data and await self._maybe_consume_direct_control_frame(data):
-                    recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
-                    continue
-
-                try:
-                    await self._recv_queue.put(data)
-                except Exception:
-                    return
-                recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
         finally:
             try:
                 if recv_task is not None and not recv_task.done():
                     recv_task.cancel()
-            except Exception:
-                pass
-            try:
-                if wake_task is not None and not wake_task.done():
-                    wake_task.cancel()
             except Exception:
                 pass
             try:
@@ -1554,9 +1608,9 @@ class WebSocketTransportWebsockets:
 
         headers = _ws_headers_to_tuples(self._ws_headers)
         max_size = _ws_max_size_from_env()
-        heartbeat_s = _ws_heartbeat_s_from_env()
-        data_heartbeat_s = _ws_data_heartbeat_s_from_env()
-        recv_timeout_s = _ws_recv_timeout_s_from_env()
+        heartbeat_s = _effective_ws_heartbeat_s(ws_impl="websockets")
+        data_heartbeat_s = _ws_data_heartbeat_s_from_env(ws_impl="websockets")
+        recv_timeout_s = _effective_ws_recv_timeout_s(ws_impl="websockets")
         try:
             setattr(self, "_adaos_ws_heartbeat", heartbeat_s)
         except Exception:
@@ -1878,9 +1932,9 @@ class WebSocketTransportAiohttp:
 
     async def connect(self, uri: ParseResult, buffer_size: int, connect_timeout: int) -> None:
         headers = self._get_custom_headers()
-        heartbeat_s = _ws_heartbeat_s_from_env()
-        data_heartbeat_s = _ws_data_heartbeat_s_from_env()
-        recv_timeout_s = _ws_recv_timeout_s_from_env()
+        heartbeat_s = _effective_ws_heartbeat_s(ws_impl="aiohttp")
+        data_heartbeat_s = _ws_data_heartbeat_s_from_env(ws_impl="aiohttp")
+        recv_timeout_s = _effective_ws_recv_timeout_s(ws_impl="aiohttp")
         try:
             setattr(self, "_adaos_ws_heartbeat", heartbeat_s)
         except Exception:
@@ -1936,9 +1990,9 @@ class WebSocketTransportAiohttp:
             raise RuntimeError("ws: cannot upgrade to TLS")
         headers = self._get_custom_headers()
         target = uri if isinstance(uri, str) else uri.geturl()
-        heartbeat_s = _ws_heartbeat_s_from_env()
-        data_heartbeat_s = _ws_data_heartbeat_s_from_env()
-        recv_timeout_s = _ws_recv_timeout_s_from_env()
+        heartbeat_s = _effective_ws_heartbeat_s(ws_impl="aiohttp")
+        data_heartbeat_s = _ws_data_heartbeat_s_from_env(ws_impl="aiohttp")
+        recv_timeout_s = _effective_ws_recv_timeout_s(ws_impl="aiohttp")
         try:
             setattr(self, "_adaos_ws_heartbeat", heartbeat_s)
         except Exception:

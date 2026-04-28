@@ -1139,6 +1139,20 @@ class BootstrapService:
                 done_box: dict[str, Any] = {"thread_done_at": None, "dumped": False}
                 main_tid = threading.get_ident()
 
+                def _is_idle_event_loop_stack(stack_text: str) -> bool:
+                    try:
+                        st = stack_text.replace("\\", "/")
+                        return (
+                            "asyncio/base_events.py" in st
+                            and "in _run_once" in st
+                            and (
+                                ("selectors.py" in st and "select.select(" in st)
+                                or ("asyncio/windows_events.py" in st and "_overlapped.GetQueuedCompletionStatus" in st)
+                            )
+                        )
+                    except Exception:
+                        return False
+
                 def _run_report() -> Any:
                     try:
                         return report_hub_control_lifecycle_state(conf)
@@ -1167,6 +1181,13 @@ class BootstrapService:
                                 )
                                 return
                             st = "".join(traceback.format_stack(fr, limit=40))
+                            if _is_idle_event_loop_stack(st):
+                                self._log.debug(
+                                    "control lifecycle await resume delayed but main loop idle lag_s=%.3f trigger=%s",
+                                    lag_s,
+                                    trigger,
+                                )
+                                return
                             self._log.warning(
                                 "control lifecycle await resume delayed lag_s=%.3f trigger=%s stack=\n%s",
                                 lag_s,
@@ -3458,7 +3479,11 @@ class BootstrapService:
 
                                 async def _runner() -> None:
                                     try:
-                                        async for msg in sub.messages:
+                                        pending_queue = getattr(sub, "_pending_queue", None)
+                                        while True:
+                                            if pending_queue is None:
+                                                raise RuntimeError("subscription pending queue missing")
+                                            msg = await pending_queue.get()
                                             try:
                                                 msg_subject = ""
                                                 msg_bytes = None
@@ -3518,6 +3543,17 @@ class BootstrapService:
                                                         type(e).__name__,
                                                         e,
                                                     )
+                                                except Exception:
+                                                    pass
+                                            finally:
+                                                try:
+                                                    pending_queue.task_done()
+                                                except Exception:
+                                                    pass
+                                                try:
+                                                    data0 = getattr(msg, "data", b"")
+                                                    if hasattr(data0, "__len__"):
+                                                        sub._pending_size -= len(data0)
                                                 except Exception:
                                                     pass
                                     except asyncio.CancelledError:

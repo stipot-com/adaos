@@ -157,11 +157,14 @@ def _maybe_set_windows_selector_loop() -> None:
             enabled = True
         elif val in ("0", "false", "off", "no"):
             enabled = False
-    # Default: when hub-root NATS transport is TCP on Windows, prefer selector loop.
-    # This reduces WinError 121 frequency for long-running sockets under some network conditions.
+    # Default: when hub-root NATS transport is TCP, or when the hub uses the
+    # `websockets` NATS-over-WS transport on Windows, prefer selector loop.
+    # This reduces WinError 121 frequency for long-running sockets under some
+    # network conditions.
     if enabled is None:
         tr = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
-        if tr == "tcp":
+        ws_impl = str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip().lower()
+        if tr == "tcp" or ws_impl == "websockets":
             enabled = True
     if not enabled:
         return
