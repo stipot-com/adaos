@@ -2234,8 +2234,14 @@ class SupervisorManager:
         runtime = runtime if isinstance(runtime, dict) else {}
         readiness_tree = runtime.get("readiness_tree") if isinstance(runtime.get("readiness_tree"), dict) else {}
         root_control = readiness_tree.get("root_control") if isinstance(readiness_tree.get("root_control"), dict) else {}
+        route = readiness_tree.get("route") if isinstance(readiness_tree.get("route"), dict) else {}
         channel_overview = runtime.get("channel_overview") if isinstance(runtime.get("channel_overview"), dict) else {}
         hub_root = channel_overview.get("hub_root") if isinstance(channel_overview.get("hub_root"), dict) else {}
+        hub_root_browser = (
+            channel_overview.get("hub_root_browser")
+            if isinstance(channel_overview.get("hub_root_browser"), dict)
+            else {}
+        )
         strategy = (
             runtime.get("hub_root_transport_strategy")
             if isinstance(runtime.get("hub_root_transport_strategy"), dict)
@@ -2243,8 +2249,11 @@ class SupervisorManager:
         )
         return {
             "root_control_status": str(root_control.get("status") or "").strip().lower() or None,
+            "route_status": str(route.get("status") or "").strip().lower() or None,
             "hub_root_status": str(hub_root.get("effective_status") or "").strip().lower() or None,
             "hub_root_state": str(hub_root.get("effective_state") or "").strip().lower() or None,
+            "hub_root_browser_status": str(hub_root_browser.get("effective_status") or "").strip().lower() or None,
+            "hub_root_browser_state": str(hub_root_browser.get("effective_state") or "").strip().lower() or None,
             "last_event": str(strategy.get("last_event") or "").strip() or None,
             "last_summary": str(strategy.get("last_summary") or "").strip() or None,
             "selected_server": str(strategy.get("selected_server") or "").strip() or None,
@@ -2256,6 +2265,8 @@ class SupervisorManager:
         return (
             str(state.get("root_control_status") or "").strip().lower() == "ready"
             and str(state.get("hub_root_status") or "").strip().lower() == "ready"
+            and str(state.get("route_status") or "").strip().lower() == "ready"
+            and str(state.get("hub_root_browser_status") or "").strip().lower() == "ready"
         )
 
     @staticmethod
@@ -2263,6 +2274,14 @@ class SupervisorManager:
         return any(
             str(state.get(key) or "").strip().lower() == "down"
             for key in ("root_control_status", "hub_root_status", "hub_root_state")
+        )
+
+    @staticmethod
+    def _hub_root_route_degraded(state: dict[str, Any]) -> bool:
+        degraded_states = {"down", "degraded", "unstable", "flapping"}
+        return any(
+            str(state.get(key) or "").strip().lower() in degraded_states
+            for key in ("route_status", "hub_root_browser_status", "hub_root_browser_state")
         )
 
     def _append_hub_root_watchdog_event(self, payload: dict[str, Any]) -> None:
@@ -2298,16 +2317,33 @@ class SupervisorManager:
 
         channel_state = self._hub_root_channel_state(runtime)
         root_status = str(channel_state.get("root_control_status") or "")
+        route_status = str(channel_state.get("route_status") or "")
         hub_root_status = str(channel_state.get("hub_root_status") or "")
         hub_root_state = str(channel_state.get("hub_root_state") or "")
+        hub_root_browser_status = str(channel_state.get("hub_root_browser_status") or "")
+        hub_root_browser_state = str(channel_state.get("hub_root_browser_state") or "")
         sidecar_enabled = bool(realtime_sidecar_enabled(role=role))
         transport_owner = "sidecar" if sidecar_enabled else "runtime"
-        action = "sidecar_restart" if sidecar_enabled else "runtime_reconnect"
+        root_down = self._hub_root_channel_down(channel_state)
+        route_degraded = self._hub_root_route_degraded(channel_state)
+        action = (
+            "sidecar_restart"
+            if sidecar_enabled
+            else ("runtime_reconnect" if root_down else "runtime_route_reset")
+        )
 
-        if not self._hub_root_channel_down(channel_state):
-            state = root_status or hub_root_status or hub_root_state or "unknown"
+        if not root_down and not route_degraded:
+            state = (
+                root_status
+                or hub_root_status
+                or hub_root_state
+                or route_status
+                or hub_root_browser_status
+                or hub_root_browser_state
+                or "unknown"
+            )
             self._hub_root_watchdog_last_state = state
-            self._hub_root_watchdog_last_reason = "hub-root control is not down"
+            self._hub_root_watchdog_last_reason = "hub-root and browser route are not down"
             return None
 
         cooldown = _hub_root_watchdog_cooldown_sec()
@@ -2317,15 +2353,23 @@ class SupervisorManager:
             self._hub_root_watchdog_last_reason = f"hub-root down but reconnect cooldown is active ({cooldown:.0f}s)"
             return None
 
-        reason = f"root_control={root_status or '-'} hub_root={hub_root_status or hub_root_state or '-'}"
+        reason = (
+            f"root_control={root_status or '-'} "
+            f"hub_root={hub_root_status or hub_root_state or '-'} "
+            f"route={route_status or '-'} "
+            f"hub_root_browser={hub_root_browser_status or hub_root_browser_state or '-'}"
+        )
         return {
             "reason": "supervisor.hub_root.watchdog_reconnect",
-            "message": f"hub-root control is down; requesting {action} ({reason})",
+            "message": f"hub-root route watchdog requesting {action} ({reason})",
             "action": action,
             "transport_owner": transport_owner,
             "root_control_status": root_status or None,
+            "route_status": route_status or None,
             "hub_root_status": hub_root_status or None,
             "hub_root_state": hub_root_state or None,
+            "hub_root_browser_status": hub_root_browser_status or None,
+            "hub_root_browser_state": hub_root_browser_state or None,
             "last_event": channel_state.get("last_event"),
             "last_summary": channel_state.get("last_summary"),
             "channel_before": channel_state,
@@ -2379,6 +2423,16 @@ class SupervisorManager:
         try:
             if action == "sidecar_restart":
                 result = await self.restart_sidecar(reconnect_hub_root=True)
+            elif action == "runtime_route_reset":
+                result = self._runtime_request_json(
+                    path="/api/node/hub-root/route-reset",
+                    method="POST",
+                    payload={
+                        "reason": "supervisor_route_watchdog",
+                        "notify_browser": True,
+                    },
+                    timeout=5.0,
+                )
             else:
                 result = self._runtime_request_json(
                     path="/api/node/hub-root/reconnect",

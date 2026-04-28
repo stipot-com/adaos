@@ -1,9 +1,13 @@
 import argparse
 import asyncio
+import importlib.metadata
 import json
 import os
+import platform
 import random
+import ssl
 import string
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -20,6 +24,43 @@ except Exception:  # pragma: no cover
 
 NATS_PING = b"PING\r\n"
 NATS_PONG = b"PONG\r\n"
+
+
+def _pkg_version(name: str) -> Optional[str]:
+    try:
+        return importlib.metadata.version(name)
+    except Exception:
+        return None
+
+
+def _event_loop_policy_name() -> str:
+    try:
+        return type(asyncio.get_event_loop_policy()).__name__
+    except Exception as e:
+        return f"<error:{type(e).__name__}>"
+
+
+def _env_summary() -> dict[str, Any]:
+    proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ]
+    return {
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "implementation": platform.python_implementation(),
+        "openssl": getattr(ssl, "OPENSSL_VERSION", None),
+        "event_loop_policy": _event_loop_policy_name(),
+        "aiohttp": _pkg_version("aiohttp"),
+        "websockets": _pkg_version("websockets"),
+        "proxy_env": {k: v for k, v in ((k, os.getenv(k)) for k in proxy_keys) if v},
+    }
 
 
 def _load_node_yaml(path: str) -> dict[str, Any]:
@@ -817,7 +858,11 @@ async def _amain() -> int:
     ap.add_argument("--pub-split", action="store_true", help="Send PUB as 3 WS messages (header/payload/CRLF) to simulate fragmentation")
     ap.add_argument("--send-text", action="store_true", help="Send NATS protocol frames as WS TEXT (default: binary)")
     ap.add_argument("--trace", action="store_true", help="Print live ping/pong/info lines")
+    ap.add_argument("--print-env", action="store_true", help="Print local runtime/network environment summary before the test")
     args = ap.parse_args()
+
+    if args.print_env:
+        print("[diag] env:", json.dumps(_env_summary(), ensure_ascii=True, sort_keys=True))
 
     node = _load_node_yaml(args.node_yaml)
     runtime_nats = _load_runtime_nats(args.node_yaml)

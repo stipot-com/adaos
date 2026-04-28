@@ -393,6 +393,53 @@ def test_hub_root_watchdog_invokes_runtime_reconnect(monkeypatch) -> None:
     assert manager._hub_root_watchdog_last_result["verification"]["ok"] is False
 
 
+def test_hub_root_watchdog_resets_browser_route_when_root_control_is_ready(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_TIMEOUT_SEC", "0")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return None
+
+    calls: list[dict[str, object]] = []
+    manager._proc = _Proc()
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+    monkeypatch.setattr(
+        manager,
+        "_runtime_reliability_payload",
+        lambda timeout=1.5: {
+            "readiness_tree": {
+                "root_control": {"status": "ready"},
+                "route": {"status": "degraded"},
+            },
+            "channel_overview": {
+                "hub_root": {"effective_status": "ready", "effective_state": "stable"},
+                "hub_root_browser": {"effective_status": "degraded", "effective_state": "unstable"},
+            },
+        },
+    )
+
+    def _request(**kwargs):
+        calls.append(dict(kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_runtime_request_json", _request)
+
+    asyncio.run(manager._maybe_reconnect_hub_root_from_watchdog())
+
+    assert len(calls) == 1
+    assert calls[0]["path"] == "/api/node/hub-root/route-reset"
+    assert calls[0]["payload"] == {
+        "reason": "supervisor_route_watchdog",
+        "notify_browser": True,
+    }
+    assert manager._hub_root_watchdog_last_result["action"] == "runtime_route_reset"
+    assert manager._hub_root_watchdog_last_result["decision"]["hub_root_status"] == "ready"
+    assert manager._hub_root_watchdog_last_result["decision"]["hub_root_browser_status"] == "degraded"
+
+
 def test_hub_root_watchdog_restarts_sidecar_when_sidecar_owns_transport(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "1")
@@ -412,8 +459,14 @@ def test_hub_root_watchdog_restarts_sidecar_when_sidecar_owns_transport(monkeypa
             "channel_overview": {"hub_root": {"effective_status": "down"}},
         },
         {
-            "readiness_tree": {"root_control": {"status": "ready"}},
-            "channel_overview": {"hub_root": {"effective_status": "ready", "effective_state": "stable"}},
+            "readiness_tree": {
+                "root_control": {"status": "ready"},
+                "route": {"status": "ready"},
+            },
+            "channel_overview": {
+                "hub_root": {"effective_status": "ready", "effective_state": "stable"},
+                "hub_root_browser": {"effective_status": "ready", "effective_state": "stable"},
+            },
         },
     ]
 

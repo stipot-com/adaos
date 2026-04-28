@@ -15,7 +15,13 @@ from adaos.domain import Event
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.apps.api.auth import ensure_token, require_token, resolve_presented_token
 from adaos.services.agent_context import get_ctx
-from adaos.services.bootstrap import is_ready, load_config, request_hub_root_reconnect, switch_role
+from adaos.services.bootstrap import (
+    is_ready,
+    load_config,
+    request_hub_root_reconnect,
+    request_hub_root_route_reset,
+    switch_role,
+)
 from adaos.services.io_web.desktop import WebDesktopInstalled, WebDesktopService, WebDesktopSnapshot
 from adaos.services.media_library import (
     ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
@@ -837,6 +843,11 @@ class HubRootReconnectRequest(BaseModel):
     url_override: Optional[str] = None
 
 
+class HubRootRouteResetRequest(BaseModel):
+    reason: str | None = None
+    notify_browser: bool = True
+
+
 class SidecarRestartRequest(BaseModel):
     reconnect_hub_root: bool = True
 
@@ -1038,6 +1049,14 @@ async def node_reliability_summary(webspace_id: str | None = None) -> dict[str, 
 @router.post("/hub-root/reconnect", dependencies=[Depends(require_token)])
 async def hub_root_reconnect(payload: HubRootReconnectRequest) -> dict[str, Any]:
     return await request_hub_root_reconnect(transport=payload.transport, url_override=payload.url_override)
+
+
+@router.post("/hub-root/route-reset", dependencies=[Depends(require_token)])
+async def hub_root_route_reset(payload: HubRootRouteResetRequest) -> dict[str, Any]:
+    return await request_hub_root_route_reset(
+        reason=str(payload.reason or "").strip() or "supervisor_route_watchdog",
+        notify_browser=bool(payload.notify_browser),
+    )
 
 
 @router.get("/sidecar/status", dependencies=[Depends(require_token)])
