@@ -132,7 +132,7 @@ def _rewrite_text_file(path: Path, *, old: str, new: str) -> bool:
         return False
     if old not in text:
         return False
-    path.write_text(text.replace(old, new), encoding="utf-8")
+    path.write_text(text.replace(old, new), encoding="utf-8", newline="")
     return True
 
 
