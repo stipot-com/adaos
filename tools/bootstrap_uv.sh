@@ -442,6 +442,7 @@ if [[ -n "${ZONE_ID:-}" ]]; then
 fi
 if [[ "${DEV_MODE:-0}" == "1" ]]; then
   write_env_var "ENV_TYPE" "dev" ".env"
+  write_env_var "ADAOS_SUPERVISOR_ENABLED" "0" ".env"
 fi
 
 # 5) Convenience PATH for current shell session

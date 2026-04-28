@@ -69,6 +69,19 @@ adaos where
 adaos api serve --host 127.0.0.1 --port 8777
 ```
 
+Notes about local ports:
+
+- `8777` is the default local API port for direct development.
+- `8778` is reserved for the second slot in supervisor-managed mode.
+- If you want the browser app to avoid auto-discovering your local runtime, start on a non-discoverable port such as `8779`:
+
+```bash
+adaos api serve --host 127.0.0.1 --port 8779
+```
+
+- When you pass an explicit port to `adaos api serve`, AdaOS persists it as `local_api_url` in `.adaos/node.yaml`, and later `adaos api serve` runs reuse it.
+- `adaos api serve` is a direct development runtime and does not run supervisor-managed slot cutover logic.
+
 In a second terminal:
 
 ```bash

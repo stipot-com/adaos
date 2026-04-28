@@ -231,6 +231,12 @@ def _dev_without_supervisor() -> bool:
     }
 
 
+def _dev_api_serve_core_update_sync_disabled() -> bool:
+    env_type = str(os.getenv("ENV_TYPE") or "").strip().lower()
+    launch_mode = str(os.getenv("ADAOS_RUNTIME_LAUNCH_MODE") or "").strip().lower()
+    return env_type == "dev" and launch_mode == "api_serve"
+
+
 def _supervisor_local_bases() -> list[str]:
     if _dev_without_supervisor():
         return []
@@ -3950,7 +3956,11 @@ class BootstrapService:
                             _emit_up()
                             try:
                                 conf_local = getattr(self.ctx, "config", None)
-                                if getattr(conf_local, "role", None) == "hub" and not candidate_passive_mode:
+                                if (
+                                    getattr(conf_local, "role", None) == "hub"
+                                    and not candidate_passive_mode
+                                    and not _dev_api_serve_core_update_sync_disabled()
+                                ):
                                     async def _reconcile_core_release_after_connect() -> None:
                                         try:
                                             result = await asyncio.to_thread(reconcile_hub_core_update, conf_local)

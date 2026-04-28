@@ -519,6 +519,10 @@ def serve(
         os.environ["ADAOS_SELF_BASE_URL"] = advertised_base
     except Exception:
         pass
+    try:
+        os.environ["ADAOS_RUNTIME_LAUNCH_MODE"] = "api_serve"
+    except Exception:
+        pass
 
     try:
         loop_mode = _uvicorn_loop_mode()

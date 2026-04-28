@@ -222,6 +222,15 @@ adaos skill list
 adaos skill run weather_skill --topic nlp.intent.weather.get --payload '{"city":"Berlin"}'
 ```
 
+Local API runtime notes:
+
+- `adaos api serve` starts the local hub/runtime HTTP API directly, without the slot supervisor.
+- In development, an explicit `--port` is persisted into `.adaos/node.yaml` as `local_api_url`, and the next `adaos api serve` reuses it.
+- `8777` and `8778` are the normal browser-discoverable local hub ports.
+- Use a different port such as `8779` when you do not want `https://myinimatic.web.app/` to auto-attach to the local runtime and prefer it to stay on Root.
+- Supervisor-managed runtime mode is separate: it owns port `8776`, manages slots, and sets `ADAOS_SUPERVISOR_ENABLED=1`.
+- Development `adaos api serve` does not participate in supervisor-driven core update / slot cutover flows.
+
 Health endpoints are available once the API is running:
 
 ```bash

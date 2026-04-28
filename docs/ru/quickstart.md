@@ -9,7 +9,7 @@
 Опционально:
 
 - `uv` для bootstrap-потока на Windows
-- приватные submodule, если вы работаете еще и с клиентом, backend или infra-репозиториями
+- приватные submodule, если вы работаете ещё и с клиентом, backend или infra-репозиториями
 
 ## Клонирование
 
@@ -68,6 +68,20 @@ adaos --help
 adaos where
 adaos api serve --host 127.0.0.1 --port 8777
 ```
+
+Заметки по локальным портам:
+
+- `8777` — порт по умолчанию для прямого development runtime.
+- `8778` — второй slot в supervisor-managed режиме.
+- Если нужно, чтобы browser app не auto-discover локальный runtime и остался на Root, запускайте API на другом порту, например `8779`:
+
+```bash
+adaos api serve --host 127.0.0.1 --port 8779
+```
+
+- Если `--port` передан явно, AdaOS сохраняет этот локальный адрес в `.adaos/node.yaml` как `local_api_url`.
+- Следующие `adaos api serve` без явного `--port` используют сохранённый `local_api_url`.
+- `adaos api serve` поднимает runtime напрямую и не включает supervisor-managed slot cutover.
 
 Во втором терминале:
 

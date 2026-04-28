@@ -8,6 +8,14 @@ adaos api stop
 adaos api restart
 ```
 
+Заметки по local runtime:
+
+- `adaos api serve` поднимает local API напрямую, без supervisor-managed slot orchestration.
+- Если `--port` передан явно, AdaOS сохраняет адрес в `.adaos/node.yaml` как `local_api_url`.
+- Следующие `adaos api serve` без явного `--port` используют этот persisted local port.
+- `8777` и `8778` предназначены для local browser discovery.
+- Если нужно, чтобы browser app не прицепился к local runtime и остался на Root, запускайте API на другом порту, например `8779`.
+
 Команда `api` управляет локальным FastAPI-процессом и хранит pidfile в runtime state. При остановке и перезапуске сначала выполняется graceful shutdown, затем при необходимости используется принудительное завершение.
 
 ## Health и status
@@ -67,40 +75,18 @@ CLI обычно подставляет этот токен автоматиче
 - `POST /v1/root/mcp/call`
 - `GET /v1/root/mcp/audit`
 
-Текущий skeleton также применяет root-side capability checks и scope hints:
-
-- read-only bearer access разрешён только для default development/registry/audit capabilities
-- target lists и tool calls можно ограничивать через `X-AdaOS-Subnet-Id` и `X-AdaOS-Zone`
-- root умеет выдавать bounded MCP access tokens для внешних клиентов; они несут унаследованные `subnet_id` / `zone` / target allowlists
-- root теперь также даёт token-management lifecycle endpoints для listing и revoke ранее выданных MCP access tokens
-- target-bound `hub.*` tools дополнительно gated по published capability surface от `infra_access_skill`
-- hub control reports могут верифицироваться через `X-AdaOS-Hub-Report-Token`, если на root задан `ADAOS_ROOT_HUB_REPORT_TOKEN`
-- hub control reports могут обновлять managed-target state на `root`, включая `infra_access_skill` metadata вроде наличия web UI, observability hints и token-management readiness, и это уже питает executable read-side tools вроде `hub.get_status` и `hub.get_runtime_summary`
-- `hub.get_operational_surface` теперь отдаёт published `infra_access_skill` surface для inspection, включая web UI, observability и token-management state
-- `hub.get_activity_log` и `hub.get_capability_usage_summary` дают root-side observability projections для `infra_access_skill` WebUI без отдельного observability API
-- target-scoped token management доступен через typed MCP tool calls `hub.issue_access_token`, `hub.list_access_tokens` и `hub.revoke_access_token`, а не только через root-direct token endpoints
-- `hub.get_logs`, `hub.run_healthchecks`, `hub.restart_service`, `hub.run_allowed_tests` и `hub.get_test_results` работают как local-pilot path только когда target публикует `execution_mode=local_process`
-- local restart и test flows дополнительно ограничиваются target-published allowlists, например `allowed_services` и `allowed_test_paths`
-- более широкие remote deploy/rollback-style операции пока остаются заблокированными до полноценного target-side `infra_access_skill` path
-
 ## Позиционирование относительно Root MCP Foundation
 
 Текущий FastAPI surface — это локальный runtime и node-control API. Это не будущая `Root MCP Foundation`.
 
-Архитектурное позиционирование для Phase 0 такое:
+Архитектурное позиционирование для текущего этапа:
 
-- локальный HTTP остается полезным для runtime, browser, CLI и node operations
-- широкий agent-facing MCP должен появиться на `root`, а не за счет превращения каждого node в открытый infrastructure endpoint
+- локальный HTTP остаётся полезным для runtime, browser, CLI и node operations
+- широкий agent-facing MCP должен появляться на `root`, а не за счёт превращения каждого node в открытый infrastructure endpoint
 - operational access к managed targets должен идти через skill-mediated surfaces, например будущий `infra_access_skill`
 - текущие `/api/node/control-plane/*` endpoints должны оставаться aggregate-focused и совместимыми с SDK-first control-plane contracts
 
-Так AdaOS не смешивает между собой:
-
-- local node API
-- human-facing web control surfaces
-- future root-hosted agent-facing MCP surfaces
-
 ## Замечания
 
-- `/api/say` и `/api/io/console/print` в коде помечены как deprecated в пользу bus-driven flow.
-- На сервер также монтируются router'ы для join flow, STT, NLU teacher и external IO webhooks.
+- `/api/say` и `/api/io/console/print` в коде помечены как deprecated в пользу bus-driven flow
+- на сервер также монтируются router'ы для join flow, STT, NLU teacher и external IO webhooks

@@ -8,6 +8,16 @@ adaos api stop
 adaos api restart
 ```
 
+## Local runtime notes
+
+- `adaos api serve` starts the local API directly, without the slot supervisor.
+- If `--port` is passed explicitly, AdaOS persists the resulting local address as `local_api_url` in `.adaos/node.yaml`.
+- Later `adaos api serve` runs reuse that persisted local port unless you pass another explicit one.
+- `8777` and `8778` are the browser-discoverable local hub ports.
+- Use a port such as `8779` if you want the browser client to stay on Root instead of auto-attaching to the local runtime.
+- Supervisor-managed runtime mode is separate: it owns port `8776`, manages slots, and sets `ADAOS_SUPERVISOR_ENABLED=1`.
+- Direct development `adaos api serve` does not participate in supervisor-driven core update or slot cutover flows.
+
 The API command manages a local FastAPI process and keeps a pidfile in runtime state. On restart and stop it attempts graceful shutdown first, then falls back to process termination when necessary.
 
 ## Health and status
