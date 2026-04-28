@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import ssl
@@ -12,6 +13,25 @@ from urllib.parse import ParseResult
 
 _ORIG_NATS_WS_TRANSPORT: Any | None = None
 _ORIG_NATS_WS_TRANSPORT_CLIENT: Any | None = None
+_TRANSPORT_LOG = logging.getLogger("adaos.hub-io.transport")
+
+
+def _emit_hub_io_console_log(
+    msg: str,
+    *,
+    level: int = logging.INFO,
+    also_print: bool = False,
+) -> None:
+    try:
+        _TRANSPORT_LOG.log(level, msg)
+    except Exception:
+        pass
+    if not also_print:
+        return
+    try:
+        print(f"[hub-io] {msg}")
+    except Exception:
+        pass
 
 
 def _ws_impl_from_env() -> str:
@@ -713,18 +733,12 @@ class WebSocketTransportWebsockets:
     def _trace(self, msg: str) -> None:
         if not self._adaos_ws_trace:
             return
-        try:
-            print(f"[hub-io] {msg}")
-        except Exception:
-            pass
+        _emit_hub_io_console_log(msg, level=logging.DEBUG, also_print=True)
 
     def _wiretap_log(self, msg: str) -> None:
         if not self._adaos_wiretap:
             return
-        try:
-            print(f"[hub-io] {msg}")
-        except Exception:
-            pass
+        _emit_hub_io_console_log(msg, level=logging.DEBUG, also_print=True)
 
     def _wiretap(self, direction: str, data: Any) -> None:
         if not self._adaos_wiretap:
@@ -996,6 +1010,17 @@ class WebSocketTransportWebsockets:
                 try:
                     self._adaos_last_recv_error = e
                     self._adaos_last_recv_error_at = time.monotonic()
+                except Exception:
+                    pass
+                try:
+                    ws_state = getattr(ws, "state", None)
+                    _emit_hub_io_console_log(
+                        "nats ws recv failed "
+                        f"url={self._adaos_ws_url} err={type(e).__name__}: {e} "
+                        f"code={getattr(e, 'code', None)} reason={getattr(e, 'reason', None)} "
+                        f"rcvd={getattr(e, 'rcvd', None)} sent={getattr(e, 'sent', None)} state={ws_state}",
+                        level=logging.WARNING,
+                    )
                 except Exception:
                     pass
                 if self._adaos_ws_trace:
@@ -1349,6 +1374,18 @@ class WebSocketTransportWebsockets:
                 try:
                     self._adaos_last_recv_error = e
                     self._adaos_last_recv_error_at = time.monotonic()
+                except Exception:
+                    pass
+                try:
+                    ws = self._ws
+                    ws_state = getattr(ws, "state", None)
+                    _emit_hub_io_console_log(
+                        "nats ws recv failed "
+                        f"url={self._adaos_ws_url} err={type(e).__name__}: {e} "
+                        f"code={getattr(e, 'code', None)} reason={getattr(e, 'reason', None)} "
+                        f"rcvd={getattr(e, 'rcvd', None)} sent={getattr(e, 'sent', None)} state={ws_state}",
+                        level=logging.WARNING,
+                    )
                 except Exception:
                     pass
                 if self._adaos_ws_trace:
@@ -1880,18 +1917,12 @@ class WebSocketTransportAiohttp:
     def _trace(self, msg: str) -> None:
         if not self._adaos_ws_trace:
             return
-        try:
-            print(f"[hub-io] {msg}")
-        except Exception:
-            pass
+        _emit_hub_io_console_log(msg, level=logging.DEBUG, also_print=True)
 
     def _wiretap_log(self, msg: str) -> None:
         if not self._adaos_wiretap:
             return
-        try:
-            print(f"[hub-io] {msg}")
-        except Exception:
-            pass
+        _emit_hub_io_console_log(msg, level=logging.DEBUG, also_print=True)
 
     def _wiretap(self, direction: str, data: Any) -> None:
         if not self._adaos_wiretap:

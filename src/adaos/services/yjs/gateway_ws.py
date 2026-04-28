@@ -34,6 +34,7 @@ from adaos.services.workspaces import ensure_workspace, get_workspace
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
 from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace, ystore_write_metadata_sync
+from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -297,7 +298,11 @@ class DiagnosticYRoom(YRoom):
         self._diag_pending_store_tasks += 1
         try:
             self._diag_log_pressure("ystore.write.scheduled", update_bytes=len(update))
-            await ystore.write(update)
+            async with ystore_write_metadata(
+                source="yjs.gateway_ws",
+                channel="core.yjs.gateway.live_room.persist",
+            ):
+                await ystore.write(update)
         finally:
             self._diag_pending_store_tasks = max(0, int(self._diag_pending_store_tasks) - 1)
 

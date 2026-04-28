@@ -274,6 +274,7 @@ def _ensure_bucket_state(container: dict[str, Any], bucket_name: str) -> dict[st
             "last_changed_at": 0.0,
             "current_size_bytes": 0,
             "last_source": None,
+            "last_channel": None,
         }
         container[bucket_name] = entry
     return entry
@@ -327,6 +328,7 @@ def _record_bucket_bytes_locked(
     now_ts: float,
     current_size_bytes: int,
     source: str | None,
+    channel: str | None = None,
 ) -> None:
     if bytes_written <= 0:
         return
@@ -345,6 +347,7 @@ def _record_bucket_bytes_locked(
     bucket_state["last_changed_at"] = float(now_ts)
     bucket_state["current_size_bytes"] = int(current_size_bytes)
     bucket_state["last_source"] = str(source or "").strip() or None
+    bucket_state["last_channel"] = str(channel or "").strip() or None
 
 
 def _record_webspace_activity_locked(
@@ -389,7 +392,7 @@ def _maybe_log_owner_pressure(
         return
     _OWNER_ALERTS[alert_key] = now_ts
     logging.getLogger(f"adaos.yjs.owner.{owner_bucket.removeprefix(_OWNER_PREFIX)}").warning(
-        "YJS owner flow above threshold webspace=%s owner=%s severity=%s avg_bps=%s peak_bps=%s avg_wps=%s peak_wps=%s recent_bytes=%s recent_writes=%s source=%s",
+        "YJS owner flow above threshold webspace=%s owner=%s severity=%s avg_bps=%s peak_bps=%s avg_wps=%s peak_wps=%s recent_bytes=%s recent_writes=%s source=%s channel=%s",
         webspace_id,
         owner_bucket,
         severity,
@@ -400,6 +403,7 @@ def _maybe_log_owner_pressure(
         int(owner_state.get("recent_bytes") or 0),
         int(owner_state.get("recent_write_total") or 0),
         owner_state.get("last_source"),
+        owner_state.get("last_channel"),
     )
 
 
@@ -453,6 +457,7 @@ def record_root_flow(
     now_ts: float | None = None,
     source: str | None = None,
     owner: str | None = None,
+    channel: str | None = None,
 ) -> None:
     key = str(webspace_id or "").strip() or "default"
     before = {str(name): int(size or 0) for name, size in (before_sizes or {}).items() if str(name).strip()}
@@ -469,6 +474,7 @@ def record_root_flow(
                 now_ts=now,
                 current_size_bytes=current_size,
                 source=source,
+                channel=channel,
             )
             owner_bucket = _normalize_owner_bucket(owner)
             owner_sizes = webspace_state.setdefault("owner_sizes", {})
@@ -482,6 +488,7 @@ def record_root_flow(
                 now_ts=now,
                 current_size_bytes=owner_current,
                 source=source,
+                channel=channel,
             )
             _maybe_log_owner_pressure(
                 key,
@@ -503,6 +510,7 @@ def record_detached_ydoc_update(
     now_ts: float | None = None,
     source: str | None = None,
     owner: str | None = None,
+    channel: str | None = None,
 ) -> None:
     try:
         after_sizes = capture_ydoc_root_sizes(ydoc)
@@ -517,6 +525,7 @@ def record_detached_ydoc_update(
         now_ts=now_ts,
         source=source or "detached_ydoc",
         owner=owner,
+        channel=channel,
     )
 
 
@@ -528,6 +537,7 @@ def record_detached_root_update(
     now_ts: float | None = None,
     source: str | None = None,
     owner: str | None = None,
+    channel: str | None = None,
 ) -> None:
     names = [str(name or "").strip() for name in root_names if str(name or "").strip()]
     if not names:
@@ -558,6 +568,7 @@ def record_detached_root_update(
                 now_ts=now,
                 current_size_bytes=current_size,
                 source=source or "detached_root",
+                channel=channel,
             )
             owner_bucket = _normalize_owner_bucket(owner)
             owner_sizes = webspace_state.setdefault("owner_sizes", {})
@@ -571,6 +582,7 @@ def record_detached_root_update(
                 now_ts=now,
                 current_size_bytes=owner_current,
                 source=source or "detached_root",
+                channel=channel,
             )
             _maybe_log_owner_pressure(
                 str(webspace_id or "").strip() or "default",
@@ -591,6 +603,7 @@ def record_write_update(
     now_ts: float | None = None,
     source: str | None = None,
     owner: str | None = None,
+    channel: str | None = None,
 ) -> None:
     names = [str(name or "").strip() for name in (root_names or ()) if str(name or "").strip()]
     if names:
@@ -601,6 +614,7 @@ def record_write_update(
             now_ts=now_ts,
             source=source or "ystore_write",
             owner=owner,
+            channel=channel,
         )
         _maybe_publish_stream_update(webspace_id, now_ts=now_ts)
         return
@@ -627,6 +641,7 @@ def record_write_update(
             now_ts=now,
             current_size_bytes=current_size,
             source=source or "ystore_write",
+            channel=channel,
         )
         owner_bucket = _normalize_owner_bucket(owner)
         owner_sizes = webspace_state.setdefault("owner_sizes", {})
@@ -640,6 +655,7 @@ def record_write_update(
             now_ts=now,
             current_size_bytes=owner_current,
             source=source or "ystore_write",
+            channel=channel,
         )
         _maybe_log_owner_pressure(
             str(webspace_id or "").strip() or "default",
@@ -730,6 +746,7 @@ def _snapshot_bucket_collection_locked(collection: dict[str, Any], *, key_name: 
                 "byte_status": byte_status,
                 "write_status": write_status,
                 "last_source": bucket_state.get("last_source"),
+                "last_channel": bucket_state.get("last_channel"),
                 "last_changed_at": bucket_state.get("last_changed_at") or None,
                 "last_changed_ago_s": round(max(0.0, now_ts - float(bucket_state.get("last_changed_at") or 0.0)), 3)
                 if float(bucket_state.get("last_changed_at") or 0.0) > 0.0
@@ -866,6 +883,7 @@ def _load_mark_write_listener(webspace_id: str, update: bytes, meta: dict[str, A
         now_ts=time.time(),
         source=str(metadata.get("source") or "ystore_write"),
         owner=str(metadata.get("owner") or "").strip() or None,
+        channel=str(metadata.get("channel") or "").strip() or None,
     )
 
 

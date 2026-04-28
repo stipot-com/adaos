@@ -1448,8 +1448,16 @@ class BootstrapService:
                                 # Local rate-limit (do not depend on hub-io _rl_log).
                                 if now - last_log >= 1.0:
                                     last_log = now
-                                    print(
+                                    msg = (
                                         f"[diag] event loop lag {drift_ms:.0f}ms (interval={interval_s:.2f}s warn={warn_ms:.0f}ms dump={dump_ms:.0f}ms)"
+                                    )
+                                    print(msg)
+                                    diag_log.warning(
+                                        "event loop lag drift_ms=%.0f interval_s=%.2f warn_ms=%.0f dump_ms=%.0f",
+                                        drift_ms,
+                                        interval_s,
+                                        warn_ms,
+                                        dump_ms,
                                     )
                             except Exception:
                                 pass
@@ -1474,7 +1482,9 @@ class BootstrapService:
                                     except Exception:
                                         continue
                                 if lines:
-                                    print("[diag] loop lag dump:\n" + "\n".join(lines))
+                                    dump = "\n".join(lines)
+                                    print("[diag] loop lag dump:\n" + dump)
+                                    diag_log.warning("event loop lag dump\n%s", dump)
                             except Exception:
                                 pass
 
@@ -1541,9 +1551,11 @@ class BootstrapService:
                                 fr = _sys._current_frames().get(main_tid)  # type: ignore[attr-defined]
                                 if fr is None:
                                     print(f"[diag] event loop hang {dt_ms:.0f}ms (no frame)")
+                                    diag_log.warning("event loop hang dt_ms=%.0f frame=none", dt_ms)
                                     continue
                                 st = "".join(_traceback.format_stack(fr, limit=stack_limit))
                                 print(f"[diag] event loop hang {dt_ms:.0f}ms stack:\n{st.rstrip()}")
+                                diag_log.warning("event loop hang dt_ms=%.0f stack:\n%s", dt_ms, st.rstrip())
                             except Exception:
                                 continue
 
@@ -1551,6 +1563,7 @@ class BootstrapService:
                     t.start()
         except Exception:
             pass
+        diag_log = logging.getLogger("adaos.diagnostics")
         startup_log = logging.getLogger("adaos.startup")
 
         def _startup_stage_mark(stage: str, *, started: float | None = None, failed: Exception | None = None) -> float:
@@ -7304,6 +7317,22 @@ class BootstrapService:
                                                         f"[hub-io] root log extract tail file={fn2} lines={len(tail_lines)}"
                                                         + (f" newest_age_s={age_s}" if age_s is not None else "")
                                                     )
+                                                    try:
+                                                        extract_log = logging.getLogger("adaos.hub-io.root-log-extract")
+                                                        extract_log.warning(
+                                                            "root log extract tail file=%s lines=%s newest_age_s=%s",
+                                                            fn2,
+                                                            len(tail_lines),
+                                                            age_s,
+                                                        )
+                                                        for tail_line in tail_lines:
+                                                            extract_log.warning(
+                                                                "root log extract line file=%s line=%s",
+                                                                fn2,
+                                                                str(tail_line),
+                                                            )
+                                                    except Exception:
+                                                        pass
                                                     print(tail)
                                         except Exception:
                                             pass
@@ -7355,6 +7384,19 @@ class BootstrapService:
                             except Exception:
                                 pass
                             try:
+                                self._log.warning(
+                                    "nats encountered error hub_id=%s server=%s type=%s err=%s",
+                                    hub_id,
+                                    _resolve_nats_log_server(
+                                        current_attempt=nats_attempt_server,
+                                        connected_server=nats_last_server,
+                                    ),
+                                    type(e).__name__,
+                                    str(e),
+                                )
+                            except Exception:
+                                pass
+                            try:
                                 print(f"[hub-io] nats: encountered error: {e}")
                             except Exception:
                                 pass
@@ -7385,6 +7427,21 @@ class BootstrapService:
                                             log_path, log_tail = await asyncio.to_thread(_tail, realtime_sidecar_log_path(), 40)
                                             if log_tail:
                                                 print(f"[hub-io] adaos-realtime log tail file={log_path} lines={len(log_tail)}")
+                                                try:
+                                                    sidecar_log = logging.getLogger("adaos.hub-io.sidecar")
+                                                    sidecar_log.warning(
+                                                        "adaos-realtime log tail file=%s lines=%s",
+                                                        log_path,
+                                                        len(log_tail),
+                                                    )
+                                                    for line in log_tail:
+                                                        sidecar_log.warning(
+                                                            "adaos-realtime log line file=%s line=%s",
+                                                            log_path,
+                                                            line,
+                                                        )
+                                                except Exception:
+                                                    pass
                                                 print("\n".join(log_tail))
                                         except Exception:
                                             pass
@@ -7392,6 +7449,21 @@ class BootstrapService:
                                             diag_path, diag_tail = await asyncio.to_thread(_tail, realtime_sidecar_diag_path(), 10)
                                             if diag_tail:
                                                 print(f"[hub-io] adaos-realtime diag tail file={diag_path} lines={len(diag_tail)}")
+                                                try:
+                                                    sidecar_log = logging.getLogger("adaos.hub-io.sidecar")
+                                                    sidecar_log.warning(
+                                                        "adaos-realtime diag tail file=%s lines=%s",
+                                                        diag_path,
+                                                        len(diag_tail),
+                                                    )
+                                                    for line in diag_tail:
+                                                        sidecar_log.warning(
+                                                            "adaos-realtime diag line file=%s line=%s",
+                                                            diag_path,
+                                                            line,
+                                                        )
+                                                except Exception:
+                                                    pass
                                                 print("\n".join(diag_tail))
                                         except Exception:
                                             pass
