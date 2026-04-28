@@ -17,6 +17,7 @@ REV="rev2026"
 ZONE_ID=""
 NO_VOICE="0"
 DEV_MODE="0"
+MIN_PYTHON="3.11.9"
 
 log()  { printf '\033[36m[*] %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m[+] %s\033[0m\n' "$*"; }
@@ -393,10 +394,10 @@ if ! have uv; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 1.5) Python 3.11 only (uv-managed)
-log "Ensuring Python 3.11..."
-uv python install 3.11 || die "uv python install 3.11 failed"
-export UV_PYTHON="3.11"
+# 1.5) Python 3.11.9+ only (uv-managed)
+log "Ensuring Python ${MIN_PYTHON}+..."
+uv python install "${MIN_PYTHON}" || die "uv python install ${MIN_PYTHON} failed"
+export UV_PYTHON="${MIN_PYTHON}"
 
 # 2) Python deps
 if [[ -f uv.lock ]]; then

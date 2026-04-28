@@ -31,7 +31,7 @@ AdaOS is intended for:
 
 ## Features
 
-- Python 3.11 CLI exposed as `adaos`
+- Python 3.11.9+ CLI exposed as `adaos`
 - Local HTTP API for node and runtime control
 - Skill and scenario development workflows
 - Bootstrap scripts for Linux, macOS, and Windows
@@ -206,7 +206,7 @@ Repo bootstrap scripts support zone-aware Root routing via `--zone` or `-ZoneId`
 
 ### Install from an existing environment
 
-If you already have Python 3.11 and want a manual editable install:
+If you already have Python 3.11.9+ and want a manual editable install:
 
 ```bash
 pip install -e ".[dev]"

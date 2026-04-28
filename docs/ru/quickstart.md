@@ -2,7 +2,7 @@
 
 ## Требования
 
-- Python `3.11`
+- Python `3.11.9+`
 - Git
 - PowerShell на Windows или Bash на Linux/macOS
 

@@ -21,13 +21,14 @@ def _ver(cmd: str, pat: str = r"(\d+\.\d+\.\d+)") -> str | None:
 
 def main() -> int:
     py_cur = f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}"
+    min_py = (3, 11, 9)
     py_path = _ver("python --version")  # best-effort: python in PATH
     node = _ver("node --version")
     npmv = _ver("npm --version")
     pnpmv = _ver("pnpm --version")
     ionicv = _ver("ionic --version")
 
-    print(f"Python (current): {py_cur} ({sys.executable})  [need 3.11.x]")
+    print(f"Python (current): {py_cur} ({sys.executable})  [need >=3.11.9,<3.12]")
     print(f"Python (PATH):    {py_path or 'not found'}")
     print(f"Node:             {node or 'not found'}  [LTS 20.x recommended]")
     print(f"npm:              {npmv or 'not found'}")
@@ -35,7 +36,7 @@ def main() -> int:
     print(f"Ionic:            {ionicv or '—'} (optional)")
 
     problems: list[str] = []
-    if sys.version_info[:2] != (3, 11):
+    if sys.version_info[:2] != (3, 11) or sys.version_info[:3] < min_py:
         problems.append("PythonVersion")
     if not _has("node"):
         problems.append("Node.js")
@@ -46,7 +47,7 @@ def main() -> int:
         print("\nProblems:")
         for p in problems:
             print(f"- {p}")
-        print("\nTip (Windows): use the launcher: `py -3.11`")
+        print("\nTip (Windows): use Python 3.11.9+ via the launcher: `py -3.11`")
         return 1
 
     return 0

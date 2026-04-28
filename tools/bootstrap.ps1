@@ -193,6 +193,8 @@ function Show-AutostartDiagnostics {
 
 Write-Host "Searching for installed Python..."
 $pyCands = Get-PythonCandidates
+$minPy = [version]"3.11.9"
+$maxPyExclusive = [version]"3.12.0"
 if (-not $pyCands -or $pyCands.Count -eq 0) {
     $bootstrapMode = [string]$env:ADAOS_BOOTSTRAP_MODE
     if ([string]::IsNullOrWhiteSpace($bootstrapMode)) { $bootstrapMode = "" }
@@ -212,17 +214,17 @@ if (-not $pyCands -or $pyCands.Count -eq 0) {
             -ZoneId $ZoneId
         exit $LASTEXITCODE
     }
-    Write-Host "No Python found. Install Python 3.11 and re-run (or run tools\\bootstrap_uv.ps1)." -ForegroundColor Red
+    Write-Host "No Python found. Install Python 3.11.9+ and re-run (or run tools\\bootstrap_uv.ps1)." -ForegroundColor Red
     exit 1
 }
 
-$pyCands311 = @($pyCands | Where-Object { $_.Version -eq [version]"3.11" })
+$pyCands311 = @($pyCands | Where-Object { $_.Version -ge $minPy -and $_.Version -lt $maxPyExclusive })
 if (-not $pyCands311 -or $pyCands311.Count -eq 0) {
     $found = ($pyCands | ForEach-Object { "$($_.Version) $($_.Arch)" } | Sort-Object -Unique) -join ", "
     $bootstrapMode = [string]$env:ADAOS_BOOTSTRAP_MODE
     if ([string]::IsNullOrWhiteSpace($bootstrapMode)) { $bootstrapMode = "" }
     if ($bootstrapMode.ToLower() -ne "venv") {
-        Write-Warning "Python 3.11 is required. Found: $found. Falling back to uv-managed Python 3.11."
+        Write-Warning "Python 3.11.9+ is required. Found: $found. Falling back to uv-managed Python 3.11."
         & (Join-Path $PSScriptRoot "bootstrap_uv.ps1") `
             -JoinCode $JoinCode `
             -Role $Role `
@@ -237,8 +239,8 @@ if (-not $pyCands311 -or $pyCands311.Count -eq 0) {
             -ZoneId $ZoneId
         exit $LASTEXITCODE
     }
-    Write-Host "Python 3.11 is required. Found: $found" -ForegroundColor Red
-    Write-Host "Tip (Windows): install Python 3.11 and use: py -3.11 (or run tools\\bootstrap_uv.ps1)" -ForegroundColor Yellow
+    Write-Host "Python 3.11.9+ is required. Found: $found" -ForegroundColor Red
+    Write-Host "Tip (Windows): install Python 3.11.9+ and use: py -3.11 (or run tools\\bootstrap_uv.ps1)" -ForegroundColor Yellow
     exit 1
 }
 
@@ -259,7 +261,7 @@ Write-Host ("Using Python {0} {1} -> {2}" -f $chosen.Version, $chosen.Arch, $cho
 
 function Get-VenvPyVersion {
     if (Test-Path ".venv\Scripts\python.exe") {
-        & .\.venv\Scripts\python.exe -c "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>$null
+        & .\.venv\Scripts\python.exe -c "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')" 2>$null
     }
     else {
         return $null

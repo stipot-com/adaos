@@ -8,6 +8,7 @@ INFRA_SUBMODULE_PATH="src/adaos/integrations/infra-inimatic"
 
 VENV_DIR=".venv"
 VENV_ACTIVATE=".venv/bin/activate"
+MIN_PYTHON="3.11.9"
 
 JOIN_CODE=""
 ROLE=""
@@ -353,6 +354,17 @@ py_is_311() {
     >/dev/null 2>&1
 }
 
+py_meets_min() {
+  local bin="$1"
+  local min_ver="$2"
+  "$bin" - "$min_ver" <<'PY' >/dev/null 2>&1
+import sys
+min_ver = tuple(int(x) for x in sys.argv[1].split("."))
+cur = sys.version_info[:3]
+raise SystemExit(0 if cur >= min_ver else 1)
+PY
+}
+
 choose_python_311() {
   local cands=()
   if [[ -n "${ADAOS_PYTHON:-}" ]]; then
@@ -364,10 +376,10 @@ choose_python_311() {
     have "$c" || continue
     local p
     p="$(command -v "$c")"
-    if py_is_311 "$p"; then
+    if py_is_311 "$p" && py_meets_min "$p" "$MIN_PYTHON"; then
       PY_BIN="$p"
-      PY_VER="3.11"
-      log "Using Python 3.11 -> ${PY_BIN}"
+      PY_VER="$("$p" -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")' 2>/dev/null || echo "3.11")"
+      log "Using Python ${PY_VER} -> ${PY_BIN}"
       return 0
     fi
   done
@@ -480,9 +492,9 @@ if [[ -z "${ROLE:-}" ]]; then
   fi
 fi
 
-log "Choosing Python 3.11..."
+log "Choosing Python 3.11.9+..."
 if ! choose_python_311; then
-  fallback_to_uv "Python 3.11 not found (or not on PATH)."
+  fallback_to_uv "Python 3.11.9+ not found (or not on PATH)."
 fi
 
 log "Checking Python venv support..."
@@ -498,7 +510,7 @@ if [[ -d "${VENV_DIR}" ]]; then
     warn "Existing ${VENV_DIR} looks incomplete (missing activate script); removing..."
     rm -rf "${VENV_DIR}"
   else
-    VENV_VER="$(. "$VENV_ACTIVATE" >/dev/null 2>&1 && python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")' || true)"
+    VENV_VER="$(. "$VENV_ACTIVATE" >/dev/null 2>&1 && python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")' || true)"
     if [[ -n "${VENV_VER:-}" && "$VENV_VER" != "$PY_VER" ]]; then
       warn "Existing ${VENV_DIR} is $VENV_VER; recreating for $PY_VER..."
       rm -rf "${VENV_DIR}"
