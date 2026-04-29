@@ -26,7 +26,7 @@ Success means:
 
 Snapshot date: 2026-04-29.
 
-Overall completion: 95% for the expanded local + root-routed browser goal.
+Overall completion: 90% for the expanded local + root-routed browser goal.
 
 Done:
 
@@ -54,7 +54,7 @@ Done:
 In progress:
 
 - Validate root-routed browser stability while both local and remote browsers are connected.
-- Deploy/verify backend WS-NATS keepalive default for public root `/nats` tunnels.
+- Deploy/verify backend route-open retry and softer WS-NATS supersede behavior with root `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
 
 Known follow-up outside the current goal:
 
@@ -70,7 +70,8 @@ Latest verification:
 - `first3m_20260429_final_mem4`: final 180-second soak with process-tree memory sampling. Ready in 13.461s. Counts: NATS recv failure/watchdog/ConnectionClosedError/WinError 10054 = 0, route timeout/proxy failed = 0, open ack fallback = 0, event loop lag = 0, real event loop hang = 0, slow async handler = 0, slow `ui.notify` = 0, Yjs owner pressure = 0, infra_access snapshot failure = 0, traceback = 0, Root MCP `fetch failed` = 0, embedded Root MCP fallback = 0. Expected non-failing signals: one idle-wait hang suppression during shutdown and one NATS disconnect during requested shutdown. Memory: process tree WorkingSet first/ready/peak/last = 121.695/238.305/250.066/248.066 MB; PrivateMemory first/ready/peak/last = 95.172/218.930/230.555/228.117 MB; loading-to-ready sampled 121.695 -> 238.305 MB WorkingSet and 95.172 -> 218.930 MB PrivateMemory; no runaway growth observed.
 - `first3m_20260429_final_accept`: repeat final acceptance run. Ready in 12.795s, browser `/ws` accepted, and `YRoom ready webspace=desktop` observed. Counts: NATS recv failure/watchdog/ConnectionClosedError/WinError 10054 = 0, route timeout/proxy failed = 0, open ack fallback = 0, event loop lag = 0, real event loop hang = 0, slow async handler = 0, slow `ui.notify` = 0, Yjs owner pressure = 0, infra_access snapshot failure = 0, traceback = 0, Root MCP `fetch failed` = 0, embedded Root MCP fallback = 0. Expected non-failing signals: one idle-wait hang suppression during shutdown and one NATS disconnect during requested shutdown. Memory: process tree WorkingSet first/ready/peak/last = 30.949/136.863/146.445/145.836 MB; PrivateMemory first/ready/peak/last = 21.930/137.117/145.211/145.211 MB; no runaway growth observed.
 - `root_remote_browser_20260429_0753Z`: live local + root-routed browser load reopened the goal. Local browser remained usable, but the remote browser repeatedly reconnected through root. Evidence: root reverse-proxy accepted `/hubs/sn_6acf0c01/yws/desktop` with `101`, then nginx emitted repeated `SSL_read() failed ... bad record mac` on keepalive/upgraded paths; backend `ws-nats-proxy` reported `/nats` close `1006` with `natsKeepalivesSent=0`, `lastClientPongAgo_s=67.0`, and only one client ping; hub-side `nats_ws_diag.jsonl` showed `pending_data_size=0` while `last_rx_ago_s` grew above 300s and `ka_pings_rx=1`. Conclusion: this is not local pending-queue starvation; the root WS-NATS tunnel lacks regular hub<->root application-level liveness traffic under remote browser load.
-- `root_remote_after_summary_offload_20260429_111439`: 3+ minute local + root-routed browser diagnostic after disabling API WebSocket compression and offloading reliability summary generation. Counts in the verification window: NATS recv failure/ConnectionClosedError/WinError 10054/watchdog `_reading_task` = 0, event loop lag = 0, control-lifecycle warning stack = 0, `node_reliability_summary` / `current_reliability_payload` warning stack = 0. Expected signals only: one `nats bridge connected`, one `yws connection open`, one `yws connection closed` during requested shutdown, and one NATS disconnect during requested shutdown. Caveat: this run used local raw NATS keepalive diagnostics; public backend keepalive deployment still needs final root-side confirmation.
+- `root_remote_after_summary_offload_20260429_111439`: 3+ minute local + root-routed browser diagnostic after disabling API WebSocket compression and offloading reliability summary generation. Counts in the verification window: NATS recv failure/ConnectionClosedError/WinError 10054/watchdog `_reading_task` = 0, event loop lag = 0, control-lifecycle warning stack = 0, `node_reliability_summary` / `current_reliability_payload` warning stack = 0. Expected signals only: one `nats bridge connected`, one `yws connection open`, one `yws connection closed` during requested shutdown, and one NATS disconnect during requested shutdown. Caveat: this run used local raw NATS keepalive diagnostics; public root now intentionally keeps `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, so the remaining verification target is route-open retry / supersede behavior under that mode.
+- `root_remote_backend_deploy_20260429_0835Z`: after latest backend deploy, remote browser still failed to load Yjs data. Root is intentionally configured with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, so backend `natsKeepalivesSent=0` is expected and is not the primary bug marker. Local log shows a repeated cycle: NATS bridge connects, root-routed `yws` opens, `/nats` fails with `ConnectionClosedError` / `WinError 121` after about 20-25s, then `yws` closes and reconnects. Root logs show the remote route can publish `open` while the hub route subscription is not yet reinstalled after reconnect; the old fallback then flushes early Yjs frames without a local upstream, producing `no_upstream`. Patch prepared: root route proxy now retries `open` instead of flushing early frames after missing `open_ack`; WS-NATS supersede waits for the new connection's route subscription before closing old peers, with a 10s max grace; WS-NATS config is logged explicitly.
 
 ### Tasks
 
@@ -90,7 +91,7 @@ Working hypothesis:
 
 - The disconnect is not caused by local NATS pending queue starvation.
 - The likely cause is upstream/proxy/socket idle handling, Windows event loop behavior, or reconnect supersede overlap.
-- For the root-routed browser case, the strongest current cause is missing proxy-to-hub NATS data keepalive: the backend has `nats keepalive -> client` support, but it was disabled by default, leaving quiet `/nats` tunnels dependent on incidental route traffic.
+- For the root-routed browser case with root `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, the strongest current cause is reconnect/supersede/readiness overlap: after `/nats` reconnects, root can send a `/yws` open before the hub route subscription is ready, and the previous open-ack fallback can turn early browser frames into `no_upstream`.
 
 Actions:
 
@@ -103,9 +104,11 @@ Actions:
 - [x] Confirm no local pending-data backpressure during the verified 180-second runs.
 - [x] Reopen after root-routed browser load captured repeated remote reconnects and quiet NATS WS diagnostics.
 - [x] Compare root proxy upstream ping/pong cadence against client-side `last_rx_ago_s`.
-- [x] Enable backend WS-NATS `nats keepalive -> client` by default, still overridable with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
-- [ ] Deploy backend keepalive default to root.
-- [ ] Re-run 180-second local + root-routed browser soak and confirm `natsKeepalivesSent>0`, recurring client PONGs, no NATS watchdog reconnect, and no remote yws close loop.
+- [x] Keep backend WS-NATS `nats keepalive -> client` available, still overridable with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
+- [x] Confirm root currently runs with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`; treat `natsKeepalivesSent=0` as expected in that mode.
+- [x] Increase backend WS-NATS supersede max grace to 10s, close superseded peers on new route readiness, and log resolved proxy config on startup.
+- [ ] Deploy backend route-open retry / supersede-grace patch to root.
+- [ ] Re-run 180-second local + root-routed browser soak with root keepalive disabled and confirm no NATS watchdog reconnect, no remote Yjs close loop, no `open ack timeout`, and no `no_upstream` route incident.
 - [x] Run a local diagnostic with raw NATS keepalive and both browsers connected; confirm no NATS watchdog reconnect or remote YWS close loop before requested shutdown.
 - [ ] If reopened, decide whether the proxy should proactively close/reopen quiet upstream sockets before hard reset.
 
@@ -135,24 +138,27 @@ Actions:
 
 #### F3M-003: Browser WS open ack fallback is still observed
 
-Status: closed for the current 3-minute goal.
+Status: reopened for root-routed browser reconnect windows.
 
 Evidence:
 
 - `ws route: open ack fallback elapsed`
 - early frame counters are present before `open_ack`.
+- During root-routed remote Yjs reconnects, a browser `open` can be dropped while hub route subscription is absent; fallback then flushes early frames and the hub records `no_upstream`.
 
 Working hypothesis:
 
 - The hub can receive early frames before the route open acknowledgement is returned to root.
-- This may be harmless for some sessions, but it hides handshake latency and complicates timeout diagnosis.
+- The previous fallback is harmless only when the hub actually processed `open` but did not send `open_ack`; it is harmful when `open` was dropped during NATS route reconnect because it forwards frames before an upstream tunnel exists.
 
 Actions:
 
 - [x] Add early frame count/bytes to open ack fallback logs.
 - [x] Verify latest 180-second soaks have no `open ack fallback`.
-- [ ] Reopen and correlate fallback cases with NATS reconnect and route timeout windows if fallback recurs.
-- [ ] Decide whether fallback should become a degraded state rather than only a warning if fallback recurs.
+- [x] Reopen and correlate fallback cases with NATS reconnect and route timeout windows.
+- [x] Replace fallback frame flush with bounded `open` retry (`ROUTE_WS_OPEN_ACK_MAX_ATTEMPTS`, default 4).
+- [ ] Deploy backend route-open retry patch to root.
+- [ ] Verify root-routed browser load produces either `open_ack` or bounded `open ack retry` recovery, but not `no_upstream` or fallback frame flush.
 
 #### F3M-004: Yjs write pressure during first attach
 
@@ -255,7 +261,7 @@ Actions:
 
 #### F3M-008: Remote root-routed Yjs attach closes under browser load
 
-Status: partially verified; backend deploy verification remains.
+Status: reopened; backend route-open retry deploy verification remains.
 
 Evidence:
 
@@ -268,13 +274,17 @@ Working hypothesis:
 
 - The primary remote disconnect is downstream of root route/NATS liveness, not local browser failure.
 - Large first-sync Yjs bursts should avoid WebSocket compression and avoid avoidable synchronous diagnostics on the event loop.
+- With root NATS keepalive intentionally disabled, root-routed Yjs must tolerate a dropped `open` during hub route reconnect by retrying `open`, not by flushing browser frames before upstream exists.
 
 Actions:
 
 - [x] Disable local uvicorn WebSocket per-message deflate for API serve.
 - [x] Re-run a 3+ minute local + root-routed browser diagnostic with local raw NATS keepalive and confirm no NATS watchdog reconnect, no unexpected YWS close, and no compression-related control-lifecycle warning stack before requested shutdown.
-- [ ] Re-run root-routed browser soak after backend keepalive deployment.
+- [x] Replace root route `open_ack` fallback frame flush with bounded `open` retry.
+- [ ] Deploy backend route-open retry / supersede-grace patch to root.
+- [ ] Re-run root-routed browser soak with root keepalive disabled and both browsers connected.
 - [ ] Confirm no `permessage_deflate.encode` control-lifecycle delay stack recurs.
+- [ ] Confirm no `hub route frame arrived while upstream is not connected` / `no_upstream` incident recurs.
 - [ ] If load-mark history append still appears in loop-delay stacks, move history append off the event loop or batch it under diagnostics-only mode.
 
 #### F3M-009: Reliability summary polling blocks the event loop
