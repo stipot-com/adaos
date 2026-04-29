@@ -42,6 +42,7 @@ class RouterService:
         self._vlog = logging.getLogger("adaos.router.voice_chat")
         self._tg_reply_via_root_http = str(os.getenv("HUB_TG_REPLY_VIA_ROOT_HTTP") or "").strip() == "1"
         self._media_route_webspaces: set[str] = set()
+        self._notify_tasks: set[asyncio.Task[None]] = set()
 
     def _router_yjs_write_meta(self):
         return ystore_write_metadata(
@@ -78,6 +79,25 @@ class RouterService:
         return False
 
     async def _on_event(self, ev: Event) -> None:
+        try:
+            task = asyncio.create_task(self._handle_notify_event(ev), name=f"router-ui-notify:{str(ev.type or 'ui.notify')}")
+        except Exception:
+            await self._handle_notify_event(ev)
+            return
+        self._notify_tasks.add(task)
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            self._notify_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.getLogger("adaos.router").warning("router: ui.notify background delivery failed", exc_info=True)
+
+        task.add_done_callback(_forget)
+
+    async def _handle_notify_event(self, ev: Event) -> None:
         payload = ev.payload or {}
         text = (payload or {}).get("text")
         if not isinstance(text, str) or not text:
@@ -1450,5 +1470,20 @@ class RouterService:
             except Exception:
                 pass
             self._stop_watch = None
+        if self._notify_tasks:
+            try:
+                timeout_s = max(0.0, float(os.getenv("ADAOS_ROUTER_NOTIFY_DRAIN_TIMEOUT_S") or "1.0"))
+            except Exception:
+                timeout_s = 1.0
+            pending = list(self._notify_tasks)
+            try:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+            except Exception:
+                pass
+            self._notify_tasks.clear()
         self._media_route_webspaces.clear()
         self._started = False

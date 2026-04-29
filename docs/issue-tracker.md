@@ -23,9 +23,9 @@ Success means:
 
 ### Current Status
 
-Snapshot date: 2026-04-28.
+Snapshot date: 2026-04-29.
 
-Overall completion: 80%.
+Overall completion: 90%.
 
 Done:
 
@@ -38,18 +38,19 @@ Done:
 - Startup native capacity and subnet directory registry work now runs off the event loop thread.
 - YRoom pressure diagnostics no longer call ystore runtime filesystem/SQLite snapshot code from the realtime hot path by default.
 - In the active local `infrascope_skill` workspace/runtime copy, background refresh target discovery now runs in a worker thread.
+- `ui.notify` delivery no longer holds the eventbus critical path; RouterService schedules notification delivery in background and drains briefly on shutdown.
 
 In progress:
 
 - Yjs write pressure is now attributed to `_by_owner/gateway_ws`, but persistence write batching/debouncing still needs a durability decision.
 - `sys.ready` sync handlers are off the event loop, but their wall-clock duration is still around 3 seconds.
-- Shutdown `ui.notify` can still take around 0.8-1.0 seconds.
 
 Latest verification:
 
 - `first3m_20260428_225403`: 180-second soak, no NATS recv failure, no route timeout, no open ack fallback, no event loop lag; one shutdown idle wait was classified as a false-positive hang.
 - `first3m_20260428_230658`: after YRoom hot-path diagnostic changes, no NATS recv failure, no route timeout, no open ack fallback, no event loop lag/hang, no `runtime_snapshot()`/`Path.stat()` stack.
 - `first3m_20260428_231152`: after `infrascope_skill` target-discovery offload, ready in about 13 seconds, 180-second soak completed, no NATS recv failure/watchdog, no route timeout, no open ack fallback, no event loop lag/hang, no control resume warning stack. NATS diagnostics showed Proactor loop, connected read task, `pending_data_size=0`, and no task errors.
+- `first3m_20260429_065606`: after RouterService background `ui.notify` delivery, ready in about 15 seconds, 180-second soak completed, no NATS recv failure/watchdog, no route timeout, no open ack fallback, no event loop lag/hang, no slow `ui.notify`, and no router background delivery failure. Remaining warnings were two off-thread `sys.ready` durations and two `_by_owner/gateway_ws` Yjs pressure warnings.
 
 ### Tasks
 
@@ -157,7 +158,7 @@ Evidence:
 
 - Loop lag warnings still appear, but latest deep stacks no longer point to route key config reload or skill runtime path preparation.
 - Some hang dumps show idle Windows selector wait during shutdown.
-- `ui.notify` and `webio.stream.snapshot.requested` handlers can still be slow.
+- `webio.stream.snapshot.requested` and off-thread `sys.ready` handlers can still be slow in wall-clock time.
 
 Working hypothesis:
 
@@ -173,8 +174,8 @@ Actions:
 - [x] Move startup native capacity/subnet registry work to a worker thread.
 - [x] Suppress idle Proactor wait stacks as hang false positives.
 - [x] Move active local `infrascope_skill` background target discovery to a worker thread.
+- [x] Move slow `ui.notify` network work away from eventbus critical path.
 - [ ] Persist the `infrascope_skill` fix in the skill source of truth if it is outside the ignored `.adaos/` workspace.
-- [ ] Move slow `ui.notify` network work away from eventbus critical path.
 - [ ] Decide whether off-thread `sys.ready` wall-clock durations need optimization, or only continued monitoring.
 
 ### Operating Checklist
@@ -199,5 +200,4 @@ Reach 100% by resolving the remaining durability/performance choice:
 
 - choose whether `gateway_ws` ystore persistence may batch/debounce small updates during the first 180 seconds,
 - implement the chosen persistence policy,
-- move shutdown `ui.notify` work off the eventbus critical path,
 - run a final 180-second soak with no NATS reconnect, no route/open-ack errors, no event loop lag/hang, and no sustained Yjs pressure warning.
