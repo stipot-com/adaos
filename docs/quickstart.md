@@ -4,7 +4,7 @@
 
 - Python `3.11.9+`
 - Git
-- PowerShell on Windows, or Bash on Linux/macOS
+- Windows PowerShell `5.1+` or PowerShell `7+` on Windows, or Bash on Linux/macOS
 
 Optional components:
 
@@ -119,21 +119,23 @@ AdaOS also supports one-line bootstrap flows used by hosted onboarding:
 ### Linux
 
 ```bash
-curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s --
-# curl -fsSL https://myinimatic.web.app/assets/linux/init.sh | bash -s -- --zone ru
+curl -fsSL https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/linux/init.sh | bash -s --
+# curl -fsSL https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/linux/init.sh | bash -s -- --zone ru
 ```
 
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1
-# iwr -UseBasicParsing https://myinimatic.web.app/assets/windows/init.ps1 | iex; init.ps1 -ZoneId ru
+# requires Windows PowerShell 5.1+ or PowerShell 7+
+& ([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1).Content))
+# & ([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1).Content)) -ZoneId ru
 ```
 
 ### Windows CMD
 
 ```bat
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1
-# powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://myinimatic.web.app/assets/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -ZoneId ru
+REM requires Windows PowerShell 5.1+ or PowerShell 7+
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1
+# powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -ZoneId ru
 ```
 These scripts can optionally receive a join code for member-node onboarding and a zone identifier for zonal Root routing.

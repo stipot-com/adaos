@@ -258,7 +258,12 @@ class ServiceSkillSupervisor:
             self._discover_last_at = now
 
     async def refresh_discovered(self, *, force: bool = False) -> None:
-        await asyncio.to_thread(self.ensure_discovered, force=force)
+        # This path is called by watchdog/health loops every 1-2 seconds.
+        # On Windows, submitting to the default executor can synchronously start
+        # a thread from the event loop and stall in Thread.start(). Discovery is
+        # already cached and internally guarded, so the inline fast path is safer
+        # for realtime startup than a recurring to_thread hop.
+        self.ensure_discovered(force=force)
 
     def resolve_base_url(self, skill_name: str) -> str | None:
         spec = self._specs.get(skill_name)

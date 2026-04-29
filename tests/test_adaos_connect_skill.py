@@ -182,12 +182,12 @@ def test_node_current_falls_back_to_root_token_and_embeds_zone_bootstrap_args(mo
     assert calls[1]["headers"] == {"X-Root-Token": "root-secret"}
     assert current["status"] == "ready"
     assert current["code"] == "ABCD-EFGH"
-    assert "myinimatic.web.app/assets/linux/init.sh" in current["linux_command"]
+    assert "raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/linux/init.sh" in current["linux_command"]
     assert "--zone ru" in current["linux_command"]
     assert "https://ru.api.inimatic.com" in current["linux_command"]
-    assert "myinimatic.web.app/assets/windows/init.ps1" in current["windows_ps_command"]
+    assert "raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1" in current["windows_ps_command"]
     assert "-ZoneId 'ru'" in current["windows_ps_command"]
-    assert "myinimatic.web.app/assets/windows/init.ps1" in current["windows_cmd_command"]
+    assert "raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1" in current["windows_cmd_command"]
     assert "init.bat" not in current["windows_cmd_command"]
     assert '-RootUrl "https://ru.api.inimatic.com"' in current["windows_cmd_command"]
     assert '-ZoneId "ru"' in current["windows_cmd_command"]

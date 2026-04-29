@@ -1131,6 +1131,10 @@ class BootstrapService:
         except Exception:
             pass
         conf = getattr(self.ctx, "config", None) or load_config(ctx=self.ctx)
+        _control_lifecycle_await_watch_enabled = _env_truthy(
+            os.getenv("ADAOS_CONTROL_LIFECYCLE_AWAIT_WATCH"),
+            default=_env_truthy(os.getenv("HUB_TRACE"), default=False),
+        )
 
         async def _report_control_lifecycle(trigger: str) -> None:
             try:
@@ -1197,12 +1201,16 @@ class BootstrapService:
                         except Exception:
                             return
 
-                watcher = threading.Thread(
-                    target=_watch_resume,
-                    name="adaos-control-lifecycle-await-watch",
-                    daemon=True,
-                )
-                watcher.start()
+                # The await-resume watcher is diagnostic-only. Starting a fresh
+                # thread from the event loop on every control heartbeat can add
+                # avoidable Windows jitter, so keep it opt-in outside HUB_TRACE.
+                if _control_lifecycle_await_watch_enabled:
+                    watcher = threading.Thread(
+                        target=_watch_resume,
+                        name="adaos-control-lifecycle-await-watch",
+                        daemon=True,
+                    )
+                    watcher.start()
                 await asyncio.to_thread(_run_report)
             except Exception as exc:
                 # This is best-effort telemetry to Root; never break hub boot/loop on failures.

@@ -65,17 +65,19 @@ curl -fsSL https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init
 ### Windows (PowerShell)
 
 ```powershell
+# requires Windows PowerShell 5.1+ or PowerShell 7+
 # use optional key to join member to subnet: -JoinCode CODE
-iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1 | iex; init.ps1
+& ([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1).Content))
 # pick zone explicitly when needed:
-# iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1 | iex; init.ps1 -ZoneId ru
+# & ([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1).Content)) -ZoneId ru
 # enable dev bootstrap when needed:
-# iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1 | iex; init.ps1 -ZoneId ru -Dev
+# & ([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1).Content)) -ZoneId ru -Dev
 ```
 
 ### Windows (CMD)
 
 ```bat
+REM requires Windows PowerShell 5.1+ or PowerShell 7+
 # use optional key to join member to subnet: -JoinCode CODE
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1' -OutFile '.\\init.ps1'" && powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\init.ps1 -JoinCode CODE
 REM pick zone explicitly when needed:

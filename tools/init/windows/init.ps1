@@ -1,3 +1,4 @@
+#Requires -Version 5.1
 # Minimal "download & bootstrap" entrypoint (Windows PowerShell 5.1+).
 # Served from GitHub raw:
 #   https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init/windows/init.ps1
@@ -14,7 +15,7 @@ param(
   [switch]$Dev,
   [switch]$NoVoice,
   [ValidateSet("auto", "always", "never")]
-  [string]$InstallService = "",
+  [string]$InstallService = "auto",
   [string]$ServeHost = "",
   [int]$ServePort = 0,
   [int]$ControlPort = 0,
@@ -30,6 +31,13 @@ function Write-Info([string]$s) { Write-Host "[*] $s" -ForegroundColor Cyan }
 function Write-Ok([string]$s) { Write-Host "[+] $s" -ForegroundColor Green }
 function Write-Warn([string]$s) { Write-Host "[!] $s" -ForegroundColor Yellow }
 function Have([string]$cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
+
+if (-not $PSVersionTable -or -not $PSVersionTable.PSVersion) {
+  throw "Unsupported PowerShell runtime: unable to detect PSVersionTable.PSVersion. Use Windows PowerShell 5.1+ or PowerShell 7+."
+}
+if ($PSVersionTable.PSVersion.Major -lt 5 -or ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1)) {
+  throw "Unsupported PowerShell version $($PSVersionTable.PSVersion). This installer requires Windows PowerShell 5.1+ or PowerShell 7+."
+}
 
 try {
   # Ensure modern TLS for GitHub downloads.
@@ -97,45 +105,41 @@ if (-not (Test-Path -LiteralPath $bootstrapPath)) {
   throw "Bootstrap script not found: $bootstrapPath"
 }
 
+$bootstrapParams = @{}
 if (-not [string]::IsNullOrWhiteSpace($JoinCode)) {
-  $BootstrapArgs += @("-JoinCode", $JoinCode)
+  $bootstrapParams["JoinCode"] = $JoinCode
 }
 if (-not [string]::IsNullOrWhiteSpace($Role)) {
-  $BootstrapArgs += @("-Role", $Role)
+  $bootstrapParams["Role"] = $Role
 }
 if ($Dev) {
-  $BootstrapArgs += @("-Dev")
+  $bootstrapParams["Dev"] = $true
 }
 if ($NoVoice) {
-  $BootstrapArgs += @("-NoVoice")
+  $bootstrapParams["NoVoice"] = $true
 }
-if (-not [string]::IsNullOrWhiteSpace($InstallService)) {
-  $BootstrapArgs += @("-InstallService", $InstallService)
+if ($PSBoundParameters.ContainsKey("InstallService")) {
+  $bootstrapParams["InstallService"] = $InstallService
 }
 if (-not [string]::IsNullOrWhiteSpace($ServeHost)) {
-  $BootstrapArgs += @("-ServeHost", $ServeHost)
+  $bootstrapParams["ServeHost"] = $ServeHost
 }
 if ($ServePort -gt 0) {
-  $BootstrapArgs += @("-ServePort", "$ServePort")
+  $bootstrapParams["ServePort"] = $ServePort
 }
 if ($ControlPort -gt 0) {
-  $BootstrapArgs += @("-ControlPort", "$ControlPort")
+  $bootstrapParams["ControlPort"] = $ControlPort
 }
 if (-not [string]::IsNullOrWhiteSpace($RootUrl)) {
-  $BootstrapArgs += @("-RootUrl", $RootUrl)
+  $bootstrapParams["RootUrl"] = $RootUrl
 }
 if (-not [string]::IsNullOrWhiteSpace($ZoneId)) {
-  $BootstrapArgs += @("-ZoneId", $ZoneId)
+  $bootstrapParams["ZoneId"] = $ZoneId
 }
-
-$haveRev = $false
-for ($i = 0; $i -lt $BootstrapArgs.Count; $i++) {
-  if ($BootstrapArgs[$i] -in @("--rev", "-Rev")) { $haveRev = $true; break }
-}
-if (-not $haveRev) {
-  $BootstrapArgs += @("-Rev", $Rev)
+if (-not [string]::IsNullOrWhiteSpace($Rev)) {
+  $bootstrapParams["Rev"] = $Rev
 }
 
 Write-Info "Running bootstrap..."
-& $bootstrapPath @BootstrapArgs
+& $bootstrapPath @bootstrapParams @BootstrapArgs
 exit $LASTEXITCODE
