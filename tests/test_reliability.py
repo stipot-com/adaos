@@ -1423,6 +1423,7 @@ def test_node_reliability_endpoint_exposes_model_and_runtime_state(monkeypatch) 
     fake_bootstrap.is_ready = lambda: True
     fake_bootstrap.load_config = lambda: SimpleNamespace(node_id="node-1", subnet_id="sn_1", role="hub")
     fake_bootstrap.request_hub_root_reconnect = lambda *args, **kwargs: {"ok": True}
+    fake_bootstrap.request_hub_root_route_reset = lambda *args, **kwargs: {"ok": True}
 
     async def _fake_switch_role(*args, **kwargs):
         return fake_bootstrap.load_config()

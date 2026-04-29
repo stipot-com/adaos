@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from functools import partial
 from typing import Any, Mapping, Optional
 
 import anyio
@@ -84,6 +85,12 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 
 def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+async def _current_reliability_payload_async(*, webspace_id: str | None = None) -> dict[str, Any]:
+    if webspace_id is None:
+        return await anyio.to_thread.run_sync(current_reliability_payload)
+    return await anyio.to_thread.run_sync(partial(current_reliability_payload, webspace_id=webspace_id))
 
 
 def _compact_phase0_task(value: Any) -> dict[str, Any] | None:
@@ -1035,13 +1042,14 @@ async def node_control_plane_subnet_planning_context(
 
 @router.get("/reliability", dependencies=[Depends(require_token)])
 async def node_reliability() -> dict[str, Any]:
-    return current_reliability_payload()
+    return await _current_reliability_payload_async()
 
 
 @router.get("/reliability/summary", dependencies=[Depends(require_token)])
 async def node_reliability_summary(webspace_id: str | None = None) -> dict[str, Any]:
+    reliability = await _current_reliability_payload_async(webspace_id=webspace_id)
     return _compact_runtime_reliability_payload(
-        current_reliability_payload(webspace_id=webspace_id),
+        reliability,
         webspace_id=webspace_id,
     )
 
@@ -1063,8 +1071,8 @@ async def hub_root_route_reset(payload: HubRootRouteResetRequest) -> dict[str, A
 async def sidecar_status(request: Request) -> dict[str, Any]:
     if _supervisor_enabled():
         return await _proxy_supervisor_json(method="GET", path="/api/supervisor/sidecar/status", timeout=3.0)
-    conf = load_config()
-    reliability = current_reliability_payload()
+    conf = await anyio.to_thread.run_sync(load_config)
+    reliability = await _current_reliability_payload_async()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     process = realtime_sidecar_listener_snapshot(
         getattr(request.app.state, "realtime_sidecar_proc", None),
@@ -1086,14 +1094,14 @@ async def sidecar_restart(request: Request, payload: SidecarRestartRequest) -> d
             payload={"reconnect_hub_root": bool(payload.reconnect_hub_root)},
             timeout=10.0,
         )
-    conf = load_config()
+    conf = await anyio.to_thread.run_sync(load_config)
     proc = getattr(request.app.state, "realtime_sidecar_proc", None)
     new_proc, restart_result = await restart_realtime_sidecar_subprocess(proc=proc, role=conf.role)
     request.app.state.realtime_sidecar_proc = new_proc
     reconnect_result: dict[str, Any] | None = None
     if bool(payload.reconnect_hub_root) and str(conf.role or "").strip().lower() == "hub":
         reconnect_result = await request_hub_root_reconnect()
-    reliability = current_reliability_payload()
+    reliability = await _current_reliability_payload_async()
     runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
     return {
         "ok": True,

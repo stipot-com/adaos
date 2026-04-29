@@ -535,6 +535,9 @@ def serve(
             reload=reload,
             workers=1,
             access_log=False,
+            # Remote yws clients can receive large first-sync bursts through the root route.
+            # Keep WebSocket writes cheap and predictable on the event loop.
+            ws_per_message_deflate=False,
         )
     finally:
         _cleanup_pidfile(pidfile)
