@@ -20,6 +20,7 @@ Success means:
 - Browser `/ws` and `/yws` handshakes complete without fallback-only operation.
 - Yjs persistence does not create sustained high-pressure warnings.
 - Startup and first browser attach do not block the event loop above diagnostic thresholds.
+- Process memory is sampled during loading-to-ready and through the first 3 minutes; it reaches a stable startup plateau and does not show runaway growth.
 
 ### Current Status
 
@@ -39,11 +40,14 @@ Done:
 - YRoom pressure diagnostics no longer call ystore runtime filesystem/SQLite snapshot code from the realtime hot path by default.
 - In the active local `infrascope_skill` workspace/runtime copy, background refresh target discovery now runs in a worker thread.
 - `ui.notify` delivery no longer holds the eventbus critical path; RouterService schedules notification delivery in background and drains briefly on shutdown.
-- Root MCP local SDK calls now fall back to embedded local Root MCP registry data when the public root bridge reports upstream `fetch failed`; the fallback is TTL-cached to avoid repeated startup stalls.
+- Root MCP local SDK calls use a local-first embedded registry path for local runtime queries, so normal startup no longer probes the public Root MCP bridge or emits `fetch failed` fallback diagnostics.
 - Yjs gateway persistence keeps immediate writes for durability, while owner-pressure diagnostics now treat gateway first-attach peak bursts separately from sustained pressure.
 - The hub subnet-directory staler heartbeat/stale sweep no longer commits SQLite work on the event loop thread.
 - NATS WS diagnostic JSONL writes are emitted from a worker thread instead of the NATS supervisor hot path.
 - Active local `infra_access_skill` and `infrastate_skill` workspace/runtime copies no longer perform heavy snapshot refresh from `sys.ready` subscription callbacks.
+- Active local `infrastate_skill` runtime event handling now returns from `sys.ready` without a worker-thread hop, eliminating the last startup slow-handler warning.
+- Active `.adaos` skill hotfixes are present in the workspace skill registry repo at `acf9b4d` and the final `infrastate_skill` delta is ready to commit there; DEV Forge publish dry-run is not applicable because these are workspace-registry skills, not DEV Forge drafts.
+- Final soak verification now includes process-tree memory sampling during loading-to-ready and the full 180-second window.
 
 In progress:
 
@@ -51,8 +55,7 @@ In progress:
 
 Known follow-up outside the current goal:
 
-- Persist/package the active `.adaos` skill hotfixes into the skill distribution source of truth so future installs receive the same behavior without local runtime patching.
-- Fix the public Root MCP bridge upstream base-resolution issue in backend/infra so the embedded fallback remains a resilience path rather than the normal local startup path.
+- If public remote Root MCP access to local hubs is required, design and deploy a backend/infra route that resolves upstream by hub route/NATS instead of direct `ADAOS_BASE` HTTP proxying.
 
 Latest verification:
 
@@ -61,6 +64,7 @@ Latest verification:
 - `first3m_20260428_231152`: after `infrascope_skill` target-discovery offload, ready in about 13 seconds, 180-second soak completed, no NATS recv failure/watchdog, no route timeout, no open ack fallback, no event loop lag/hang, no control resume warning stack. NATS diagnostics showed Proactor loop, connected read task, `pending_data_size=0`, and no task errors.
 - `first3m_20260429_065606`: after RouterService background `ui.notify` delivery, ready in about 15 seconds, 180-second soak completed, no NATS recv failure/watchdog, no route timeout, no open ack fallback, no event loop lag/hang, no slow `ui.notify`, and no router background delivery failure. Remaining warnings were two off-thread `sys.ready` durations and two `_by_owner/gateway_ws` Yjs pressure warnings.
 - `first3m_20260429_080100`: final 180-second soak completed and stopped cleanly. Counts: NATS recv failure/watchdog/ConnectionClosedError/WinError 10054 = 0, route timeout/proxy failed = 0, open ack fallback = 0, real event loop lag/hang = 0, slow async handler = 0, slow `ui.notify` = 0, Yjs owner pressure/unknown/gateway warning = 0, infra_access snapshot failure = 0, traceback = 0. Expected non-failing signals: one embedded Root MCP fallback debug line, one idle-wait hang suppression during shutdown, one NATS disconnect during requested shutdown.
+- `first3m_20260429_final_mem4`: final 180-second soak with process-tree memory sampling. Ready in 13.461s. Counts: NATS recv failure/watchdog/ConnectionClosedError/WinError 10054 = 0, route timeout/proxy failed = 0, open ack fallback = 0, event loop lag = 0, real event loop hang = 0, slow async handler = 0, slow `ui.notify` = 0, Yjs owner pressure = 0, infra_access snapshot failure = 0, traceback = 0, Root MCP `fetch failed` = 0, embedded Root MCP fallback = 0. Expected non-failing signals: one idle-wait hang suppression during shutdown and one NATS disconnect during requested shutdown. Memory: process tree WorkingSet first/ready/peak/last = 121.695/238.305/250.066/248.066 MB; PrivateMemory first/ready/peak/last = 95.172/218.930/230.555/228.117 MB; loading-to-ready sampled 121.695 -> 238.305 MB WorkingSet and 95.172 -> 218.930 MB PrivateMemory; no runaway growth observed.
 
 ### Tasks
 
@@ -191,7 +195,50 @@ Actions:
 - [x] Move NATS WS diagnostic file writes off the NATS supervisor hot path.
 - [x] Preserve skill/handler labels through SDK bus adaptation so slow warnings identify the exact skill.
 - [x] Remove heavy `sys.ready` refresh work from active local `infra_access_skill` and `infrastate_skill` workspace/runtime copies.
+- [x] Avoid worker-thread hop for `infrastate_skill.on_runtime_event` on `sys.ready`.
 - [x] Confirm final 180-second soak has no real event loop lag/hang and no slow async handler warnings.
+
+#### F3M-006: Root MCP local startup uses fallback as the normal path
+
+Status: closed for the current 3-minute goal.
+
+Evidence resolved:
+
+- Earlier accepted runs emitted `Root MCP bridge upstream unavailable; using embedded local Root MCP operation=surface` because local SDK calls went through the public Root MCP bridge.
+- The public backend bridge is a direct HTTP proxy to `ADAOS_BASE`/`X-AdaOS-Base`, which is not a reliable route from the public root service back to a local hub.
+
+Resolution:
+
+- Local SDK `get_local_*` Root MCP calls now mark local target contexts and use embedded local registry/session/token/audit operations first.
+- The remote bridge fallback remains available for explicit non-local Root MCP usage and for resilience when local-first is disabled.
+
+Actions:
+
+- [x] Add `ADAOS_ROOT_MCP_LOCAL_FIRST` with local-first enabled by default.
+- [x] Keep `ADAOS_ROOT_MCP_LOCAL_FIRST=0` as an escape hatch for explicit bridge validation.
+- [x] Add a regression test proving local runtime calls do not probe the bridge.
+- [x] Confirm final 180-second soak has `root_mcp_fetch_failed=0` and `embedded_fallback=0`.
+
+#### F3M-007: First-3-minute memory footprint
+
+Status: closed for the current 3-minute goal.
+
+Evidence:
+
+- User requested memory state as part of the final loading evaluation.
+- A naive first sampler captured only a launcher stub; the final accepted sampler measures the whole process tree and the heaviest child process.
+
+Resolution:
+
+- The final accepted run sampled the `adaos api serve` process tree during loading-to-ready and throughout the 180-second soak.
+- Memory reached a startup plateau and stayed bounded: process-tree peak PrivateMemory was 230.555 MB and the last sample was 228.117 MB.
+
+Actions:
+
+- [x] Add process-tree memory sampling to the final soak verification.
+- [x] Capture first, ready, peak, and final memory samples.
+- [x] Confirm peak and final memory values are in the same plateau range.
+- [x] Confirm no memory-related traceback, supervisor failure, or event-loop lag appears in the final accepted run.
 
 ### Operating Checklist
 
@@ -200,6 +247,7 @@ Before a 3-minute soak:
 - [ ] `ADAOS_WIN_SELECTOR_LOOP=0`.
 - [ ] `HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl`.
 - [ ] `HUB_ROOT_LOG_SNAPSHOT=1`.
+- [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
 - [ ] Deep trace is off unless investigating one focused case.
 
 During analysis:
@@ -214,6 +262,5 @@ During analysis:
 The current local runtime goal is complete. Keep these follow-ups in the issue
 tracker so they are not lost:
 
-- [ ] Move `.adaos` skill hotfixes for `infrascope_skill`, `infra_access_skill`, and `infrastate_skill` into the durable skill source/package pipeline.
-- [ ] Fix backend/infra Root MCP bridge upstream base resolution so local public Root MCP calls do not require embedded fallback.
+- [ ] If public remote Root MCP access to local hubs is required, design a hub-routed backend/infra bridge rather than a direct upstream HTTP proxy.
 - [ ] If any future 180-second run reopens NATS/route/Yjs/loop symptoms, add a new task under this same goal with the run id and exact log evidence.

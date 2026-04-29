@@ -16,6 +16,10 @@ _EMBEDDED_FALLBACK_UNTIL: dict[str, float] = {}
 _EMBEDDED_FALLBACK_DEFAULT_TTL_SEC = 120.0
 
 
+def _norm_url(value: str | None) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
 def _load_config(ctx: Any) -> Any:
     from adaos.services.node_config import load_config
 
@@ -32,15 +36,15 @@ def _expand_cert_path(cfg: Any, raw: Any, fallback: str) -> str:
 def _default_root_url(*, root_url: str | None = None) -> str:
     ctx = require_ctx("sdk.data.root_mcp")
     if root_url:
-        return str(root_url).strip()
+        return _norm_url(root_url)
     cfg = _load_config(ctx)
     configured = str(getattr(getattr(cfg, "root_settings", None), "base_url", None) or "").strip()
     if configured:
-        return configured
+        return _norm_url(configured)
     zone_id = canonical_zone_id(
         str(os.getenv("ADAOS_ZONE_ID") or getattr(cfg, "zone_id", None) or os.getenv("ZONE_ID") or "").strip().lower()
     )
-    return zone_public_base_url(zone_id)
+    return _norm_url(zone_public_base_url(zone_id))
 
 
 def _root_http_client(*, root_url: str | None = None) -> tuple[RootHttpClient, Any]:
@@ -156,6 +160,14 @@ def _should_use_embedded_fallback(context: dict[str, Any]) -> bool:
         _EMBEDDED_FALLBACK_UNTIL.pop(key, None)
         return False
     return True
+
+
+def _local_first_enabled() -> bool:
+    return str(os.getenv("ADAOS_ROOT_MCP_LOCAL_FIRST", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _should_use_local_embedded(context: dict[str, Any]) -> bool:
+    return _local_first_enabled() and bool(context.get("local_runtime"))
 
 
 def _mark_embedded_fallback(context: dict[str, Any], *, operation: str, exc: BaseException) -> None:
@@ -295,11 +307,14 @@ def get_local_target_context(
         or str(os.getenv("ADAOS_ZONE_ID") or os.getenv("ZONE_ID") or "").strip()
         or None
     )
+    default_root_url = _default_root_url()
+    resolved_root_url = _default_root_url(root_url=root_url) if root_url else default_root_url
     return {
-        "root_url": _default_root_url(root_url=root_url),
+        "root_url": resolved_root_url,
         "target_id": effective_target_id,
         "subnet_id": subnet_id,
         "zone": zone,
+        "local_runtime": _norm_url(resolved_root_url) == _norm_url(default_root_url),
     }
 
 
@@ -309,6 +324,8 @@ def get_local_operational_surface(
     root_url: str | None = None,
 ) -> dict[str, Any]:
     context = get_local_target_context(target_id=target_id, root_url=root_url)
+    if _should_use_local_embedded(context):
+        return _embedded_operational_surface(context)
     if _should_use_embedded_fallback(context):
         return _embedded_operational_surface(context)
     client = get_management_client(root_url=context["root_url"])
@@ -354,6 +371,8 @@ def list_local_access_tokens(
     context = get_local_target_context(target_id=target_id, root_url=root_url)
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
+    if _should_use_local_embedded(context):
+        return _embedded_access_tokens(context, limit=limit, active_only=active_only)
     if _should_use_embedded_fallback(context):
         return _embedded_access_tokens(context, limit=limit, active_only=active_only)
     client = get_management_client(root_url=context["root_url"])
@@ -382,6 +401,8 @@ def list_local_mcp_sessions(
     context = get_local_target_context(target_id=target_id, root_url=root_url)
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
+    if _should_use_local_embedded(context):
+        return _embedded_sessions(context, limit=limit, active_only=active_only)
     if _should_use_embedded_fallback(context):
         return _embedded_sessions(context, limit=limit, active_only=active_only)
     client = get_management_client(root_url=context["root_url"])
@@ -409,6 +430,8 @@ def get_local_activity_log(
     context = get_local_target_context(target_id=target_id, root_url=root_url)
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
+    if _should_use_local_embedded(context):
+        return _embedded_activity_log(context, limit=limit)
     if _should_use_embedded_fallback(context):
         return _embedded_activity_log(context, limit=limit)
     client = get_management_client(root_url=context["root_url"])
@@ -433,6 +456,14 @@ def issue_local_codex_mcp_session(
     context = get_local_target_context(target_id=target_id, root_url=root_url)
     if not context["target_id"]:
         raise RuntimeError("Unable to infer local target_id for Root MCP access.")
+    if _should_use_local_embedded(context):
+        return _embedded_issue_session(
+            context,
+            capability_profile=str(capability_profile),
+            ttl_seconds=int(ttl_seconds),
+            audience=str(audience),
+            note=str(note or "infra_access_skill Codex bootstrap").strip(),
+        )
     if _should_use_embedded_fallback(context):
         return _embedded_issue_session(
             context,

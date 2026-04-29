@@ -85,6 +85,49 @@ def test_sdk_root_mcp_prefers_rest_surfaces(monkeypatch) -> None:
     assert stub.calls[5][1]["capability_profile"] == "ProfileOpsRead"
 
 
+def test_sdk_root_mcp_local_runtime_uses_embedded_without_bridge_probe(monkeypatch) -> None:
+    sdk_root_mcp._EMBEDDED_FALLBACK_UNTIL.clear()
+    monkeypatch.delenv("ADAOS_ROOT_MCP_LOCAL_FIRST", raising=False)
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "get_local_target_context",
+        lambda **kwargs: {
+            "root_url": "https://root.test",
+            "target_id": "hub:test-subnet",
+            "subnet_id": "subnet:test-subnet",
+            "zone": "lab-a",
+            "local_runtime": True,
+        },
+    )
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "get_management_client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("bridge should not be probed")),
+    )
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "_embedded_operational_surface",
+        lambda context: {
+            "ok": True,
+            "response": {
+                "result": {
+                    "operational_surface": {
+                        "token_management": {
+                            "session_capability_profiles": ["ProfileOpsRead"],
+                        }
+                    }
+                }
+            },
+        },
+    )
+
+    surface = sdk_root_mcp.get_local_operational_surface()
+
+    assert surface["response"]["result"]["operational_surface"]["token_management"]["session_capability_profiles"] == [
+        "ProfileOpsRead"
+    ]
+
+
 def test_sdk_root_mcp_falls_back_to_embedded_surface_on_bridge_fetch_failure(monkeypatch) -> None:
     sdk_root_mcp._EMBEDDED_FALLBACK_UNTIL.clear()
 
