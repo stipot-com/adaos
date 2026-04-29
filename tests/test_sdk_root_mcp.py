@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from adaos.sdk.data import root_mcp as sdk_root_mcp
+from adaos.services.root.client import RootHttpError
 
 
 class _StubClient:
@@ -45,6 +46,7 @@ class _StubClient:
 
 
 def test_sdk_root_mcp_prefers_rest_surfaces(monkeypatch) -> None:
+    sdk_root_mcp._EMBEDDED_FALLBACK_UNTIL.clear()
     stub = _StubClient()
     monkeypatch.setattr(
         sdk_root_mcp,
@@ -81,3 +83,89 @@ def test_sdk_root_mcp_prefers_rest_surfaces(monkeypatch) -> None:
     assert stub.calls[5][0] == "issue_session_lease"
     assert stub.calls[5][1]["target_id"] == "hub:test-subnet"
     assert stub.calls[5][1]["capability_profile"] == "ProfileOpsRead"
+
+
+def test_sdk_root_mcp_falls_back_to_embedded_surface_on_bridge_fetch_failure(monkeypatch) -> None:
+    sdk_root_mcp._EMBEDDED_FALLBACK_UNTIL.clear()
+
+    class _BridgeFailingClient:
+        def foundation(self) -> dict:
+            raise RootHttpError(
+                "fetch failed",
+                status_code=502,
+                payload={"error": "adaos_root_mcp_upstream_failed", "detail": "fetch failed"},
+            )
+
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "get_local_target_context",
+        lambda **kwargs: {
+            "root_url": "https://root.test",
+            "target_id": "hub:test-subnet",
+            "subnet_id": "subnet:test-subnet",
+            "zone": "lab-a",
+        },
+    )
+    monkeypatch.setattr(sdk_root_mcp, "get_management_client", lambda **kwargs: _BridgeFailingClient())
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "_embedded_operational_surface",
+        lambda context: {
+            "ok": True,
+            "response": {
+                "result": {
+                    "operational_surface": {
+                        "token_management": {
+                            "session_capability_profiles": ["ProfileOpsRead"],
+                        }
+                    }
+                }
+            },
+        },
+    )
+
+    surface = sdk_root_mcp.get_local_operational_surface()
+
+    assert surface["response"]["result"]["operational_surface"]["token_management"]["session_capability_profiles"] == [
+        "ProfileOpsRead"
+    ]
+
+
+def test_sdk_root_mcp_reuses_embedded_fallback_window_after_bridge_failure(monkeypatch) -> None:
+    sdk_root_mcp._EMBEDDED_FALLBACK_UNTIL.clear()
+    calls: list[str] = []
+
+    class _BridgeFailingClient:
+        def foundation(self) -> dict:
+            calls.append("foundation")
+            raise RootHttpError(
+                "fetch failed",
+                status_code=502,
+                payload={"error": "adaos_root_mcp_upstream_failed", "detail": "fetch failed"},
+            )
+
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "get_local_target_context",
+        lambda **kwargs: {
+            "root_url": "https://root.test",
+            "target_id": "hub:test-subnet",
+            "subnet_id": "subnet:test-subnet",
+            "zone": "lab-a",
+        },
+    )
+    monkeypatch.setattr(sdk_root_mcp, "get_management_client", lambda **kwargs: _BridgeFailingClient())
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "_embedded_operational_surface",
+        lambda context: {"ok": True, "response": {"result": {"operational_surface": {}}}},
+    )
+    monkeypatch.setattr(
+        sdk_root_mcp,
+        "_embedded_sessions",
+        lambda context, *, limit, active_only: {"ok": True, "response": {"result": {"sessions": []}}},
+    )
+
+    assert sdk_root_mcp.get_local_operational_surface()["ok"] is True
+    assert sdk_root_mcp.list_local_mcp_sessions()["ok"] is True
+    assert calls == ["foundation"]

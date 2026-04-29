@@ -111,3 +111,39 @@ def test_load_mark_stream_payload_zeroes_stale_rows_between_snapshots() -> None:
     assert stale_owner["recent_writes"] == 0
     assert stale_owner["avg_bps"] == 0.0
     assert stale_owner["status"] == "idle"
+
+
+def test_load_mark_gateway_owner_peak_only_burst_does_not_warn(monkeypatch) -> None:
+    _reset_load_mark_state()
+    calls = []
+    monkeypatch.setattr(load_mark_module, "_enqueue_owner_pressure_log", lambda *args: calls.append(args))
+
+    load_mark_module.record_write_update(
+        "default",
+        total_bytes=64 * 1024,
+        now_ts=50.0,
+        source="yjs.gateway_ws",
+        owner="gateway_ws",
+    )
+
+    snapshot = load_mark_module.yjs_load_mark_snapshot(webspace_id="default", now_ts=51.0)
+    owner_item = snapshot["selected_webspace"]["owners"]["_by_owner/gateway_ws"]
+
+    assert owner_item["peak_bps"] >= float(load_mark_module._HIGH_BPS)
+    assert not calls
+
+
+def test_load_mark_non_gateway_peak_burst_still_warns(monkeypatch) -> None:
+    _reset_load_mark_state()
+    calls = []
+    monkeypatch.setattr(load_mark_module, "_enqueue_owner_pressure_log", lambda *args: calls.append(args))
+
+    load_mark_module.record_write_update(
+        "default",
+        total_bytes=64 * 1024,
+        now_ts=60.0,
+        source="sdk.web.yjs",
+        owner="skill:test_skill",
+    )
+
+    assert calls

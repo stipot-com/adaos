@@ -750,12 +750,19 @@ async def lifespan(app: FastAPI):
 
             async def _staler():
                 directory = get_directory()
-                while True:
+
+                def _tick_directory() -> None:
                     try:
                         directory.on_heartbeat(conf.node_id, None)
                     except Exception:
                         pass
-                    directory.mark_stale_if_expired(45.0)
+                    try:
+                        directory.mark_stale_if_expired(45.0)
+                    except Exception:
+                        pass
+
+                while True:
+                    await _asyncio.to_thread(_tick_directory)
                     await _asyncio.sleep(5.0)
 
             staler_task = _asyncio.create_task(_staler(), name="subnet-directory-staler")

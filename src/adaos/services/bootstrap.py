@@ -2832,7 +2832,8 @@ class BootstrapService:
                                             f"[hub-io] nats ws eof: closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc}",
                                             every_s=1.0,
                                         )
-                                        _write_nats_ws_diag_file(
+                                        await asyncio.to_thread(
+                                            _write_nats_ws_diag_file,
                                             nc_for_diag,
                                             server=_resolve_nats_log_server(
                                                 current_attempt=nats_attempt_server,
@@ -6959,7 +6960,8 @@ class BootstrapService:
                             tick_gap = now - last_watchdog_tick_at
                             last_watchdog_tick_at = now
                             try:
-                                _write_nats_ws_diag_file(
+                                await asyncio.to_thread(
+                                    _write_nats_ws_diag_file,
                                     nc,
                                     server=nats_last_server,
                                     source="periodic",

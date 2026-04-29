@@ -137,7 +137,16 @@ async def on(topic: str, handler: Callable[[dict], Awaitable[Any]]):
 
     try:
         setattr(_adapt, "_adaos_topic", str(topic))
-        setattr(_adapt, "_adaos_handler", f"{getattr(handler, '__module__', '<unknown>')}.{getattr(handler, '__name__', repr(handler))}")
+        setattr(_adapt, "_adaos_skill", getattr(handler, "_adaos_skill", None))
+        setattr(
+            _adapt,
+            "_adaos_handler",
+            getattr(
+                handler,
+                "_adaos_handler",
+                f"{getattr(handler, '__module__', '<unknown>')}.{getattr(handler, '__name__', repr(handler))}",
+            ),
+        )
     except Exception:
         pass
 

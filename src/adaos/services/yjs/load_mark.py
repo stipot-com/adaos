@@ -31,6 +31,13 @@ _HIGH_WPS = max(1.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_WPS") or "8"))
 _CRITICAL_WPS = max(_HIGH_WPS + 0.1, float(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_WPS") or "32"))
 _OWNER_ALERT_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_MIN_INTERVAL_SEC") or "60"))
 _OWNER_ALERT_QUEUE_MAX = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_QUEUE_MAX") or "256"))
+_GATEWAY_OWNER_BUCKET = f"{_OWNER_PREFIX}gateway_ws"
+_GATEWAY_PEAK_ALERTS = str(os.getenv("ADAOS_YJS_LOAD_MARK_GATEWAY_PEAK_ALERTS") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
@@ -385,10 +392,19 @@ def _maybe_log_owner_pressure(
     avg_wps = round(float(owner_state.get("recent_write_total") or 0) / float(_WINDOW_SEC), 3)
     peak_wps = round(float(peak_bucket_writes) / float(_BUCKET_SEC), 3)
     severity = None
-    if peak_bps >= float(_CRITICAL_BPS) or avg_bps >= float(_CRITICAL_BPS) or peak_wps >= float(_CRITICAL_WPS) or avg_wps >= float(_CRITICAL_WPS):
-        severity = "critical"
-    elif peak_bps >= float(_HIGH_BPS) or avg_bps >= float(_HIGH_BPS) or peak_wps >= float(_HIGH_WPS) or avg_wps >= float(_HIGH_WPS):
-        severity = "high"
+    if owner_bucket == _GATEWAY_OWNER_BUCKET and not _GATEWAY_PEAK_ALERTS:
+        # Browser attach can legitimately produce a short burst of tiny Yjs
+        # gateway writes. Alert here only when the flow is sustained across the
+        # load-mark window; keep per-second peaks visible in snapshots/history.
+        if avg_bps >= float(_CRITICAL_BPS) or avg_wps >= float(_CRITICAL_WPS):
+            severity = "critical"
+        elif avg_bps >= float(_HIGH_BPS) or avg_wps >= float(_HIGH_WPS):
+            severity = "high"
+    else:
+        if peak_bps >= float(_CRITICAL_BPS) or avg_bps >= float(_CRITICAL_BPS) or peak_wps >= float(_CRITICAL_WPS) or avg_wps >= float(_CRITICAL_WPS):
+            severity = "critical"
+        elif peak_bps >= float(_HIGH_BPS) or avg_bps >= float(_HIGH_BPS) or peak_wps >= float(_HIGH_WPS) or avg_wps >= float(_HIGH_WPS):
+            severity = "high"
     if not severity:
         return
     alert_key = f"{webspace_id}:{owner_bucket}:{severity}"
