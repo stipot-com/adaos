@@ -233,6 +233,49 @@ def _ws_data_heartbeat_s_from_env(*, ws_impl: str | None = None) -> float | None
     return v
 
 
+def _ws_data_ping_s_from_env(*, ws_impl: str | None = None) -> float | None:
+    """
+    NATS protocol data ping for WS transports (send `PING\\r\\n` as WS *data*).
+
+    This is intentionally separate from WebSocket PING control frames and from
+    nats-py's ping interval task. The raw diagnostic client stays stable under
+    outbound PUB load when it periodically sends NATS `PING` frames and receives
+    server `PONG`s. Sending this from the transport's high-priority path keeps
+    read-side liveness visible even when user traffic is mostly outbound.
+
+    Control:
+    - HUB_NATS_WS_DATA_PING_S:
+        * unset         -> enable conservative default (5s) for Windows/websockets
+        * empty         -> disable
+        * <= 0          -> disable
+        * > 0           -> enable with that interval (seconds; min 5)
+    """
+    raw = os.getenv("HUB_NATS_WS_DATA_PING_S")
+    if raw is None:
+        try:
+            impl = (ws_impl or _ws_impl_from_env()).strip().lower()
+        except Exception:
+            impl = "websockets"
+        if os.name == "nt" and impl == "websockets":
+            return 5.0
+        return None
+    try:
+        s = str(raw).strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+    try:
+        v = float(s)
+    except Exception:
+        return None
+    if v <= 0.0:
+        return None
+    if v < 5.0:
+        v = 5.0
+    return v
+
+
 def _ws_recv_timeout_s_from_env() -> float | None:
     """
     Read timeout for WS transports (max time to wait for a WS *data* message).
@@ -329,6 +372,28 @@ def _ws_io_poll_s_from_env() -> float:
     if value > 1.0:
         value = 1.0
     return value
+
+
+def _ws_shared_io_enabled_from_env() -> bool:
+    raw = os.getenv("HUB_NATS_WS_SHARED_IO")
+    if raw is None:
+        return True
+    return str(raw or "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _ws_control_intercept_enabled_from_env() -> bool:
+    """
+    Whether the WS transport should consume exact NATS control frames itself.
+
+    The intercept path answers Root-originated `PING\r\n` directly from the
+    transport so keepalive PONGs are not delayed behind the nats-py flusher.
+    Keep this toggle available while diagnosing hub-root stalls: disabling it
+    lets nats-py observe and handle PING/PONG frames exactly as on TCP.
+    """
+    raw = os.getenv("HUB_NATS_WS_CONTROL_INTERCEPT")
+    if raw is None:
+        return True
+    return str(raw or "").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _ws_proxy_from_env() -> str | bool | None:
@@ -686,8 +751,11 @@ class WebSocketTransportWebsockets:
         self._direct_recv_task: asyncio.Task | None = None
         self._io_sending: bool = False
         self._pending_ws_ping: int = 0
+        self._shared_io_enabled: bool = _ws_shared_io_enabled_from_env()
+        self._control_intercept_enabled: bool = _ws_control_intercept_enabled_from_env()
         self._close_task: asyncio.Task | None = None
         self._data_heartbeat_task: asyncio.Task | None = None
+        self._data_ping_task: asyncio.Task | None = None
         self._ws_heartbeat_task: asyncio.Task | None = None
         self._using_tls: Optional[bool] = None
         self._ws_headers: Optional[Dict[str, List[str]]] = ws_headers
@@ -711,6 +779,7 @@ class WebSocketTransportWebsockets:
         self._adaos_ws_url: str | None = None
         self._adaos_ws_proto: str | None = None
         self._adaos_ws_data_heartbeat: float | None = None
+        self._adaos_ws_data_ping: float | None = None
         self._adaos_tx_connect_at: float | None = None
         self._adaos_rx_info_at: float | None = None
         self._adaos_nats_max_payload: int | None = None
@@ -729,6 +798,10 @@ class WebSocketTransportWebsockets:
         self._adaos_last_ws_ping_tx_at: float | None = None
         self._adaos_last_ws_ping_tx_wait_s: float | None = None
         self._adaos_last_ws_ping_tx_send_s: float | None = None
+        self._adaos_data_pings_tx: int = 0
+        self._adaos_last_data_ping_tx_at: float | None = None
+        self._adaos_last_data_ping_tx_wait_s: float | None = None
+        self._adaos_last_data_ping_tx_send_s: float | None = None
 
     def _trace(self, msg: str) -> None:
         if not self._adaos_ws_trace:
@@ -793,7 +866,7 @@ class WebSocketTransportWebsockets:
         self._using_tls = True
 
     def write(self, payload: bytes) -> None:
-        if payload == b"PONG\r\n":
+        if payload in (b"PONG\r\n", b"PING\r\n"):
             self._pending_hi.put_nowait(payload)
         else:
             self._pending.put_nowait(payload)
@@ -863,16 +936,63 @@ class WebSocketTransportWebsockets:
         except Exception:
             io_task = None
             current_task = None
-        # Route raw NATS PONG through the same prioritized send path that the transport uses
-        # for other outbound frames. On Windows `websockets`, sending inline from the recv
-        # handler can appear successful in logs while the small binary frame doesn't reliably
-        # reach Root's ws-nats-proxy after a few keepalive cycles.
+        # When the shared IO loop is currently processing Root's NATS PING, answer it inline.
+        # Do not drain normal pending PUB/SUB traffic from this path: keepalive PONG must be a
+        # tiny, isolated response, otherwise it can get coupled to app traffic and Root may age
+        # out the tunnel even though we logged a local "PONG sent".
+        if io_task is not None and current_task is io_task:
+            pong_start_at = None
+            try:
+                pong_start_at = time.monotonic()
+                self._adaos_last_tx_at = pong_start_at
+                self._adaos_last_pong_tx_at = pong_start_at
+            except Exception:
+                pass
+            self._wiretap("tx", payload)
+            try:
+                self._adaos_last_tx_kind = "PONG"
+                self._adaos_last_tx_subj = None
+                self._adaos_last_tx_len = len(payload)
+            except Exception:
+                pass
+            lock_wait_s = None
+            send_s = None
+            lock_wait_start = time.monotonic()
+            async with self._send_lock:
+                lock_acquired_at = time.monotonic()
+                try:
+                    lock_wait_s = lock_acquired_at - lock_wait_start
+                except Exception:
+                    lock_wait_s = None
+                await ws.send(payload)
+                send_done_at = time.monotonic()
+                try:
+                    send_s = send_done_at - lock_acquired_at
+                except Exception:
+                    send_s = None
+            try:
+                self._adaos_pongs_tx += 1
+                self._adaos_last_pong_tx_wait_s = lock_wait_s
+                self._adaos_last_pong_tx_send_s = send_s
+            except Exception:
+                pass
+            try:
+                if self._adaos_ws_trace:
+                    n = int(getattr(self, "_adaos_pongs_tx", 0) or 0)
+                    lw_ms = round(float(lock_wait_s) * 1000.0, 3) if isinstance(lock_wait_s, (int, float)) else None
+                    sd_ms = round(float(send_s) * 1000.0, 3) if isinstance(send_s, (int, float)) else None
+                    self._trace(
+                        f"nats ws direct control tx kind=PONG reason={reason} wait_ms={lw_ms} send_ms={sd_ms} n={n}"
+                    )
+            except Exception:
+                pass
+            return
+
+        # From tasks outside the shared IO loop, enqueue through the regular prioritized path
+        # so websocket writes remain serialized with normal transport sends.
         if io_task is not None:
             self.write(payload)
-            if current_task is io_task:
-                await self._direct_drain()
-            else:
-                await self.drain()
+            await self.drain()
             try:
                 self._adaos_pongs_tx += 1
                 self._adaos_last_pong_tx_wait_s = 0.0
@@ -937,11 +1057,95 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
 
+    async def _send_nats_ping(self, *, reason: str) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        payload = b"PING\r\n"
+        try:
+            io_task = getattr(self, "_io_task", None)
+            current_task = asyncio.current_task()
+        except Exception:
+            io_task = None
+            current_task = None
+        if io_task is not None:
+            self.write(payload)
+            if current_task is io_task:
+                await self._direct_drain()
+            else:
+                await self.drain()
+            try:
+                self._adaos_data_pings_tx += 1
+                self._adaos_last_data_ping_tx_wait_s = 0.0
+                self._adaos_last_data_ping_tx_send_s = 0.0
+                self._adaos_last_data_ping_tx_at = time.monotonic()
+            except Exception:
+                pass
+            try:
+                if self._adaos_ws_trace:
+                    n = int(getattr(self, "_adaos_data_pings_tx", 0) or 0)
+                    self._trace(
+                        f"nats ws data heartbeat tx kind=PING reason={reason} wait_ms=0.0 send_ms=0.0 n={n}"
+                    )
+            except Exception:
+                pass
+            return
+
+        ping_start_at = None
+        try:
+            ping_start_at = time.monotonic()
+            self._adaos_last_tx_at = ping_start_at
+            self._adaos_last_data_ping_tx_at = ping_start_at
+        except Exception:
+            pass
+        self._wiretap("tx", payload)
+        try:
+            self._adaos_last_tx_kind = "PING"
+            self._adaos_last_tx_subj = None
+            self._adaos_last_tx_len = len(payload)
+        except Exception:
+            pass
+        lock_wait_s = None
+        send_s = None
+        lock_wait_start = time.monotonic()
+        async with self._send_lock:
+            lock_acquired_at = time.monotonic()
+            try:
+                lock_wait_s = lock_acquired_at - lock_wait_start
+            except Exception:
+                lock_wait_s = None
+            await ws.send(payload)
+            send_done_at = time.monotonic()
+            try:
+                send_s = send_done_at - lock_acquired_at
+            except Exception:
+                send_s = None
+        try:
+            self._adaos_data_pings_tx += 1
+            self._adaos_last_data_ping_tx_wait_s = lock_wait_s
+            self._adaos_last_data_ping_tx_send_s = send_s
+        except Exception:
+            pass
+        try:
+            if self._adaos_ws_trace:
+                n = int(getattr(self, "_adaos_data_pings_tx", 0) or 0)
+                lw_ms = round(float(lock_wait_s) * 1000.0, 3) if isinstance(lock_wait_s, (int, float)) else None
+                sd_ms = round(float(send_s) * 1000.0, 3) if isinstance(send_s, (int, float)) else None
+                self._trace(
+                    f"nats ws data heartbeat tx kind=PING reason={reason} wait_ms={lw_ms} send_ms={sd_ms} n={n}"
+                )
+        except Exception:
+            pass
+
     def _ensure_io_task(self) -> None:
+        if not self._shared_io_enabled:
+            return
         try:
             if self._io_task is not None and not self._io_task.done():
                 return
             if self._ws is None:
+                return
+            if self._direct_recv_task is not None and not self._direct_recv_task.done():
                 return
             while not self._recv_queue.empty():
                 self._recv_queue.get_nowait()
@@ -1061,7 +1265,11 @@ class WebSocketTransportWebsockets:
                 data = bytes(raw)
             else:
                 data = b""
-            if data and await self._maybe_consume_direct_control_frame(data):
+            if (
+                data
+                and self._control_intercept_enabled
+                and await self._maybe_consume_direct_control_frame(data)
+            ):
                 continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:
@@ -1261,7 +1469,11 @@ class WebSocketTransportWebsockets:
                     else:
                         data = b""
 
-                    if data and await self._maybe_consume_direct_control_frame(data):
+                    if (
+                        data
+                        and self._control_intercept_enabled
+                        and await self._maybe_consume_direct_control_frame(data)
+                    ):
                         recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
                         continue
 
@@ -1422,7 +1634,11 @@ class WebSocketTransportWebsockets:
                 data = bytes(raw)
             else:
                 data = b""
-            if data and await self._maybe_consume_direct_control_frame(data):
+            if (
+                data
+                and self._control_intercept_enabled
+                and await self._maybe_consume_direct_control_frame(data)
+            ):
                 continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:
@@ -1525,6 +1741,12 @@ class WebSocketTransportWebsockets:
             pass
         self._data_heartbeat_task = None
         try:
+            if self._data_ping_task is not None and not self._data_ping_task.done():
+                self._data_ping_task.cancel()
+        except Exception:
+            pass
+        self._data_ping_task = None
+        try:
             if self._ws_heartbeat_task is not None and not self._ws_heartbeat_task.done():
                 self._ws_heartbeat_task.cancel()
         except Exception:
@@ -1551,6 +1773,12 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._data_heartbeat_task = None
+        try:
+            if self._data_ping_task is not None and not self._data_ping_task.done():
+                self._data_ping_task.cancel()
+        except Exception:
+            pass
+        self._data_ping_task = None
         try:
             if self._ws_heartbeat_task is not None and not self._ws_heartbeat_task.done():
                 self._ws_heartbeat_task.cancel()
@@ -1637,6 +1865,50 @@ class WebSocketTransportWebsockets:
         except Exception:
             self._ws_heartbeat_task = None
 
+    def _start_data_ping_task(self) -> None:
+        try:
+            if self._data_ping_task is not None and not self._data_ping_task.done():
+                self._data_ping_task.cancel()
+        except Exception:
+            pass
+        self._data_ping_task = None
+        try:
+            data_ping_s = getattr(self, "_adaos_ws_data_ping", None)
+        except Exception:
+            data_ping_s = None
+        if data_ping_s is None:
+            return
+        ws0 = self._ws
+
+        async def _data_ping_loop() -> None:
+            interval_s = float(data_ping_s)
+            while True:
+                await asyncio.sleep(interval_s)
+                try:
+                    ws1 = self._ws
+                    if ws1 is None or ws1 is not ws0 or self.at_eof():
+                        return
+                except Exception:
+                    return
+                try:
+                    now = time.monotonic()
+                    last_rx_at = getattr(self, "_adaos_last_rx_at", None)
+                    if isinstance(last_rx_at, (int, float)) and (now - float(last_rx_at)) < interval_s:
+                        continue
+                except Exception:
+                    pass
+                try:
+                    await self._send_nats_ping(reason="data_ping")
+                except Exception:
+                    return
+
+        try:
+            self._data_ping_task = asyncio.create_task(
+                _data_ping_loop(), name="adaos-nats-ws-data-ping"
+            )
+        except Exception:
+            self._data_ping_task = None
+
     async def _connect_impl(self, target: str, *, ssl_context: ssl.SSLContext | None, connect_timeout: int) -> None:
         try:
             import websockets  # type: ignore
@@ -1647,6 +1919,7 @@ class WebSocketTransportWebsockets:
         max_size = _ws_max_size_from_env()
         heartbeat_s = _effective_ws_heartbeat_s(ws_impl="websockets")
         data_heartbeat_s = _ws_data_heartbeat_s_from_env(ws_impl="websockets")
+        data_ping_s = _ws_data_ping_s_from_env(ws_impl="websockets")
         recv_timeout_s = _effective_ws_recv_timeout_s(ws_impl="websockets")
         try:
             setattr(self, "_adaos_ws_heartbeat", heartbeat_s)
@@ -1658,6 +1931,10 @@ class WebSocketTransportWebsockets:
             pass
         try:
             self._adaos_ws_data_heartbeat = data_heartbeat_s
+        except Exception:
+            pass
+        try:
+            self._adaos_ws_data_ping = data_ping_s
         except Exception:
             pass
         try:
@@ -1693,6 +1970,7 @@ class WebSocketTransportWebsockets:
                     f"proxy={ws_kwargs.get('proxy')} max_size={max_size} "
                     f"max_queue={max_queue} "
                     f"heartbeat_s={heartbeat_s} heartbeat_mode={self._adaos_ws_heartbeat_mode} "
+                    f"data_ping_s={data_ping_s} "
                     f"ping_interval={ping_interval} ping_timeout={ping_timeout} recv_timeout_s={recv_timeout_s} "
                     f"tag={self._adaos_ws_tag}"
                 )
@@ -1704,6 +1982,12 @@ class WebSocketTransportWebsockets:
         except Exception:
             pass
         self._data_heartbeat_task = None
+        try:
+            if self._data_ping_task is not None and not self._data_ping_task.done():
+                self._data_ping_task.cancel()
+        except Exception:
+            pass
+        self._data_ping_task = None
         try:
             if self._ws_heartbeat_task is not None and not self._ws_heartbeat_task.done():
                 self._ws_heartbeat_task.cancel()
@@ -1800,6 +2084,7 @@ class WebSocketTransportWebsockets:
         # as soon as the socket is ready so we don't fall back to ad-hoc direct reads first.
         self._ensure_io_task()
         self._start_ws_heartbeat_task()
+        self._start_data_ping_task()
 
         # Optional NATS-data heartbeat (send PONG) to keep end-to-end hub->root traffic visible.
         if data_heartbeat_s is not None:
@@ -1875,6 +2160,7 @@ class WebSocketTransportAiohttp:
         self._ws_heartbeat_task: asyncio.Task | None = None
         self._using_tls: Optional[bool] = None
         self._ws_headers: Optional[Dict[str, List[str]]] = ws_headers
+        self._control_intercept_enabled: bool = _ws_control_intercept_enabled_from_env()
         self._adaos_ws_trace: bool = os.getenv("HUB_NATS_WS_TRACE", "0") == "1"
         self._adaos_route_trace: bool = _route_trace_enabled()
         self._adaos_ws_raise_on_recv_err: bool = os.getenv("HUB_NATS_WS_RAISE_ON_RECV_ERR", "1") == "1"
@@ -2295,7 +2581,11 @@ class WebSocketTransportAiohttp:
             else:
                 data = b""
 
-            if data and await self._maybe_consume_direct_control_frame(data):
+            if (
+                data
+                and self._control_intercept_enabled
+                and await self._maybe_consume_direct_control_frame(data)
+            ):
                 continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:

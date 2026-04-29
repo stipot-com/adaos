@@ -112,7 +112,8 @@ def _extract_urls(node: dict[str, Any], runtime_nats: dict[str, Any]) -> list[st
         urls.append(base)
     # Fallbacks used in hub code
     urls.append("wss://api.inimatic.com/nats")
-    urls.append("wss://nats.inimatic.com/nats")
+    if os.getenv("HUB_NATS_PREFER_DEDICATED", "0").strip() == "1":
+        urls.append("wss://nats.inimatic.com/nats")
     # Optional alternates
     extra = os.getenv("NATS_WS_URL_ALT", "")
     for it in [x.strip() for x in extra.split(",") if x.strip()]:
@@ -146,6 +147,7 @@ class RunResult:
     client_pings_tx: int
     client_pongs_rx: int
     client_pong_timeouts: int
+    msgs_rx: int
     pubs_tx: int
     info_rx: int
     errors: list[str]
@@ -165,6 +167,38 @@ def _add_conn_tag(url: str, tag: str) -> str:
         return url
 
 
+def _connect_command(*, style: str, user: str, password: str) -> bytes:
+    style_s = str(style or "diag").strip().lower()
+    if style_s in {"nats-py", "natspy", "python"}:
+        connect_obj = {
+            "echo": True,
+            "headers": True,
+            "lang": "python3",
+            "name": "diag-nats-py-raw",
+            "no_responders": True,
+            "pass": password,
+            "pedantic": False,
+            "protocol": 1,
+            "user": user,
+            "verbose": False,
+            "version": _pkg_version("nats-py") or "0.0",
+        }
+        return b"CONNECT " + json.dumps(connect_obj, sort_keys=True).encode("utf-8") + b"\r\n"
+
+    connect_obj = {
+        "verbose": False,
+        "pedantic": False,
+        "lang": "diag",
+        "version": "0.0",
+        "protocol": 1,
+        "echo": True,
+        "name": f"diag-{_rand_id()}",
+        "user": user,
+        "pass": password,
+    }
+    return b"CONNECT " + json.dumps(connect_obj).encode("utf-8") + b"\r\n"
+
+
 async def _run_one(
     url: str,
     *,
@@ -179,10 +213,15 @@ async def _run_one(
     ws_ping_every_s: float,
     ws_pong_timeout_s: float,
     subs: list[str],
+    sub_empty_queue_space: bool,
     pub_subject: str,
     pub_every_s: float,
     pub_payload: str,
     pub_split: bool,
+    pub_empty_reply_space: bool,
+    connect_style: str,
+    connect_after_info: bool,
+    initial_client_ping: bool,
     send_text: bool,
 ) -> RunResult:
     lib = str(ws_lib or "aiohttp").strip().lower()
@@ -204,10 +243,15 @@ async def _run_one(
             ws_ping_every_s=ws_ping_every_s,
             ws_pong_timeout_s=ws_pong_timeout_s,
             subs=subs,
+            sub_empty_queue_space=sub_empty_queue_space,
             pub_subject=pub_subject,
             pub_every_s=pub_every_s,
             pub_payload=pub_payload,
             pub_split=pub_split,
+            pub_empty_reply_space=pub_empty_reply_space,
+            connect_style=connect_style,
+            connect_after_info=connect_after_info,
+            initial_client_ping=initial_client_ping,
             send_text=send_text,
         )
     return await _run_one_aiohttp(
@@ -222,10 +266,15 @@ async def _run_one(
         ws_ping_every_s=ws_ping_every_s,
         ws_pong_timeout_s=ws_pong_timeout_s,
         subs=subs,
+        sub_empty_queue_space=sub_empty_queue_space,
         pub_subject=pub_subject,
         pub_every_s=pub_every_s,
         pub_payload=pub_payload,
         pub_split=pub_split,
+        pub_empty_reply_space=pub_empty_reply_space,
+        connect_style=connect_style,
+        connect_after_info=connect_after_info,
+        initial_client_ping=initial_client_ping,
         send_text=send_text,
     )
 
@@ -243,10 +292,15 @@ async def _run_one_aiohttp(
     ws_ping_every_s: float,
     ws_pong_timeout_s: float,
     subs: list[str],
+    sub_empty_queue_space: bool,
     pub_subject: str,
     pub_every_s: float,
     pub_payload: str,
     pub_split: bool,
+    pub_empty_reply_space: bool,
+    connect_style: str,
+    connect_after_info: bool,
+    initial_client_ping: bool,
     send_text: bool,
 ) -> RunResult:
     started_at = time.monotonic()
@@ -261,6 +315,7 @@ async def _run_one_aiohttp(
     client_pings_tx = 0
     client_pongs_rx = 0
     client_pong_timeouts = 0
+    msgs_rx = 0
     pubs_tx = 0
     info_rx = 0
 
@@ -268,6 +323,8 @@ async def _run_one_aiohttp(
     headers = {"Sec-WebSocket-Protocol": "nats"}
     if conn_tag:
         headers["X-AdaOS-Nats-Conn"] = conn_tag
+        headers["X-AdaOS-Runtime-Instance"] = f"diag-raw-{conn_tag}"
+        headers["X-AdaOS-Runtime-Role"] = "diagnostic"
 
     close_code: Optional[int] = None
     close_reason: Optional[str] = None
@@ -283,30 +340,67 @@ async def _run_one_aiohttp(
                 heartbeat=None,
                 max_msg_size=0,
             ) as ws:
-                # Send CONNECT as early as possible; the proxy buffers INFO if it arrives first.
-                connect_obj = {
-                    "verbose": False,
-                    "pedantic": False,
-                    "lang": "diag",
-                    "version": "0.0",
-                    "protocol": 1,
-                    "echo": True,
-                    "name": f"diag-{_rand_id()}",
-                    "user": user,
-                    "pass": password,
-                }
-                connect_bytes = b"CONNECT " + json.dumps(connect_obj).encode("utf-8") + b"\r\n"
+                if connect_after_info:
+                    try:
+                        info_msg = await ws.receive(timeout=5)
+                        if info_msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                            raw_info = (
+                                info_msg.data.encode("utf-8")
+                                if isinstance(info_msg.data, str)
+                                else bytes(info_msg.data)
+                            )
+                            if raw_info.startswith(b"INFO "):
+                                info_rx += 1
+                                if trace:
+                                    line = raw_info.split(NATS_PING[-2:], 1)[0][:240]
+                                    print(f"[diag] pre-connect INFO: {line!r}")
+                            if b"PING\r\n" in raw_info:
+                                nats_pings_rx += raw_info.count(NATS_PING)
+                                await ws.send_bytes(NATS_PONG)
+                                nats_pongs_tx += 1
+                    except Exception as e:
+                        errors.append(f"pre-connect INFO read failed: {type(e).__name__}: {e}")
+                        raise
+
+                # By default send CONNECT as early as possible; the proxy buffers INFO if it arrives first.
+                connect_bytes = _connect_command(style=connect_style, user=user, password=password)
                 if send_text:
                     await ws.send_str(connect_bytes.decode("utf-8"))
                 else:
                     await ws.send_bytes(connect_bytes)
+                if initial_client_ping:
+                    if send_text:
+                        await ws.send_str(NATS_PING.decode("utf-8"))
+                    else:
+                        await ws.send_bytes(NATS_PING)
+                    client_pings_tx += 1
+                    try:
+                        pong_msg = await ws.receive(timeout=max(0.1, float(client_pong_timeout_s)))
+                        if pong_msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                            pong_raw = (
+                                pong_msg.data.encode("utf-8")
+                                if isinstance(pong_msg.data, str)
+                                else bytes(pong_msg.data)
+                            )
+                            if b"PONG\r\n" in pong_raw:
+                                client_pongs_rx += pong_raw.count(NATS_PONG)
+                                if trace:
+                                    print("[diag] initial nats PONG rx")
+                            elif b"-ERR" in pong_raw:
+                                errors.append(
+                                    f"initial PING got server -ERR: {pong_raw[:240].decode('utf-8', errors='replace')}"
+                                )
+                    except Exception as e:
+                        errors.append(f"initial PING/PONG failed: {type(e).__name__}: {e}")
+                        raise
                 try:
                     sid = 1
                     for subj in subs or []:
                         s = str(subj or "").strip()
                         if not s:
                             continue
-                        sub_bytes = f"SUB {s} {sid}\r\n".encode("utf-8")
+                        spacer = "  " if sub_empty_queue_space else " "
+                        sub_bytes = f"SUB {s}{spacer}{sid}\r\n".encode("utf-8")
                         if send_text:
                             await ws.send_str(sub_bytes.decode("utf-8"))
                         else:
@@ -335,7 +429,8 @@ async def _run_one_aiohttp(
                     now = time.monotonic()
                     if next_pub_at is not None and now >= next_pub_at:
                         try:
-                            header = f"PUB {pub_subject_s} {len(pub_payload_b)}\r\n".encode("utf-8")
+                            spacer = "  " if pub_empty_reply_space else " "
+                            header = f"PUB {pub_subject_s}{spacer}{len(pub_payload_b)}\r\n".encode("utf-8")
                             if pub_split:
                                 if send_text:
                                     await ws.send_str(header.decode("utf-8"))
@@ -464,6 +559,12 @@ async def _run_one_aiohttp(
                             if trace:
                                 line = raw.split(b"\r\n", 1)[0][:200]
                                 print(f"[diag] nats INFO: {line!r}")
+                        if raw.startswith(b"MSG ") or b"\r\nMSG " in raw:
+                            got = raw.count(b"MSG ")
+                            msgs_rx += got
+                            if trace:
+                                line = raw.split(b"\r\n", 1)[0][:200]
+                                print(f"[diag] nats MSG rx +{got} total={msgs_rx} head={line!r}")
                         # Count protocol pongs from the server (responses to our client PINGs)
                         if b"PONG\r\n" in raw:
                             got = raw.count(NATS_PONG)
@@ -508,6 +609,7 @@ async def _run_one_aiohttp(
         client_pings_tx=client_pings_tx,
         client_pongs_rx=client_pongs_rx,
         client_pong_timeouts=client_pong_timeouts,
+        msgs_rx=msgs_rx,
         pubs_tx=pubs_tx,
         info_rx=info_rx,
         errors=errors,
@@ -527,10 +629,15 @@ async def _run_one_websockets(
     ws_ping_every_s: float,
     ws_pong_timeout_s: float,
     subs: list[str],
+    sub_empty_queue_space: bool,
     pub_subject: str,
     pub_every_s: float,
     pub_payload: str,
     pub_split: bool,
+    pub_empty_reply_space: bool,
+    connect_style: str,
+    connect_after_info: bool,
+    initial_client_ping: bool,
     send_text: bool,
 ) -> RunResult:
     started_at = time.monotonic()
@@ -545,6 +652,7 @@ async def _run_one_websockets(
     client_pings_tx = 0
     client_pongs_rx = 0
     client_pong_timeouts = 0
+    msgs_rx = 0
     pubs_tx = 0
     info_rx = 0
 
@@ -555,6 +663,8 @@ async def _run_one_websockets(
     headers: dict[str, str] = {}
     if conn_tag:
         headers["X-AdaOS-Nats-Conn"] = conn_tag
+        headers["X-AdaOS-Runtime-Instance"] = f"diag-raw-{conn_tag}"
+        headers["X-AdaOS-Runtime-Role"] = "diagnostic"
 
     # Import lazily so this tool still works in aiohttp-only environments.
     try:
@@ -578,6 +688,7 @@ async def _run_one_websockets(
             client_pings_tx=0,
             client_pongs_rx=0,
             client_pong_timeouts=0,
+            msgs_rx=0,
             pubs_tx=0,
             info_rx=0,
             errors=errors,
@@ -604,23 +715,46 @@ async def _run_one_websockets(
         else:
             ws = await websockets.connect(url, **connect_kwargs)
 
-        # Send CONNECT as early as possible; the proxy buffers INFO if it arrives first.
-        connect_obj = {
-            "verbose": False,
-            "pedantic": False,
-            "lang": "diag",
-            "version": "0.0",
-            "protocol": 1,
-            "echo": True,
-            "name": f"diag-{_rand_id()}",
-            "user": user,
-            "pass": password,
-        }
-        connect_bytes = b"CONNECT " + json.dumps(connect_obj).encode("utf-8") + b"\r\n"
+        if connect_after_info:
+            try:
+                info_msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                raw_info = info_msg.encode("utf-8") if isinstance(info_msg, str) else bytes(info_msg)
+                if raw_info.startswith(b"INFO "):
+                    info_rx += 1
+                    if trace:
+                        line = raw_info.split(NATS_PING[-2:], 1)[0][:240]
+                        print(f"[diag] pre-connect INFO: {line!r}")
+                if b"PING\r\n" in raw_info:
+                    nats_pings_rx += raw_info.count(NATS_PING)
+                    await ws.send(NATS_PONG.decode("utf-8") if send_text else NATS_PONG)
+                    nats_pongs_tx += 1
+            except Exception as e:
+                errors.append(f"pre-connect INFO read failed: {type(e).__name__}: {e}")
+                raise
+
+        # By default send CONNECT as early as possible; the proxy buffers INFO if it arrives first.
+        connect_bytes = _connect_command(style=connect_style, user=user, password=password)
         if send_text:
             await ws.send(connect_bytes.decode("utf-8"))
         else:
             await ws.send(connect_bytes)
+        if initial_client_ping:
+            await ws.send(NATS_PING.decode("utf-8") if send_text else NATS_PING)
+            client_pings_tx += 1
+            try:
+                pong_msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, float(client_pong_timeout_s)))
+                pong_raw = pong_msg.encode("utf-8") if isinstance(pong_msg, str) else bytes(pong_msg)
+                if b"PONG\r\n" in pong_raw:
+                    client_pongs_rx += pong_raw.count(NATS_PONG)
+                    if trace:
+                        print("[diag] initial nats PONG rx")
+                elif b"-ERR" in pong_raw:
+                    errors.append(
+                        f"initial PING got server -ERR: {pong_raw[:240].decode('utf-8', errors='replace')}"
+                    )
+            except Exception as e:
+                errors.append(f"initial PING/PONG failed: {type(e).__name__}: {e}")
+                raise
 
         try:
             sid = 1
@@ -628,7 +762,8 @@ async def _run_one_websockets(
                 s = str(subj or "").strip()
                 if not s:
                     continue
-                sub_bytes = f"SUB {s} {sid}\r\n".encode("utf-8")
+                spacer = "  " if sub_empty_queue_space else " "
+                sub_bytes = f"SUB {s}{spacer}{sid}\r\n".encode("utf-8")
                 if send_text:
                     await ws.send(sub_bytes.decode("utf-8"))
                 else:
@@ -659,7 +794,8 @@ async def _run_one_websockets(
             now = time.monotonic()
             if next_pub_at is not None and now >= next_pub_at:
                 try:
-                    header = f"PUB {pub_subject_s} {len(pub_payload_b)}\r\n".encode("utf-8")
+                    spacer = "  " if pub_empty_reply_space else " "
+                    header = f"PUB {pub_subject_s}{spacer}{len(pub_payload_b)}\r\n".encode("utf-8")
                     if pub_split:
                         if send_text:
                             await ws.send(header.decode("utf-8"))
@@ -774,6 +910,13 @@ async def _run_one_websockets(
                     line = raw.split(b"\r\n", 1)[0][:200]
                     print(f"[diag] nats INFO: {line!r}")
 
+            if raw.startswith(b"MSG ") or b"\r\nMSG " in raw:
+                got = raw.count(b"MSG ")
+                msgs_rx += got
+                if trace:
+                    line = raw.split(b"\r\n", 1)[0][:200]
+                    print(f"[diag] nats MSG rx +{got} total={msgs_rx} head={line!r}")
+
             # Count protocol pongs from the server (responses to our client PINGs)
             if b"PONG\r\n" in raw:
                 got = raw.count(NATS_PONG)
@@ -829,6 +972,7 @@ async def _run_one_websockets(
         client_pings_tx=client_pings_tx,
         client_pongs_rx=client_pongs_rx,
         client_pong_timeouts=client_pong_timeouts,
+        msgs_rx=msgs_rx,
         pubs_tx=pubs_tx,
         info_rx=info_rx,
         errors=errors,
@@ -852,10 +996,36 @@ async def _amain() -> int:
     ap.add_argument("--client-ping-every", type=float, default=0.0, help="Send NATS protocol PING every N seconds (0=off)")
     ap.add_argument("--client-pong-timeout", type=float, default=2.0, help="Timeout waiting for PONG after client PING (seconds)")
     ap.add_argument("--sub", action="append", default=[], help="Subscribe to a subject (repeatable). Example: --sub route.to_hub.*")
+    ap.add_argument(
+        "--sub-empty-queue-space",
+        action="store_true",
+        help="Send SUB as `SUB <subject>  <sid>` to mimic nats-py's empty queue group spacing.",
+    )
     ap.add_argument("--pub-subject", default="", help="Publish subject (NATS PUB). Example: route.to_browser.<key> (empty=off)")
     ap.add_argument("--pub-every", type=float, default=0.0, help="Publish a message every N seconds (0=off)")
     ap.add_argument("--pub-payload", default="{}", help="Publish payload (UTF-8 string, default: {})")
     ap.add_argument("--pub-split", action="store_true", help="Send PUB as 3 WS messages (header/payload/CRLF) to simulate fragmentation")
+    ap.add_argument(
+        "--pub-empty-reply-space",
+        action="store_true",
+        help="Send PUB as `PUB <subject>  <bytes>` to mimic nats-py's empty reply-to spacing",
+    )
+    ap.add_argument(
+        "--connect-style",
+        default="diag",
+        choices=["diag", "nats-py"],
+        help="CONNECT payload style. `nats-py` adds headers/no_responders and sorted JSON keys.",
+    )
+    ap.add_argument(
+        "--connect-after-info",
+        action="store_true",
+        help="Read initial INFO before sending CONNECT, matching nats-py behavior.",
+    )
+    ap.add_argument(
+        "--initial-client-ping",
+        action="store_true",
+        help="Send initial NATS PING after CONNECT and wait for PONG before SUB/PUB, matching nats-py connect.",
+    )
     ap.add_argument("--send-text", action="store_true", help="Send NATS protocol frames as WS TEXT (default: binary)")
     ap.add_argument("--trace", action="store_true", help="Print live ping/pong/info lines")
     ap.add_argument("--print-env", action="store_true", help="Print local runtime/network environment summary before the test")
@@ -905,10 +1075,15 @@ async def _amain() -> int:
             ws_ping_every_s=float(args.ws_ping_every),
             ws_pong_timeout_s=float(args.ws_pong_timeout),
             subs=[str(s) for s in (args.sub or [])],
+            sub_empty_queue_space=bool(args.sub_empty_queue_space),
             pub_subject=str(args.pub_subject or ""),
             pub_every_s=float(args.pub_every),
             pub_payload=str(args.pub_payload or ""),
             pub_split=bool(args.pub_split),
+            pub_empty_reply_space=bool(args.pub_empty_reply_space),
+            connect_style=str(args.connect_style or "diag"),
+            connect_after_info=bool(args.connect_after_info),
+            initial_client_ping=bool(args.initial_client_ping),
             send_text=bool(args.send_text),
         )
         results.append(res)
@@ -931,6 +1106,7 @@ async def _amain() -> int:
                     "client_pings_tx": res.client_pings_tx,
                     "client_pongs_rx": res.client_pongs_rx,
                     "client_pong_timeouts": res.client_pong_timeouts,
+                    "msgs_rx": res.msgs_rx,
                     "pubs_tx": res.pubs_tx,
                     "info_rx": res.info_rx,
                     "errors": res.errors,

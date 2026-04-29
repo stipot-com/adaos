@@ -26,7 +26,7 @@ Success means:
 
 Snapshot date: 2026-04-29.
 
-Overall completion: 82% for the expanded local + root-routed browser goal.
+Overall completion: 83% for the expanded local + root-routed browser goal.
 
 Done:
 
@@ -52,12 +52,12 @@ Done:
 - `/api/node/reliability` and `/api/node/reliability/summary` build reliability payloads off the event loop, so browser polling no longer runs `load_config()` / runtime-state filesystem checks on the loop thread.
 - Skill service discovery refresh no longer submits recurring watchdog work to the default thread executor, avoiding the observed Windows `Thread.start()` event-loop freeze path.
 - Control lifecycle await-resume stack watcher is now opt-in diagnostics only, avoiding a fresh diagnostic thread on every control heartbeat during normal runs.
-- Backend route-open retry / softer WS-NATS supersede behavior is deployed and visible in root logs: `open ack retry`/`open republish` replaced the old fallback flush path, and superseded `/nats` peers are closed on `route_ready`.
+- Backend route-open retry is deployed and visible in root logs: `open ack retry`/`open republish` replaced the old fallback flush path.
 
 In progress:
 
 - Validate root-routed browser stability while both local and remote browsers are connected.
-- Restore and verify root `/nats` application-level liveness. Latest evidence shows the route-open/supersede patch works, but the `/nats` tunnel still closes every 20-55 seconds when root runs with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
+- Restore and verify root `/nats` liveness. Latest evidence shows NATS-data keepalive and WS control ping are not enough by themselves: the tunnel can still half-stall and then die with `1006`, so the proxy now needs to close/reopen on keepalive miss instead of leaving a degraded half-open tunnel alive.
 
 Known follow-up outside the current goal:
 
@@ -78,12 +78,15 @@ Latest verification:
 - `codex_first3m_20260429_125941`: local run after changing skill-service discovery refresh away from recurring `asyncio.to_thread`. Ready in about 16.5s. No NATS recv failure, no `ConnectionClosedError`, no `WinError`, no route timeout, no `open ack fallback`, no `no_upstream`, and no `service_supervisor` / `Thread.start` stack. Minor short loop-lag diagnostics remained, and shutdown emitted only the expected idle-wait suppression.
 - `codex_first3m_20260429_130538`: local + root-routed browser run after making control lifecycle await watcher opt-in. Ready in about 16.0s. The previous 60s `service_supervisor -> Thread.start()` freeze did not recur. Counts still showed `/nats` churn under root-routed load: `nats_recv_failed=8`, `nats_watchdog=40`, `ConnectionClosedError=64`, `WinError=14`, with `yws_open=8` and `yws_closed=8`. Counts stayed clean for route-level symptoms: `route_timeout=0`, `http_proxy_failed=0`, `open_ack_fallback=0`, `no_upstream=0`. Memory stayed bounded: process tree WorkingSet about 108 MB first sample, 150 MB at ready, 174 MB at the end; PrivateMemory about 85 MB first sample, 143 MB at ready, 165 MB at the end.
 - `codex_heartbeat_ab_20260429_131015`: A/B run with hub-side `HUB_NATS_WS_DATA_HEARTBEAT_S=10`. It did not stabilize root `/nats`: `nats_recv_failed=4`, `nats_watchdog=20`, `ConnectionClosedError=32`, `WinError=6`, with repeated root-routed YWS open/close. Route-level symptoms stayed clean: `route_timeout=0`, `http_proxy_failed=0`, `open_ack_fallback=0`, `no_upstream=0`. Conclusion: hub-side heartbeat alone is insufficient when root `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`; the next required experiment is restoring root proxy application-level keepalive.
+- `root_remote_keepalive_enabled_20260429_1035Z`: after root params were changed and backend recreated, remote browser still did not load data. Local terminal shows `/nats` `ConnectionClosedError` with `WinError 64` and root-routed `yws connection closed` at the same time. Root close diagnostics now show `natsKeepalivesSent=2` / `upstreamNatsPingsSent=2`, so the application keepalive is active; however `wsPingsSent=0` / `wsPongsReceived=0`, and local `nats_ws_diag.jsonl` shows only one or zero NATS PINGs observed by the hub before the socket dies. Root logs also show `closing superseded hub ws-nats connection reason=route_ready` while browser route `open` retries are still possible. Conclusion: add explicit WS control ping for `/nats` and stop closing superseded `/nats` peers immediately on `route_ready`; keep them through a longer grace window.
+- `root_remote_after_ws_ping_20260429_1150Z`: after backend deploy and updated root variables, remote browser still did not load data. The hub-root `/nats` tunnel again failed after about 22s with `ConnectionClosedError` / `WinError 64`, and the root-routed Yjs connection closed in the same window. A local diagnostic with `.env` forcing `HUB_NATS_WS_HEARTBEAT_S=10`, `HUB_NATS_WS_HEARTBEAT_FORCE=1`, and transport trace confirmed hub-side WS heartbeat traffic is active (`heartbeat_s=10.0`, repeated `nats ws heartbeat tx kind=PING`) but still does not prevent `/nats` churn. Route-level symptoms stayed clean in that diagnostic (`route timeout=0`, `http proxy failed=0`, `open ack fallback=0`, `no_upstream=0`). Conclusion: treat a missing root NATS keepalive PONG as a hard liveness failure and close/reopen the tunnel proactively.
+- `root_nats_independent_tools_20260429_1746`: independent `tools` probes without `adaos api serve` split the problem. Raw `websockets` NATS framing against `wss://api.inimatic.com/nats` stayed healthy for 25-45s with nats-py-like CONNECT/SUB/PUB formatting, repeated client NATS PINGs, split PUB frames, and full echo delivery (`22/22`, `31/31`, `41/41`). Raw `aiohttp` framing stopped after 4 echo messages and failed with missing PONG / close `1006`; stock `nats-py`/aiohttp stopped after 3 echo messages and failed with `UnexpectedEOF` / close `1006`; AdaOS custom transport stopped after 4 echo messages and failed with `ConnectionClosedError` / close `1006` / `WinError 121` while TX continued. Conclusion: the public `/nats` channel is not generically unreachable; the failing path is WebSocket-client/proxy behavior under active nats-py-like traffic. Backend patch prepared to add per-connection frame counters (`clientFrames`, `upstreamWrites`, `upstreamFrames`, `downstreamSend*`) to close summaries so the next deploy shows exactly where frames stop.
 
 ### Tasks
 
 #### F3M-001: NATS-over-WS disconnects after 25-60 seconds
 
-Status: reopened for root-routed browser load.
+Status: reopened for root-routed browser load; keepalive-miss close mitigation and root frame-accounting diagnostics prepared locally and awaiting backend deploy.
 
 Evidence:
 
@@ -96,8 +99,9 @@ Evidence:
 Working hypothesis:
 
 - The disconnect is not caused by local NATS pending queue starvation.
-- The previous route-open/reconnect overlap has been mitigated by backend retry and route-ready supersede grace; latest root evidence no longer shows `open ack fallback` or `no_upstream` in the captured window.
-- The remaining strongest cause is root `/nats` application-level liveness when `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`: close diagnostics show `natsKeepalivesSent=0`, long `lastClientMsgAgo_s` / `lastClientPongAgo_s`, and `/nats` closes around 20-55 seconds while route requests themselves no longer timeout.
+- The previous route-open/reconnect overlap has been mitigated by backend retry, but the `route_ready` supersede shortcut is still too aggressive under browser load.
+- Root NATS-data keepalive and WS control ping are active after the latest root/backend changes, but they do not reliably produce hub-visible NATS PING/PONG cadence before the 20-60s close. The remaining failure mode is a half-open tunnel where WebSocket control traffic can still be observed while NATS data flow is no longer dependable.
+- Hub-side WS heartbeat and root-side WS/NATS keepalives are useful diagnostics, but the current failure can still become a half-open tunnel. A missing keepalive PONG should therefore close the tunnel quickly so the hub reconnects instead of leaving the remote browser on a degraded path.
 
 Actions:
 
@@ -117,8 +121,16 @@ Actions:
 - [x] Confirm root logs show `open ack retry` / `open republish` and `route_ready` supersede behavior instead of fallback frame flush.
 - [x] Run a local diagnostic with raw NATS keepalive and both browsers connected; confirm no NATS watchdog reconnect or remote YWS close loop before requested shutdown.
 - [x] Run A/B with hub-side `HUB_NATS_WS_DATA_HEARTBEAT_S=10`; confirm it does not stabilize `/nats` while root proxy keepalive is disabled.
-- [ ] Re-enable root proxy application-level keepalive and verify with both browsers connected: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=10000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`.
-- [ ] Optionally shorten root upstream NATS ping to 10s during the same experiment: `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=10000`.
+- [x] Re-enable root proxy application-level keepalive and confirm root close diagnostics increment `natsKeepalivesSent`.
+- [x] Prepare backend patch for configurable `/nats` WS control ping: `WS_NATS_PROXY_WS_PING=1`, `WS_NATS_PROXY_WS_PING_MS=10000`.
+- [x] Prepare backend patch to keep superseded `/nats` peers until grace timeout by default instead of closing them immediately on `route_ready`.
+- [x] Deploy backend WS ping / supersede-grace patch to root.
+- [x] Prepare backend patch to close and optionally terminate `/nats` when root NATS keepalive PONG is missing: `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`.
+- [x] Run independent raw WS and AdaOS/nats-py transport probes from `tools` without `adaos api serve`; confirm raw root `/nats` echo is stable while AdaOS/nats-py transport still stalls after the first few messages.
+- [x] Align diagnostic tools with runtime default: prefer `wss://api.inimatic.com/nats`; probe `wss://nats.inimatic.com/nats` only when `HUB_NATS_PREFER_DEDICATED=1`.
+- [x] Prepare backend WS-NATS frame-accounting patch to report client, upstream-write, upstream-read, and downstream-send counters on close.
+- [ ] Deploy backend keepalive-miss close patch to root and keep root params explicit: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_WS_PING=1`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`.
+- [ ] Deploy backend frame-accounting patch to root and inspect the next `conn close` / `upstream close` summaries for `PUB -> MSG -> downstream` mismatches.
 - [ ] Re-run 180-second local + root-routed browser soak and confirm no NATS watchdog reconnect, no remote Yjs close loop, no `open ack timeout`, and no `no_upstream` route incident.
 - [ ] If reopened, decide whether the proxy should proactively close/reopen quiet upstream sockets before hard reset.
 
@@ -148,14 +160,14 @@ Actions:
 
 #### F3M-003: Browser WS open ack fallback is still observed
 
-Status: fixed in backend and deployed; monitor during next root keepalive verification.
+Status: fixed in backend and deployed; supersede close behavior refined locally and awaiting backend deploy.
 
 Evidence:
 
 - `ws route: open ack fallback elapsed`
 - early frame counters are present before `open_ack`.
 - During root-routed remote Yjs reconnects, a browser `open` can be dropped while hub route subscription is absent; fallback then flushes early frames and the hub records `no_upstream`.
-- Latest root logs after the backend deploy show bounded `open ack retry` / `open republish` behavior and no captured `open ack fallback` or `no_upstream` in the local diagnostics window.
+- Latest root logs after the backend deploy show bounded `open ack retry` / `open republish` behavior and no captured `open ack fallback` or `no_upstream` in the local diagnostics window, but a superseded `/nats` peer can still be closed on `route_ready` while route open retries are in flight.
 
 Working hypothesis:
 
@@ -170,6 +182,7 @@ Actions:
 - [x] Replace fallback frame flush with bounded `open` retry (`ROUTE_WS_OPEN_ACK_MAX_ATTEMPTS`, default 4).
 - [x] Deploy backend route-open retry patch to root.
 - [x] Verify latest root-routed browser diagnostics produce bounded `open ack retry` recovery, not `open ack fallback` frame flush.
+- [x] Prepare backend switch `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0` so route readiness no longer cuts the grace window short by default.
 - [ ] Reconfirm after root `/nats` keepalive is restored that root-routed browser load produces no `no_upstream` incident.
 
 #### F3M-004: Yjs write pressure during first attach
@@ -279,7 +292,7 @@ Actions:
 
 #### F3M-008: Remote root-routed Yjs attach closes under browser load
 
-Status: reopened; backend route-open retry is deployed, root `/nats` liveness remains.
+Status: reopened; backend route-open retry is deployed, root `/nats` WS liveness patch is prepared locally and awaiting deploy.
 
 Evidence:
 
@@ -292,8 +305,8 @@ Working hypothesis:
 
 - The primary remote disconnect is downstream of root route/NATS liveness, not local browser failure.
 - Large first-sync Yjs bursts should avoid WebSocket compression and avoid avoidable synchronous diagnostics on the event loop.
-- With root NATS keepalive intentionally disabled, root-routed Yjs must tolerate a dropped `open` during hub route reconnect by retrying `open`, not by flushing browser frames before upstream exists.
-- Latest diagnostics show route-open retry is working; the remaining remote browser close loop follows `/nats` `ConnectionClosedError` / watchdog reconnects while backend keepalive counters stay at zero.
+- Root-routed Yjs must tolerate a dropped `open` during hub route reconnect by retrying `open`, not by flushing browser frames before upstream exists.
+- Latest diagnostics show route-open retry is working; the remaining remote browser close loop follows `/nats` `ConnectionClosedError` / watchdog reconnects. After root keepalive was restored, backend keepalive counters increment, but WebSocket ping counters remain zero and the hub still does not observe a stable liveness cadence.
 
 Actions:
 
@@ -302,6 +315,10 @@ Actions:
 - [x] Replace root route `open_ack` fallback frame flush with bounded `open` retry.
 - [x] Deploy backend route-open retry / supersede-grace patch to root.
 - [x] Confirm latest root logs show route retry/supersede behavior and no captured fallback frame flush.
+- [x] Prepare backend WS-NATS liveness refinement: configurable WS ping and no immediate supersede close on `route_ready`.
+- [x] Deploy backend WS ping / supersede-grace refinement to root.
+- [x] Prepare backend keepalive-miss close refinement so a half-open `/nats` tunnel is proactively closed and replaced.
+- [ ] Deploy backend keepalive-miss close refinement to root.
 - [ ] Re-run root-routed browser soak with root proxy keepalive restored and both browsers connected.
 - [ ] Confirm no `permessage_deflate.encode` control-lifecycle delay stack recurs.
 - [ ] Confirm no `hub route frame arrived while upstream is not connected` / `no_upstream` incident recurs.
@@ -336,7 +353,7 @@ Before a 3-minute soak:
 - [ ] `ADAOS_WIN_SELECTOR_LOOP=0`.
 - [ ] `HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl`.
 - [ ] `HUB_ROOT_LOG_SNAPSHOT=1`.
-- [ ] For root-routed browser acceptance, root backend runs with `/nats` application keepalive enabled: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=10000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`; optionally `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=10000`.
+- [ ] For root-routed browser acceptance, root backend runs with `/nats` application keepalive enabled: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=10000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=10000`, `WS_NATS_PROXY_WS_PING=1`, `WS_NATS_PROXY_WS_PING_MS=10000`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`.
 - [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
 - [ ] Deep trace is off unless investigating one focused case.
 

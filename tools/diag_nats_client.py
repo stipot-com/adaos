@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 import time
+import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -54,14 +56,40 @@ def _nats_config(node: dict[str, Any], runtime_nats: dict[str, Any]) -> tuple[li
     password = str(runtime_nats.get("pass") or runtime_nats.get("token") or legacy_nats.get("pass") or legacy_nats.get("token") or "").strip()
     if not user or not password:
         raise RuntimeError("runtime state nats.user / nats.pass are required (legacy node.yaml fallback is still supported)")
+    fallback_urls = [explicit_url, "wss://api.inimatic.com/nats"]
+    if os.getenv("HUB_NATS_PREFER_DEDICATED", "0").strip() == "1":
+        fallback_urls.append("wss://nats.inimatic.com/nats")
     candidates = order_nats_ws_candidates(
-        [item for item in [explicit_url, "wss://nats.inimatic.com/nats", "wss://api.inimatic.com/nats"] if item],
+        [item for item in fallback_urls if item],
         explicit_url=explicit_url,
-        prefer_dedicated=os.getenv("HUB_NATS_PREFER_DEDICATED", "1"),
+        prefer_dedicated=os.getenv("HUB_NATS_PREFER_DEDICATED", "0"),
     )
     if not candidates:
         raise RuntimeError("no NATS WS candidates resolved")
     return candidates, user, password
+
+
+def _subnet_id(node: dict[str, Any]) -> str:
+    try:
+        return str(
+            node.get("subnet_id")
+            or ((node.get("subnet") or {}).get("id") if isinstance(node.get("subnet"), dict) else "")
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _add_conn_tag(url: str, tag: str) -> str:
+    if not tag or not str(url or "").startswith("ws"):
+        return url
+    try:
+        u = urllib.parse.urlparse(url)
+        q = dict(urllib.parse.parse_qsl(u.query, keep_blank_values=True))
+        q.setdefault("adaos_conn", tag)
+        return urllib.parse.urlunparse(u._replace(query=urllib.parse.urlencode(q)))
+    except Exception:
+        return url
 
 
 def _transport_diag(tr: Any) -> dict[str, Any]:
@@ -137,14 +165,19 @@ async def _run(args: argparse.Namespace) -> int:
     node = _load_node_yaml(args.node)
     runtime_nats = _load_runtime_nats(args.node)
     servers, user, password = _nats_config(node, runtime_nats)
+    tag = "" if bool(args.no_conn_tag) else str(args.tag or "").strip()
+    if not tag and not bool(args.no_conn_tag):
+        prefix = _subnet_id(node) or "diag"
+        tag = f"{prefix}-{uuid.uuid4().hex[:10]}"
     if args.server:
         servers = [str(args.server).strip()]
+    servers = [_add_conn_tag(server, tag) for server in servers]
 
     if str(os.getenv("HUB_NATS_WS_IMPL", "websockets") or "websockets").strip().lower() in {"aiohttp", "aio"}:
         os.environ.setdefault("HUB_NATS_WS_PATCH_AIOHTTP", "1")
     active_impl = install_nats_ws_transport_patch(verbose=True)
     print(
-        f"[diag-client] impl={active_impl} servers={servers} user={user} duration={float(args.duration):.1f}s"
+        f"[diag-client] impl={active_impl} servers={servers} user={user} tag={tag} duration={float(args.duration):.1f}s"
     )
 
     ping_interval = int(os.getenv("HUB_NATS_PING_INTERVAL_S", "120") or "120")
@@ -178,6 +211,15 @@ async def _run(args: argparse.Namespace) -> int:
         user=user,
         password=password,
         name=f"diag-client-{int(time.time())}",
+        ws_connection_headers=(
+            {
+                "X-AdaOS-Nats-Conn": [tag],
+                "X-AdaOS-Runtime-Instance": [f"diag-client-{tag}" if tag else "diag-client"],
+                "X-AdaOS-Runtime-Role": ["diagnostic"],
+            }
+            if tag
+            else None
+        ),
         allow_reconnect=False,
         ping_interval=ping_interval,
         max_outstanding_pings=max_outstanding_pings,
@@ -205,7 +247,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"[diag-client] connected server={getattr(nc, 'connected_url', None)}")
 
         subject = str(args.subject or "").strip()
-        if subject:
+        if subject and not bool(args.no_subscribe):
             await nc.subscribe(subject, cb=_message_cb)
             fp = getattr(nc, "_flush_pending", None)
             if callable(fp):
@@ -219,6 +261,8 @@ async def _run(args: argparse.Namespace) -> int:
             else:
                 await nc.flush()
             print(f"[diag-client] subscribed subject={subject}")
+        elif subject:
+            print(f"[diag-client] publishing without local subscription subject={subject}")
 
         deadline = time.monotonic() + float(args.duration)
         report_every = max(1.0, float(args.report_every))
@@ -288,9 +332,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Run a standalone NATS-over-WS client using AdaOS transport patches.")
     ap.add_argument("--node", default=os.getenv("ADAOS_NODE_YAML", ".adaos/node.yaml"), help="Path to bootstrap node.yaml (runtime NATS is read from sibling state/node_runtime.json)")
     ap.add_argument("--server", default="", help="Override NATS WS URL")
+    ap.add_argument("--tag", default="", help="Connection tag for Root logs (sets X-AdaOS-Nats-Conn + ?adaos_conn=...)")
+    ap.add_argument("--no-conn-tag", action="store_true", help="Do not set X-AdaOS-Nats-Conn or ?adaos_conn for isolation tests")
     ap.add_argument("--duration", type=float, default=90.0, help="Run duration in seconds")
     ap.add_argument("--report-every", type=float, default=5.0, help="Diagnostics interval in seconds")
     ap.add_argument("--subject", default="", help="Optional subject to subscribe/publish")
+    ap.add_argument("--no-subscribe", action="store_true", help="Publish to --subject without subscribing locally")
     ap.add_argument("--publish-every", type=float, default=0.0, help="Publish interval to --subject (0 disables)")
     ap.add_argument(
         "--publish-flush-mode",

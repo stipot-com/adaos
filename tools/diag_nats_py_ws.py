@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 import time
+import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,6 +56,18 @@ def _load_from_node_yaml(path: str) -> dict[str, str]:
         if isinstance(v, str) and v.strip():
             out[k_out] = v.strip()
     return out
+
+
+def _add_conn_tag(url: str, tag: str) -> str:
+    if not tag or not str(url or "").startswith("ws"):
+        return url
+    try:
+        u = urllib.parse.urlparse(url)
+        q = dict(urllib.parse.parse_qsl(u.query, keep_blank_values=True))
+        q.setdefault("adaos_conn", tag)
+        return urllib.parse.urlunparse(u._replace(query=urllib.parse.urlencode(q)))
+    except Exception:
+        return url
 
 
 def _ws_diag(nc: Any) -> dict[str, Any]:
@@ -182,6 +196,11 @@ async def _run(
     ws_heartbeat_s: Optional[float],
     ws_max_msg_size: int,
     nats_ping_interval_s: float,
+    tag: str,
+    subject: str,
+    publish_every_s: float,
+    payload: str,
+    report_every_s: float,
 ) -> int:
     try:
         import nats  # type: ignore
@@ -195,6 +214,17 @@ async def _run(
     started = time.monotonic()
     last_err: Optional[Exception] = None
     disconnected = asyncio.Event()
+    rx_count = 0
+    tx_count = 0
+
+    async def _message_cb(msg: Any) -> None:
+        nonlocal rx_count
+        rx_count += 1
+        if verbose:
+            try:
+                print(f"[diag] rx subject={msg.subject} bytes={len(msg.data or b'')}")
+            except Exception:
+                pass
 
     async def _error_cb(err: Exception) -> None:
         nonlocal last_err
@@ -215,13 +245,26 @@ async def _run(
 
     try:
         nc = nats.aio.client.Client()
+        url = _add_conn_tag(url, tag)
         if verbose:
-            print(f"[diag] connecting url={url} user={user} pass={_mask(password)} duration_s={duration_s}")
+            print(
+                f"[diag] connecting url={url} user={user} pass={_mask(password)} "
+                f"tag={tag} duration_s={duration_s}"
+            )
         await nc.connect(
             servers=[url],
             user=user,
             password=password,
             name="diag-nats-py-ws",
+            ws_connection_headers=(
+                {
+                    "X-AdaOS-Nats-Conn": [tag],
+                    "X-AdaOS-Runtime-Instance": [f"diag-stock-{tag}"],
+                    "X-AdaOS-Runtime-Role": ["diagnostic"],
+                }
+                if tag
+                else None
+            ),
             allow_reconnect=False,
             connect_timeout=5.0,
             error_cb=_error_cb,
@@ -236,12 +279,51 @@ async def _run(
                 print(f"[diag] connected server={srv}")
             except Exception:
                 print("[diag] connected")
-        try:
-            await asyncio.wait_for(disconnected.wait(), timeout=max(0.0, duration_s))
-            print("[diag] disconnected before timeout")
-            return 1
-        except asyncio.TimeoutError:
-            return 0
+        subject_s = str(subject or "").strip()
+        if subject_s:
+            await nc.subscribe(subject_s, cb=_message_cb)
+            await nc.flush()
+            if verbose:
+                print(f"[diag] subscribed subject={subject_s}")
+
+        deadline = time.monotonic() + max(0.0, duration_s)
+        next_pub_at = time.monotonic() + float(publish_every_s) if subject_s and publish_every_s > 0 else None
+        next_report_at = time.monotonic()
+        payload_b = str(payload or "").encode("utf-8")
+        while time.monotonic() < deadline:
+            if disconnected.is_set():
+                print("[diag] disconnected before timeout")
+                return 1
+            now = time.monotonic()
+            if next_pub_at is not None and now >= next_pub_at:
+                await nc.publish(subject_s, payload_b)
+                fp = getattr(nc, "_flush_pending", None)
+                if callable(fp):
+                    try:
+                        await fp(force_flush=True)
+                    except TypeError:
+                        await fp()
+                tx_count += 1
+                if verbose:
+                    print(f"[diag] tx subject={subject_s} bytes={len(payload_b)} n={tx_count}")
+                next_pub_at = now + float(publish_every_s)
+            if now >= next_report_at:
+                d = _ws_diag(nc)
+                print(
+                    "[diag] report "
+                    + json.dumps(
+                        {
+                            "rx_count": rx_count,
+                            "tx_count": tx_count,
+                            "last_err": type(last_err).__name__ if last_err else None,
+                            **d,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                next_report_at = now + max(1.0, float(report_every_s))
+            await asyncio.sleep(0.2)
+        return 0
     except Exception as e:
         print(f"[diag] connect/run failed: {type(e).__name__}: {e}")
         return 1
@@ -251,22 +333,45 @@ async def _run(
                 await nc.close()
         except Exception:
             pass
+        try:
+            tr = getattr(nc, "_transport", None) if nc is not None else None
+            ws = getattr(tr, "_ws", None) if tr is not None else None
+            if ws is not None and not getattr(ws, "closed", True):
+                await ws.close()
+        except Exception:
+            pass
+        try:
+            tr = getattr(nc, "_transport", None) if nc is not None else None
+            client = getattr(tr, "_client", None) if tr is not None else None
+            if client is not None and not getattr(client, "closed", True):
+                await client.close()
+        except Exception:
+            pass
         took = time.monotonic() - started
         if verbose:
             extra = _ws_diag(nc) if nc is not None else {}
-            print(f"[diag] done took_s={took:.2f} last_err={type(last_err).__name__ if last_err else None} ({', '.join([f'{k}={v}' for k,v in extra.items()])})")
+            print(
+                f"[diag] done took_s={took:.2f} rx={rx_count} tx={tx_count} "
+                f"last_err={type(last_err).__name__ if last_err else None} "
+                f"({', '.join([f'{k}={v}' for k,v in extra.items()])})"
+            )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Diagnose NATS-over-WebSocket using nats-py (hub-like).")
     ap.add_argument("--node-yaml", default="", help="Load bootstrap identity from node.yaml and runtime NATS credentials from sibling state/node_runtime.json")
-    ap.add_argument("--url", default=os.getenv("NATS_WS_URL", "wss://nats.inimatic.com/nats"), help="WS URL, e.g. wss://api.inimatic.com/nats")
+    ap.add_argument("--url", default=os.getenv("NATS_WS_URL", "wss://api.inimatic.com/nats"), help="WS URL, e.g. wss://api.inimatic.com/nats")
     ap.add_argument("--user", default=os.getenv("NATS_USER", ""), help="NATS user (e.g. hub_<subnet_id>)")
     ap.add_argument("--pass", dest="password", default=os.getenv("NATS_PASS", ""), help="NATS password/token")
     ap.add_argument("--duration", type=float, default=120.0, help="Seconds to stay connected")
     ap.add_argument("--ws-heartbeat", type=float, default=float(os.getenv("HUB_NATS_WS_HEARTBEAT_S", "0") or "0"), help="aiohttp ws_connect heartbeat seconds (0=off)")
     ap.add_argument("--ws-max-msg-size", type=int, default=int(os.getenv("HUB_NATS_WS_MAX_MSG_SIZE", "0") or "0"), help="aiohttp ws_connect max_msg_size (0=unlimited)")
     ap.add_argument("--nats-ping-interval", type=float, default=3600.0, help="nats-py ping_interval seconds")
+    ap.add_argument("--tag", default="", help="Connection tag for Root logs (sets X-AdaOS-Nats-Conn + ?adaos_conn=...)")
+    ap.add_argument("--subject", default="", help="Subscribe and publish to this subject (empty=connect-only)")
+    ap.add_argument("--publish-every", type=float, default=0.0, help="Publish a message every N seconds (0=off)")
+    ap.add_argument("--payload", default="{}", help="Publish payload")
+    ap.add_argument("--report-every", type=float, default=10.0, help="Report interval in seconds")
     ap.add_argument("--verbose", action="store_true", help="Verbose output")
     args = ap.parse_args()
 
@@ -288,6 +393,8 @@ def main() -> int:
     if not args.user or not args.password:
         print("[diag] missing credentials: provide --user/--pass or --node-yaml (.adaos/node.yaml + sibling state/node_runtime.json)")
         return 2
+    if not args.tag:
+        args.tag = f"diag-stock-{uuid.uuid4().hex[:10]}"
 
     return asyncio.run(
         _run(
@@ -299,6 +406,11 @@ def main() -> int:
             ws_heartbeat_s=float(args.ws_heartbeat),
             ws_max_msg_size=int(args.ws_max_msg_size),
             nats_ping_interval_s=float(args.nats_ping_interval),
+            tag=str(args.tag or ""),
+            subject=str(args.subject or ""),
+            publish_every_s=float(args.publish_every),
+            payload=str(args.payload or ""),
+            report_every_s=float(args.report_every),
         )
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,9 @@ from adaos.services.nats_ws_transport import (
     WebSocketTransportAiohttp,
     WebSocketTransportWebsockets,
     _extract_route_subjects,
+    _ws_control_intercept_enabled_from_env,
     _ws_data_heartbeat_s_from_env,
+    _ws_data_ping_s_from_env,
 )
 
 
@@ -212,8 +215,8 @@ async def test_websockets_transport_replies_to_standalone_ping_immediately() -> 
 
     data = await transport.readline()
 
-    assert nc.pings == 1
-    assert ws.sent == []
+    assert nc.pings == 0
+    assert ws.sent == [b"PONG\r\n"]
     assert data == b"INFO {}\r\n"
 
 
@@ -328,9 +331,24 @@ async def test_websockets_transport_dispatches_ping_to_nats_client_when_attached
 
     data = await transport.readline()
 
-    assert nc.pings == 1
-    assert ws.sent == []
+    assert nc.pings == 0
+    assert ws.sent == [b"PONG\r\n"]
     assert data == b"INFO {}\r\n"
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_inline_pong_does_not_drain_normal_backlog() -> None:
+    transport = WebSocketTransportWebsockets()
+    ws = _FakeWebsocketsWS([])
+    transport._ws = ws
+    transport._io_task = asyncio.current_task()
+    normal = b"PUB route.to_browser.sn_1--k 2\r\nok\r\n"
+    transport.write(normal)
+
+    await transport._send_nats_pong(reason="ping")
+
+    assert ws.sent == [b"PONG\r\n"]
+    assert transport._dequeue_pending_nowait() == ("bytes", normal)
 
 
 @pytest.mark.asyncio
@@ -392,6 +410,7 @@ async def test_websockets_transport_connect_uses_manual_ws_heartbeat(monkeypatch
     pytest.importorskip("websockets")
 
     monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_S", "20")
+    monkeypatch.setenv("HUB_NATS_WS_HEARTBEAT_FORCE", "1")
     transport = WebSocketTransportWebsockets()
     recorded: dict[str, object] = {}
     fake_ws = _FakeWebsocketsPingWS()
@@ -446,13 +465,38 @@ async def test_websockets_transport_manual_ws_heartbeat_sends_ping(monkeypatch: 
 def test_ws_data_heartbeat_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HUB_NATS_WS_DATA_HEARTBEAT_S", raising=False)
 
-    assert _ws_data_heartbeat_s_from_env() == 15.0
+    assert _ws_data_heartbeat_s_from_env(ws_impl="other") == 15.0
 
 
 def test_ws_data_heartbeat_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HUB_NATS_WS_DATA_HEARTBEAT_S", "0")
 
     assert _ws_data_heartbeat_s_from_env() is None
+
+
+def test_ws_data_ping_defaults_for_windows_websockets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_DATA_PING_S", raising=False)
+
+    expected = 5.0 if os.name == "nt" else None
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") == expected
+
+
+def test_ws_data_ping_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_DATA_PING_S", "0")
+
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") is None
+
+
+def test_ws_control_intercept_defaults_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_CONTROL_INTERCEPT", raising=False)
+
+    assert _ws_control_intercept_enabled_from_env() is True
+
+
+def test_ws_control_intercept_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_CONTROL_INTERCEPT", "0")
+
+    assert _ws_control_intercept_enabled_from_env() is False
 
 
 @pytest.mark.asyncio
@@ -481,6 +525,25 @@ async def test_websockets_transport_data_heartbeat_sends_pong(monkeypatch: pytes
         assert transport._data_heartbeat_task is not None
         await transport._send_nats_pong(reason="data_hb")
         assert b"PONG\r\n" in fake_ws.sent
+    finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_data_ping_sends_ping() -> None:
+    transport = WebSocketTransportWebsockets()
+    fake_ws = _FakeWebsocketsWS([])
+    try:
+        transport._ws = fake_ws
+        transport._adaos_ws_data_ping = 0.01
+        transport._adaos_last_rx_at = 0.0
+        transport._start_data_ping_task()
+
+        await asyncio.sleep(0.05)
+
+        assert b"PING\r\n" in fake_ws.sent
+        assert transport._adaos_data_pings_tx >= 1
     finally:
         transport.close()
         await transport.wait_closed()
