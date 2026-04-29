@@ -1536,6 +1536,19 @@ class BootstrapService:
 
                     self._start_boot_task_once("adaos-loop-tick", _tick)
 
+                    def _is_idle_event_loop_wait(stack_text: str) -> bool:
+                        try:
+                            st = stack_text.replace("\\", "/")
+                            if "asyncio/base_events.py" not in st or "in _run_once" not in st:
+                                return False
+                            if "selectors.py" in st and "select.select(" in st:
+                                return True
+                            if "asyncio/windows_events.py" in st and "_overlapped.GetQueuedCompletionStatus" in st:
+                                return True
+                        except Exception:
+                            return False
+                        return False
+
                     def _watch() -> None:
                         last_dump = 0.0
                         while True:
@@ -1554,6 +1567,9 @@ class BootstrapService:
                                     diag_log.warning("event loop hang dt_ms=%.0f frame=none", dt_ms)
                                     continue
                                 st = "".join(_traceback.format_stack(fr, limit=stack_limit))
+                                if _is_idle_event_loop_wait(st):
+                                    diag_log.debug("event loop hang suppressed idle wait dt_ms=%.0f", dt_ms)
+                                    continue
                                 print(f"[diag] event loop hang {dt_ms:.0f}ms stack:\n{st.rstrip()}")
                                 diag_log.warning("event loop hang dt_ms=%.0f stack:\n%s", dt_ms, st.rstrip())
                             except Exception:

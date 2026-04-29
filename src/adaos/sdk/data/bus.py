@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import os
 import time
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
@@ -35,6 +37,33 @@ def _positional_params(fn: Callable[..., Any]) -> int:
 
 def get_meta(payload: dict) -> dict:
     return payload.get("_meta", {}) if isinstance(payload, dict) else {}
+
+
+def _topic_matches_any(topic: str, patterns: str) -> bool:
+    topic0 = str(topic or "")
+    for raw in str(patterns or "").split(","):
+        pat = raw.strip()
+        if not pat:
+            continue
+        if pat == "*" or topic0 == pat:
+            return True
+        if pat.endswith("*") and topic0.startswith(pat[:-1]):
+            return True
+    return False
+
+
+def _run_sync_handler_in_thread(topic: str) -> bool:
+    try:
+        raw = str(os.getenv("ADAOS_SYNC_SUBSCRIPTION_TO_THREAD", "1") or "1").strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        patterns = os.getenv(
+            "ADAOS_SYNC_SUBSCRIPTION_THREAD_TOPICS",
+            "sys.ready,webio.stream.snapshot.requested",
+        )
+        return _topic_matches_any(topic, patterns)
+    except Exception:
+        return False
 
 
 async def emit(topic: str, payload: dict, **kw: Any):
@@ -102,7 +131,15 @@ async def on(topic: str, handler: Callable[[dict], Awaitable[Any]]):
             data = ev
         if inspect.iscoroutinefunction(handler):
             return await handler(data)
+        if _run_sync_handler_in_thread(topic):
+            return await asyncio.to_thread(handler, data)
         return handler(data)
+
+    try:
+        setattr(_adapt, "_adaos_topic", str(topic))
+        setattr(_adapt, "_adaos_handler", f"{getattr(handler, '__module__', '<unknown>')}.{getattr(handler, '__name__', repr(handler))}")
+    except Exception:
+        pass
 
     try:
         sig = inspect.signature(subscribe)

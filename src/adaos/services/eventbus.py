@@ -30,7 +30,10 @@ def _handler_label(handler: Handler) -> str:
     name = getattr(handler, "__name__", None) or repr(handler)
     skill = getattr(handler, "_adaos_skill", None)
     topic = getattr(handler, "_adaos_topic", None)
+    adapted = getattr(handler, "_adaos_handler", None)
     parts = [f"{mod}.{name}"]
+    if adapted:
+        parts.append(f"adapted={adapted}")
     if skill:
         parts.append(f"skill={skill}")
     if topic:

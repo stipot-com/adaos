@@ -111,6 +111,7 @@ _YROOM_DIAG_LOG_INTERVAL_SEC = _env_float("ADAOS_YJS_ROOM_DIAG_LOG_INTERVAL_SEC"
 _YROOM_DIAG_BUFFER_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_BUFFER_WARN", 32, minimum=1)
 _YROOM_DIAG_PENDING_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_PENDING_WARN", 32, minimum=1)
 _YROOM_DIAG_UPDATE_WARN_BYTES = _env_int("ADAOS_YJS_ROOM_DIAG_UPDATE_WARN_BYTES", 256 * 1024, minimum=1)
+_YROOM_DIAG_INCLUDE_YSTORE = _env_flag("ADAOS_YJS_ROOM_DIAG_INCLUDE_YSTORE", False)
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -184,24 +185,26 @@ class DiagnosticYRoom(YRoom):
     def _diag_room_id(self) -> str:
         return str(getattr(self, "_webspace_id", "") or "default").strip() or "default"
 
-    def _diag_snapshot(self) -> dict[str, Any]:
-        send_stats = _memory_stream_statistics(getattr(self, "_update_send_stream", None))
-        recv_stats = _memory_stream_statistics(getattr(self, "_update_receive_stream", None))
-        ystore_snapshot: dict[str, Any] = {}
+    def _diag_ystore_snapshot(self) -> dict[str, Any]:
         ystore = getattr(self, "ystore", None)
         runtime_snapshot = getattr(ystore, "runtime_snapshot", None)
         if callable(runtime_snapshot):
             try:
                 raw = runtime_snapshot()
                 if isinstance(raw, dict):
-                    ystore_snapshot = {
+                    return {
                         "update_log_entries": int(raw.get("update_log_entries") or 0),
                         "update_log_bytes": int(raw.get("update_log_bytes") or 0),
                         "replay_window_bytes": int(raw.get("replay_window_bytes") or 0),
                         "last_update_bytes": int(raw.get("last_update_bytes") or 0),
                     }
             except Exception:
-                ystore_snapshot = {}
+                return {}
+        return {}
+
+    def _diag_snapshot(self, *, include_ystore: bool = False) -> dict[str, Any]:
+        send_stats = _memory_stream_statistics(getattr(self, "_update_send_stream", None))
+        recv_stats = _memory_stream_statistics(getattr(self, "_update_receive_stream", None))
         return {
             "webspace_id": self._diag_room_id(),
             "client_total": len(getattr(self, "clients", []) or []),
@@ -211,7 +214,7 @@ class DiagnosticYRoom(YRoom):
             "pending_store_tasks": int(self._diag_pending_store_tasks),
             "update_total": int(self._diag_update_total),
             "update_bytes_total": int(self._diag_update_bytes_total),
-            "ystore": ystore_snapshot,
+            "ystore": self._diag_ystore_snapshot() if include_ystore else {},
         }
 
     def _diag_log_pressure(
@@ -257,6 +260,8 @@ class DiagnosticYRoom(YRoom):
         if not force and not peak and now_mono - self._diag_last_log_mono < _YROOM_DIAG_LOG_INTERVAL_SEC:
             return
         self._diag_last_log_mono = now_mono
+        if _YROOM_DIAG_INCLUDE_YSTORE:
+            ystore = self._diag_ystore_snapshot()
         self.log.warning(
             "yroom pressure webspace=%s reason=%s clients=%s update_bytes=%s message_bytes=%s "
             "send_buffer=%s/%s waiting_send=%s waiting_receive=%s pending_send=%s pending_store=%s "
@@ -300,6 +305,7 @@ class DiagnosticYRoom(YRoom):
             self._diag_log_pressure("ystore.write.scheduled", update_bytes=len(update))
             async with ystore_write_metadata(
                 source="yjs.gateway_ws",
+                owner="gateway_ws",
                 channel="core.yjs.gateway.live_room.persist",
             ):
                 await ystore.write(update)

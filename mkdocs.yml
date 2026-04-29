@@ -140,6 +140,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Issue Tracker: issue-tracker.md
   - Quickstart: quickstart.md
   - Architecture:
       - Overview: architecture/index.md

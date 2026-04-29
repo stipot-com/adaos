@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from typing import Any
@@ -28,13 +29,17 @@ _STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK
 _STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "0"))
 _HIGH_WPS = max(1.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_WPS") or "8"))
 _CRITICAL_WPS = max(_HIGH_WPS + 0.1, float(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_WPS") or "32"))
-_OWNER_ALERT_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_MIN_INTERVAL_SEC") or "15"))
+_OWNER_ALERT_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_MIN_INTERVAL_SEC") or "60"))
+_OWNER_ALERT_QUEUE_MAX = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_QUEUE_MAX") or "256"))
 
 _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
 _ACTIVE_STREAM_SUBSCRIPTIONS: dict[str, int] = {}
 _LAST_STREAM_PUBLISH_AT: dict[str, float] = {}
 _OWNER_ALERTS: dict[str, float] = {}
+_OWNER_ALERT_QUEUE: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=_OWNER_ALERT_QUEUE_MAX)
+_OWNER_ALERT_LOGGER_THREAD: threading.Thread | None = None
+_OWNER_ALERT_LOGGER_LOCK = threading.Lock()
 _STREAM_TICK_INTERVAL_SEC = max(0.25, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC") or "1.0"))
 _STREAM_TICKER_THREAD: threading.Thread | None = None
 _STREAM_TICKER_STOP = threading.Event()
@@ -391,20 +396,68 @@ def _maybe_log_owner_pressure(
     if _OWNER_ALERT_MIN_INTERVAL_SEC > 0.0 and last_at > 0.0 and now_ts - last_at < _OWNER_ALERT_MIN_INTERVAL_SEC:
         return
     _OWNER_ALERTS[alert_key] = now_ts
-    logging.getLogger(f"adaos.yjs.owner.{owner_bucket.removeprefix(_OWNER_PREFIX)}").warning(
-        "YJS owner flow above threshold webspace=%s owner=%s severity=%s avg_bps=%s peak_bps=%s avg_wps=%s peak_wps=%s recent_bytes=%s recent_writes=%s source=%s channel=%s",
-        webspace_id,
-        owner_bucket,
-        severity,
-        avg_bps,
-        peak_bps,
-        avg_wps,
-        peak_wps,
-        int(owner_state.get("recent_bytes") or 0),
-        int(owner_state.get("recent_write_total") or 0),
-        owner_state.get("last_source"),
-        owner_state.get("last_channel"),
+    _enqueue_owner_pressure_log(
+        f"adaos.yjs.owner.{owner_bucket.removeprefix(_OWNER_PREFIX)}",
+        (
+            webspace_id,
+            owner_bucket,
+            severity,
+            avg_bps,
+            peak_bps,
+            avg_wps,
+            peak_wps,
+            int(owner_state.get("recent_bytes") or 0),
+            int(owner_state.get("recent_write_total") or 0),
+            owner_state.get("last_source"),
+            owner_state.get("last_channel"),
+        ),
     )
+
+
+def _owner_pressure_logger_loop() -> None:
+    while True:
+        try:
+            logger_name, args = _OWNER_ALERT_QUEUE.get()
+        except Exception:
+            continue
+        try:
+            logging.getLogger(logger_name).warning(
+                "YJS owner flow above threshold webspace=%s owner=%s severity=%s avg_bps=%s peak_bps=%s avg_wps=%s peak_wps=%s recent_bytes=%s recent_writes=%s source=%s channel=%s",
+                *args,
+            )
+        except Exception:
+            pass
+
+
+def _ensure_owner_pressure_logger_thread() -> None:
+    global _OWNER_ALERT_LOGGER_THREAD
+    if _OWNER_ALERT_LOGGER_THREAD is not None and _OWNER_ALERT_LOGGER_THREAD.is_alive():
+        return
+    with _OWNER_ALERT_LOGGER_LOCK:
+        if _OWNER_ALERT_LOGGER_THREAD is not None and _OWNER_ALERT_LOGGER_THREAD.is_alive():
+            return
+        thread = threading.Thread(
+            target=_owner_pressure_logger_loop,
+            name="adaos-yjs-owner-pressure-logger",
+            daemon=True,
+        )
+        _OWNER_ALERT_LOGGER_THREAD = thread
+        thread.start()
+
+
+def _enqueue_owner_pressure_log(logger_name: str, args: tuple[Any, ...]) -> None:
+    _ensure_owner_pressure_logger_thread()
+    try:
+        _OWNER_ALERT_QUEUE.put_nowait((logger_name, args))
+    except queue.Full:
+        try:
+            _OWNER_ALERT_QUEUE.get_nowait()
+        except Exception:
+            pass
+        try:
+            _OWNER_ALERT_QUEUE.put_nowait((logger_name, args))
+        except Exception:
+            pass
 
 
 def _distribute_bytes_by_delta(

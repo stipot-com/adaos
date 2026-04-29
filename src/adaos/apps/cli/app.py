@@ -115,13 +115,6 @@ def _maybe_set_windows_selector_loop() -> None:
     if raw is not None:
         val = str(raw).strip().lower()
         enabled = val in ("1", "true", "on", "yes")
-    if raw is None:
-        try:
-            tr = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
-            ws_impl = str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip().lower()
-            enabled = tr == "tcp" or ws_impl == "websockets"
-        except Exception:
-            enabled = False
     if not enabled:
         return
     try:

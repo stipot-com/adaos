@@ -150,22 +150,15 @@ def _maybe_set_windows_selector_loop() -> None:
     if os.name != "nt":
         return
     raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
-    enabled = None
+    enabled = False
     if raw is not None:
         val = str(raw).strip().lower()
         if val in ("1", "true", "on", "yes"):
             enabled = True
         elif val in ("0", "false", "off", "no"):
             enabled = False
-    # Default: when hub-root NATS transport is TCP, or when the hub uses the
-    # `websockets` NATS-over-WS transport on Windows, prefer selector loop.
-    # This reduces WinError 121 frequency for long-running sockets under some
-    # network conditions.
-    if enabled is None:
-        tr = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
-        ws_impl = str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip().lower()
-        if tr == "tcp" or ws_impl == "websockets":
-            enabled = True
+    # Selector loop is retained only as an opt-in diagnostic mode. Normal
+    # Windows runtime should stay on the Proactor-capable asyncio default.
     if not enabled:
         return
     try:
@@ -551,7 +544,7 @@ async def lifespan(app: FastAPI):
         from adaos.services.capacity import refresh_native_io_capacity
 
         with _StartupTimer("refresh_native_io_capacity"):
-            refresh_native_io_capacity()
+            await asyncio.to_thread(refresh_native_io_capacity)
     except Exception:
         pass
     try:
@@ -561,21 +554,24 @@ async def lifespan(app: FastAPI):
         pass
     # hub: seed self node into directory (base_url + capacity)
     try:
-        conf = get_ctx().config
-        from adaos.services.registry.subnet_directory import get_directory
-
         with _StartupTimer("seed_subnet_directory"):
-            directory = get_directory()
-            base_url = os.environ.get("ADAOS_SELF_BASE_URL")
-            node_item = {
-                "node_id": conf.node_id,
-                "subnet_id": conf.subnet_id,
-                "hostname": platform.node(),
-                "roles": [conf.role],
-                "base_url": base_url,
-                "capacity": get_local_capacity(),
-            }
-            directory.on_register(node_item)
+            def _seed_subnet_directory() -> None:
+                conf = get_ctx().config
+                from adaos.services.registry.subnet_directory import get_directory
+
+                directory = get_directory()
+                base_url = os.environ.get("ADAOS_SELF_BASE_URL")
+                node_item = {
+                    "node_id": conf.node_id,
+                    "subnet_id": conf.subnet_id,
+                    "hostname": platform.node(),
+                    "roles": [conf.role],
+                    "base_url": base_url,
+                    "capacity": get_local_capacity(),
+                }
+                directory.on_register(node_item)
+
+            await asyncio.to_thread(_seed_subnet_directory)
     except Exception:
         pass
 

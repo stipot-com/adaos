@@ -28,22 +28,15 @@ def _uvicorn_loop_mode() -> str:
     if os.name != "nt":
         return "auto"
     raw = os.getenv("ADAOS_WIN_SELECTOR_LOOP")
-    enabled = None
+    enabled = False
     if raw is not None:
         val = str(raw).strip().lower()
         if val in {"1", "true", "on", "yes"}:
             enabled = True
         elif val in {"0", "false", "off", "no"}:
             enabled = False
-    # Default: when hub-root NATS transport is TCP, or when the hub uses the
-    # `websockets` NATS-over-WS transport on Windows, prefer selector loop.
-    # Proactor-based overlapped IO can produce WinError 121 under prolonged
-    # network stalls in both cases.
-    if enabled is None:
-        tr = str(os.getenv("HUB_NATS_TRANSPORT", "") or "").strip().lower()
-        ws_impl = str(os.getenv("HUB_NATS_WS_IMPL", "") or "").strip().lower()
-        if tr == "tcp" or ws_impl == "websockets":
-            enabled = True
+    # Selector loop is now an explicit diagnostic mode only. The stable default
+    # on Windows is Uvicorn/asyncio auto, which uses Proactor for socket IO.
     if enabled:
         # Uvicorn's Windows "asyncio" path hardcodes ProactorEventLoop.
         # `loop="none"` falls back to asyncio.new_event_loop(), which respects
