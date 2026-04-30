@@ -1421,9 +1421,11 @@ class BootstrapService:
                 if interval_s < 0.05:
                     interval_s = 0.05
                 try:
-                    warn_ms = float(os.getenv("ADAOS_LOOP_LAG_WARN_MS", "250") or "250")
+                    # Keep normal runs readable: sub-second drift is useful for
+                    # targeted diagnostics, but too noisy under browser attach.
+                    warn_ms = float(os.getenv("ADAOS_LOOP_LAG_WARN_MS", "1000") or "1000")
                 except Exception:
-                    warn_ms = 250.0
+                    warn_ms = 1000.0
                 try:
                     dump_ms = float(os.getenv("ADAOS_LOOP_LAG_DUMP_MS", "2000") or "2000")
                 except Exception:

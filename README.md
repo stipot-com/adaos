@@ -236,6 +236,7 @@ Local API runtime notes:
 - Use a different port such as `8779` when you do not want `https://myinimatic.web.app/` to auto-attach to the local runtime and prefer it to stay on Root.
 - Supervisor-managed runtime mode is separate: it owns port `8776`, manages slots, and sets `ADAOS_SUPERVISOR_ENABLED=1`.
 - Development `adaos api serve` does not participate in supervisor-driven core update / slot cutover flows.
+- On Windows, root-routed browser connectivity depends on the NATS-over-WS client using the `websockets` system proxy route. Leave `HUB_NATS_WS_PROXY` unset or set to `auto`; use `HUB_NATS_WS_PROXY=none` only when deliberately diagnosing direct-route failures.
 
 Health endpoints are available once the API is running:
 

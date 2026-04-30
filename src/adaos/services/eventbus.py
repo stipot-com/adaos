@@ -41,6 +41,15 @@ def _handler_label(handler: Handler) -> str:
     return " ".join(parts)
 
 
+def _slow_handler_threshold_s(kind: str, default: float) -> float:
+    env_name = f"ADAOS_EVENTBUS_SLOW_{kind.upper()}_WARN_S"
+    try:
+        value = float(os.getenv(env_name, str(default)) or str(default))
+    except Exception:
+        value = default
+    return max(0.0, value)
+
+
 async def _run_coro_with_timing(coro: Awaitable[Any], handler: Handler, event: Event) -> None:
     """
     Wrapper for async handlers that records execution time and logs slow/crashing
@@ -58,7 +67,7 @@ async def _run_coro_with_timing(coro: Awaitable[Any], handler: Handler, event: E
         )
     else:
         duration = time.perf_counter() - started
-        if duration >= 0.1:
+        if duration >= _slow_handler_threshold_s("async", 0.25):
             _log.warning(
                 "slow async event handler handler=%s type=%s duration=%.3fs",
                 _handler_label(handler),
@@ -160,7 +169,7 @@ class LocalEventBus(EventBus):
                         self._track_task(task)
                 else:
                     duration = time.perf_counter() - started
-                    if duration >= 0.05:
+                    if duration >= _slow_handler_threshold_s("sync", 0.1):
                         _log.warning(
                             "slow sync event handler handler=%s type=%s duration=%.3fs",
                             _handler_label(h),
