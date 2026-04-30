@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import aiohttp
+try:
+    import aiohttp  # type: ignore
+except Exception:  # pragma: no cover - optional diagnostic dependency
+    aiohttp = None  # type: ignore[assignment]
 
 try:
     import yaml  # type: ignore
@@ -227,9 +230,9 @@ async def _run_one(
     lib = str(ws_lib or "aiohttp").strip().lower()
     if lib in ("auto", ""):
         try:
-            lib = "websockets" if os.name == "nt" else "aiohttp"
+            lib = "websockets" if os.name == "nt" or aiohttp is None else "aiohttp"
         except Exception:
-            lib = "aiohttp"
+            lib = "websockets" if aiohttp is None else "aiohttp"
     if lib in ("websockets", "ws"):
         return await _run_one_websockets(
             url,
@@ -305,6 +308,29 @@ async def _run_one_aiohttp(
 ) -> RunResult:
     started_at = time.monotonic()
     errors: list[str] = []
+    if aiohttp is None:
+        seconds = time.monotonic() - started_at
+        return RunResult(
+            url=url,
+            ok=False,
+            seconds=seconds,
+            close_code=None,
+            close_reason=None,
+            ws_pings_rx=0,
+            ws_pongs_rx=0,
+            client_ws_pings_tx=0,
+            client_ws_pongs_rx=0,
+            client_ws_pong_timeouts=0,
+            nats_pings_rx=0,
+            nats_pongs_tx=0,
+            client_pings_tx=0,
+            client_pongs_rx=0,
+            client_pong_timeouts=0,
+            msgs_rx=0,
+            pubs_tx=0,
+            info_rx=0,
+            errors=["aiohttp import failed; rerun with --ws-lib websockets or install aiohttp"],
+        )
     ws_pings_rx = 0
     ws_pongs_rx = 0
     client_ws_pings_tx = 0
@@ -1051,6 +1077,10 @@ async def _amain() -> int:
 
     # Hub uses canonical user for WS auth
     user = str(runtime_nats.get("user") or legacy_nats.get("user") or f"hub_{subnet_id}")
+    print(
+        "[diag] warning: this tool connects with hub NATS credentials; on roots that allow only one active hub peer, "
+        "it can temporarily supersede the live runtime /nats tunnel. Prefer offline windows or expect a runtime reconnect."
+    )
 
     urls = [args.url] if args.url else _extract_urls(node, runtime_nats)
     results: list[RunResult] = []

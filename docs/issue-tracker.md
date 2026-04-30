@@ -24,9 +24,9 @@ Success means:
 
 ### Current Status
 
-Snapshot date: 2026-04-29.
+Snapshot date: 2026-04-30.
 
-Overall completion: 98% for the expanded local + root-routed browser goal; hub-browser connectivity is restored and only residual diagnostic polish remains.
+Overall completion: 98% for the expanded local + root-routed browser goal; Windows hub-browser connectivity is restored, and Linux/RU root-routed browser zone selection is being finalized.
 
 Done:
 
@@ -62,6 +62,7 @@ In progress:
 
 - Keep an eye on residual sub-second event-loop drift and occasional `infrastate` / `infrascope` browser-runtime handlers, but do not treat them as connectivity blockers unless they exceed the normal thresholds.
 - Keep backend keepalive/supersede changes as safety diagnostics, but treat direct-route Windows `/nats` half-stall as resolved unless the proxy-auto run regresses.
+- Verify the Linux/RU browser bundle after the zone-aware root-proxy selection fix is deployed: the remote browser should choose `https://ru.api.inimatic.com/hubs/<hubId>` for `/ws` and `/yws`, not the central root.
 
 Known follow-up outside the current goal:
 
@@ -88,6 +89,7 @@ Latest verification:
 - `root_remote_frame_accounting_20260429_1730Z`: after backend frame-accounting deploy, root confirms route traffic is alive before forced close: `PUB -> MSG -> downstream` counters increment, `downstreamSendErrors=0`, and YWS `open_ack` can be received for a fresh route key. The tunnel is then closed after a single root NATS keepalive miss: `natsKeepalivesSent=1`, `clientFrames.pong=1`, `clientFrames.pub=2`, `upstreamFrames.msg=8-9`, `wsPingsSent=1`, `wsPongsReceived=0`, followed by `nats keepalive pong missing: closing tunnel` and close `1006` at about 15s uptime. Conclusion: the next backend fix should stop treating one missed keepalive as fatal, stagger WS control ping and NATS-data keepalive, and close only after repeated misses with no client data / WS pong.
 - `core_proxy_auto_20260429_223126`: decisive A/B after comparing `tools` vs core. Stable `tools/diag_nats_ws.py` runs used the `websockets` default `proxy=True` route, while AdaOS core forced `proxy=None` on Windows and selected a direct route that half-stalled after the first few `PUB` frames. After changing core default to proxy-auto, an isolated `nats-py + AdaOS WebSocketTransport` test stayed healthy for 45s (`sent=42`, `got=42`, clean close `1000`). A full `adaos api serve` soak of about 190s then completed with `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/open-ack fallback/`no_upstream=0`, event loop lag/hang/traceback=0, root PING/PONG continuing through the run, and clean NATS WS close `1000` during requested shutdown. Caveat: that memory CSV sampled the launcher wrapper rather than the uvicorn child, so memory acceptance remains covered by the earlier process-tree runs.
 - `hub_browser_accept_20260430_0350` and `hub_browser_accept_20260430_0431`: user-confirmed Windows hub-browser connectivity restored. Two latest `api serve` windows show `nats bridge connected=1` each, `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/open-ack fallback/`no_upstream=0`, traceback/error level=0, and expected NATS disconnect only during requested shutdown. Root-routed Yjs connections opened and closed without route errors. Residual non-blocking issues: many sub-second loop-lag diagnostics under the old 250ms threshold and a few slow browser-runtime handlers in `infrastate_skill` / `infrascope_skill`; normal defaults have been polished to warn only above 1000ms loop drift and 250ms async-handler duration.
+- `linux_ru_zone_split_20260430_0734`: Linux hub `sn_92ffc943` reports `hub_root: ready/stable` on `wss://ru.api.inimatic.com/nats`, with `control_subs=1` and `route_subs=1` after a clean autostart restart. Independent checks show `https://ru.api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `online`, while `https://api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `offline`; RU root logs show no current browser `route: open` / YWS attempts. Conclusion: the remaining Linux browser failure is zone selection in the browser client, not a broken Linux hub-root NATS channel. Patch prepared: browser root-proxy base now learns and probes `hub_id -> zone` before `/ws`/`/yws` attach.
 
 ### Tasks
 
@@ -362,6 +364,32 @@ Actions:
 - [x] Verify targeted reliability endpoint tests pass.
 - [x] Re-run a 3+ minute local + root-routed browser diagnostic and confirm no `node_reliability_summary` / `current_reliability_payload` warning stack recurs.
 
+#### F3M-010: Linux/RU root-routed browser selects the wrong root zone
+
+Status: in progress; code fix is prepared and browser acceptance is pending deploy.
+
+Evidence:
+
+- Linux hub `sn_92ffc943` is configured for `zone=ru` and keeps `hub_root: ready/stable` through `wss://ru.api.inimatic.com/nats`.
+- `https://ru.api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `online`, while the central root returns `offline` for the same hub.
+- Linux runtime sees root-routed HTTP status probes but no `/ws` or `/yws` route-open attempts, so the remote browser data path is not reaching the RU hub runtime.
+
+Working hypothesis:
+
+- `AppComponent` and pairing flows use the deployment-zone service, but `AdaosClient.rootHubBaseUrl()` independently falls back to `ROOT_BASE`.
+- A browser can therefore pass status/pairing through the RU root while YJS/WS attaches through the central root, where the Linux hub is offline.
+
+Actions:
+
+- [x] Add browser-side `hub_id -> zone` persistence after successful root status and pairing approval.
+- [x] Make YDoc root-proxy attach probe known zones through `/v1/browser/hub/status` and select the online root before setting `/hubs/<hubId>` base.
+- [x] Fall back from `adaos_hub_id` to `adaos_last_subnet_id` when restoring a browser session.
+- [x] Confirm client build succeeds after the async root-zone resolver change.
+- [ ] Deploy the updated client bundle and confirm Linux remote browser opens `/yws` through `https://ru.api.inimatic.com/hubs/sn_92ffc943`.
+- [ ] Confirm Linux reliability changes from `sync_runtime.yws=0 rooms=0 opens=0/0` to an active YWS room after remote browser attach.
+- [x] Mark raw hub-credential NATS diagnostic tools as potentially superseding the live runtime connection.
+- [ ] Update raw diagnostic tools or root auth semantics so diagnostic NATS probes do not supersede the live runtime connection.
+
 ### Operating Checklist
 
 Before a 3-minute soak:
@@ -369,7 +397,8 @@ Before a 3-minute soak:
 - [ ] `ADAOS_WIN_SELECTOR_LOOP=0`.
 - [ ] `HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl`.
 - [ ] `HUB_ROOT_LOG_SNAPSHOT=1`.
-- [ ] `HUB_NATS_WS_PROXY` is unset or set to `auto` for normal Windows runs; use `HUB_NATS_WS_PROXY=none` only for direct-route diagnostics.
+- [ ] `HUB_NATS_WS_PROXY` is unset or set to `auto` for normal Windows and Linux runs; use `HUB_NATS_WS_PROXY=none` only for direct-route diagnostics.
+- [ ] For zoned root-routed browser acceptance, verify `/v1/browser/hub/status?hub_id=<hubId>` is `online` on the expected root zone and `rootHubBaseUrl()` resolves `/hubs/<hubId>` under that same zone.
 - [ ] For root-routed browser acceptance, root backend can use its stable defaults: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=20000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3`.
 - [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
 - [ ] Deep trace is off unless investigating one focused case.

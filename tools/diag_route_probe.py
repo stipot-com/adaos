@@ -86,6 +86,7 @@ async def _run(
     user: str,
     password: str,
     hub_id: str,
+    route_version: str,
     method: str,
     path: str,
     timeout_s: float,
@@ -98,8 +99,12 @@ async def _run(
 
     nc: Any = None
     key = f"{hub_id}--http--diag-{uuid.uuid4().hex[:10]}"
-    to_hub = f"route.to_hub.{key}"
-    to_browser = f"route.to_browser.{key}"
+    if route_version == "v1":
+        to_hub = f"route.to_hub.{key}"
+        to_browser = f"route.to_browser.{key}"
+    else:
+        to_hub = f"route.v2.to_hub.{hub_id}.{key}"
+        to_browser = f"route.v2.to_browser.{hub_id}.{key}"
 
     done = asyncio.Event()
     reply: Optional[dict[str, Any]] = None
@@ -307,6 +312,7 @@ def main() -> int:
     ap.add_argument("--user", default="", help="NATS user (default: from runtime state or hub_<subnet_id>)")
     ap.add_argument("--pass", dest="password", default="", help="NATS password/token (default: from runtime state)")
     ap.add_argument("--hub-id", default="", help="Hub ID/subnet_id (default: from node.yaml bootstrap identity)")
+    ap.add_argument("--route-version", choices=["v2", "v1"], default="v2", help="Route subject format (default: v2)")
     ap.add_argument("--method", default="GET", help="HTTP method (default: GET)")
     ap.add_argument("--path", default="/api/node/status", help="HTTP path (default: /api/node/status)")
     ap.add_argument("--timeout", type=float, default=6.0, help="Seconds to wait for reply (default: 6)")
@@ -336,6 +342,10 @@ def main() -> int:
     if not password:
         print("[diag] missing password: pass --pass or ensure state/node_runtime.json has nats.pass")
         return 2
+    print(
+        "[diag] warning: this probe connects with hub NATS credentials; on roots that allow only one active hub peer, "
+        "it can temporarily supersede the live runtime /nats tunnel. Prefer offline windows or expect a runtime reconnect."
+    )
 
     return asyncio.run(
         _run(
@@ -343,6 +353,7 @@ def main() -> int:
             user=user,
             password=password,
             hub_id=hub_id,
+            route_version=str(args.route_version or "v2"),
             method=str(args.method or "GET"),
             path=str(args.path or "/api/node/status"),
             timeout_s=float(args.timeout),
