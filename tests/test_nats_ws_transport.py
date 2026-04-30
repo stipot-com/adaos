@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -579,8 +578,13 @@ def test_ws_data_heartbeat_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ws_data_ping_defaults_for_windows_websockets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HUB_NATS_WS_DATA_PING_S", raising=False)
 
-    expected = 5.0 if os.name == "nt" else None
-    assert _ws_data_ping_s_from_env(ws_impl="websockets") == expected
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") is None
+
+
+def test_ws_data_ping_can_enable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_DATA_PING_S", "7")
+
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") == 7.0
 
 
 def test_ws_data_ping_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:

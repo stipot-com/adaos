@@ -112,6 +112,7 @@ def _transport_diag(tr: Any) -> dict[str, Any]:
         "ws_hb_s": getattr(tr, "_adaos_ws_heartbeat", None) if tr is not None else None,
         "ws_hb_mode": getattr(tr, "_adaos_ws_heartbeat_mode", None) if tr is not None else None,
         "ws_data_hb_s": getattr(tr, "_adaos_ws_data_heartbeat", None) if tr is not None else None,
+        "ws_data_ping_s": getattr(tr, "_adaos_ws_data_ping", None) if tr is not None else None,
         "ws_recv_timeout_s": getattr(tr, "_adaos_ws_recv_timeout", None) if tr is not None else None,
         "last_rx_ago_s": _ago("_adaos_last_rx_at"),
         "last_tx_ago_s": _ago("_adaos_last_tx_at"),
@@ -121,6 +122,8 @@ def _transport_diag(tr: Any) -> dict[str, Any]:
         "ka_pings_rx": getattr(tr, "_adaos_pings_rx", None) if tr is not None else None,
         "ka_pongs_tx": getattr(tr, "_adaos_pongs_tx", None) if tr is not None else None,
         "ws_pings_tx": getattr(tr, "_adaos_ws_pings_tx", None) if tr is not None else None,
+        "data_pings_tx": getattr(tr, "_adaos_data_pings_tx", None) if tr is not None else None,
+        "last_data_ping_tx_ago_s": _ago("_adaos_last_data_ping_tx_at"),
         "last_tx_kind": getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None,
         "last_tx_subj": getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None,
         "last_recv_err": type(getattr(tr, "_adaos_last_recv_error", None)).__name__

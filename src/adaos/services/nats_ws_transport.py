@@ -238,26 +238,21 @@ def _ws_data_ping_s_from_env(*, ws_impl: str | None = None) -> float | None:
     NATS protocol data ping for WS transports (send `PING\\r\\n` as WS *data*).
 
     This is intentionally separate from WebSocket PING control frames and from
-    nats-py's ping interval task. The raw diagnostic client stays stable under
-    outbound PUB load when it periodically sends NATS `PING` frames and receives
-    server `PONG`s. Sending this from the transport's high-priority path keeps
-    read-side liveness visible even when user traffic is mostly outbound.
+    nats-py's ping interval task. It is disabled by default because the stable
+    root-routed browser path relies on route traffic, TCP keepalive, and
+    proxy-managed upstream liveness; an extra client `PING` during route/Yjs load
+    can perturb Root proxy accounting on Windows. Enable it only for focused
+    diagnostics.
 
     Control:
     - HUB_NATS_WS_DATA_PING_S:
-        * unset         -> enable conservative default (5s) for Windows/websockets
+        * unset         -> disabled
         * empty         -> disable
         * <= 0          -> disable
         * > 0           -> enable with that interval (seconds; min 5)
     """
     raw = os.getenv("HUB_NATS_WS_DATA_PING_S")
     if raw is None:
-        try:
-            impl = (ws_impl or _ws_impl_from_env()).strip().lower()
-        except Exception:
-            impl = "websockets"
-        if os.name == "nt" and impl == "websockets":
-            return 5.0
         return None
     try:
         s = str(raw).strip()

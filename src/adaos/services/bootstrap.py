@@ -2580,6 +2580,9 @@ class BootstrapService:
                                     "ka_pings_rx": getattr(tr, "_adaos_pings_rx", None) if tr is not None else None,
                                     "ka_pongs_tx": getattr(tr, "_adaos_pongs_tx", None) if tr is not None else None,
                                     "ws_pings_tx": getattr(tr, "_adaos_ws_pings_tx", None) if tr is not None else None,
+                                    "ws_data_ping_s": getattr(tr, "_adaos_ws_data_ping", None) if tr is not None else None,
+                                    "data_pings_tx": getattr(tr, "_adaos_data_pings_tx", None) if tr is not None else None,
+                                    "last_data_ping_tx_ago_s": _ago("_adaos_last_data_ping_tx_at"),
                                     "last_tx_kind": getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None,
                                     "last_tx_subj": getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None,
                                     "pending_data_size": getattr(nc_for_diag, "_pending_data_size", None),
@@ -2730,6 +2733,19 @@ class BootstrapService:
                                         ws_data_hb = getattr(tr, "_adaos_ws_data_heartbeat", None) if tr is not None else None
                                     except Exception:
                                         ws_data_hb = None
+                                    ws_data_ping = None
+                                    data_pings_tx = None
+                                    data_last_ping_tx_ago_s = None
+                                    try:
+                                        ws_data_ping = getattr(tr, "_adaos_ws_data_ping", None) if tr is not None else None
+                                        data_pings_tx = getattr(tr, "_adaos_data_pings_tx", None) if tr is not None else None
+                                        data_last_ping_tx_at = getattr(tr, "_adaos_last_data_ping_tx_at", None) if tr is not None else None
+                                        if isinstance(data_last_ping_tx_at, (int, float)):
+                                            data_last_ping_tx_ago_s = round(time.monotonic() - float(data_last_ping_tx_at), 3)
+                                    except Exception:
+                                        ws_data_ping = ws_data_ping or None
+                                        data_pings_tx = data_pings_tx or None
+                                        data_last_ping_tx_ago_s = data_last_ping_tx_ago_s or None
                                     ws_recv_timeout = None
                                     try:
                                         ws_recv_timeout = getattr(tr, "_adaos_ws_recv_timeout", None) if tr is not None else None
@@ -2811,7 +2827,7 @@ class BootstrapService:
                                     extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
                                     _rl_log(
                                         rate_key,
-                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_hb_mode={ws_hb_mode} ws_data_hb_s={ws_data_hb} ws_recv_timeout_s={ws_recv_timeout} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_hi_q={tr_pending_hi_q} transport_pending_q={tr_pending_q} send_lock={send_lock_locked} ka_pings_rx={ka_pings_rx} ka_last_ping_rx_ago_s={ka_last_ping_rx_ago_s} ka_pongs_tx={ka_pongs_tx} ka_last_pong_tx_ago_s={ka_last_pong_tx_ago_s} ka_last_pong_wait_ms={ka_last_pong_wait_ms} ka_last_pong_send_ms={ka_last_pong_send_ms} ws_pings_tx={ws_pings_tx} ws_last_ping_tx_ago_s={ws_last_ping_tx_ago_s} ws_last_ping_wait_ms={ws_last_ping_wait_ms} ws_last_ping_send_ms={ws_last_ping_send_ms} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
+                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_hb_mode={ws_hb_mode} ws_data_hb_s={ws_data_hb} ws_data_ping_s={ws_data_ping} data_pings_tx={data_pings_tx} data_last_ping_tx_ago_s={data_last_ping_tx_ago_s} ws_recv_timeout_s={ws_recv_timeout} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_hi_q={tr_pending_hi_q} transport_pending_q={tr_pending_q} send_lock={send_lock_locked} ka_pings_rx={ka_pings_rx} ka_last_ping_rx_ago_s={ka_last_ping_rx_ago_s} ka_pongs_tx={ka_pongs_tx} ka_last_pong_tx_ago_s={ka_last_pong_tx_ago_s} ka_last_pong_wait_ms={ka_last_pong_wait_ms} ka_last_pong_send_ms={ka_last_pong_send_ms} ws_pings_tx={ws_pings_tx} ws_last_ping_tx_ago_s={ws_last_ping_tx_ago_s} ws_last_ping_wait_ms={ws_last_ping_wait_ms} ws_last_ping_send_ms={ws_last_ping_send_ms} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
                                         every_s=every_s,
                                     )
                                 except Exception:
