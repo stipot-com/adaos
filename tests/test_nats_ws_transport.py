@@ -15,6 +15,7 @@ from adaos.services.nats_ws_transport import (
     _ws_control_intercept_enabled_from_env,
     _ws_data_heartbeat_s_from_env,
     _ws_data_ping_s_from_env,
+    _ws_proxy_from_env,
 )
 
 
@@ -46,8 +47,9 @@ class _FakeNC:
 
 
 class _FakeWebsocketsWS:
-    def __init__(self, frames: list[bytes | str]) -> None:
+    def __init__(self, frames: list[bytes | str], *, block_when_empty: bool = False) -> None:
         self._frames = list(frames)
+        self._block_when_empty = block_when_empty
         self.sent: list[bytes] = []
         self.closed = False
         self.close_code = None
@@ -56,6 +58,8 @@ class _FakeWebsocketsWS:
 
     async def recv(self) -> bytes | str:
         if not self._frames:
+            if self._block_when_empty:
+                await asyncio.Future()
             raise RuntimeError("no more frames")
         return self._frames.pop(0)
 
@@ -103,12 +107,18 @@ class _BlockingWebsocketsWS:
         self.recv_calls = 0
         self.recv_started = asyncio.Event()
         self.recv_release = asyncio.Event()
+        self.recv_cancelled = asyncio.Event()
         self.recv_payload: bytes | str = b"INFO {}\r\n"
 
     async def recv(self) -> bytes | str:
         self.recv_calls += 1
         self.recv_started.set()
-        await self.recv_release.wait()
+        try:
+            await self.recv_release.wait()
+        except asyncio.CancelledError:
+            self.recv_cancelled.set()
+            raise
+        self.recv_release.clear()
         return self.recv_payload
 
     async def send(self, payload: bytes) -> None:
@@ -221,6 +231,48 @@ async def test_websockets_transport_replies_to_standalone_ping_immediately() -> 
 
 
 @pytest.mark.asyncio
+async def test_websockets_transport_replies_to_coalesced_ping_before_msg() -> None:
+    transport = WebSocketTransportWebsockets()
+    transport._adaos_nc = _FakeNC()
+    payload = b"MSG route.to_browser 1 2\r\nok\r\n"
+    ws = _FakeWebsocketsWS([b"PING\r\n" + payload])
+    transport._ws = ws
+
+    data = await transport.readline()
+
+    assert ws.sent == [b"PONG\r\n"]
+    assert data == payload
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_replies_to_coalesced_ping_after_msg() -> None:
+    transport = WebSocketTransportWebsockets()
+    transport._adaos_nc = _FakeNC()
+    payload = b"MSG route.to_browser 1 2\r\nok\r\n"
+    ws = _FakeWebsocketsWS([payload + b"PING\r\n"])
+    transport._ws = ws
+
+    data = await transport.readline()
+
+    assert ws.sent == [b"PONG\r\n"]
+    assert data == payload
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_does_not_reply_to_ping_inside_msg_payload() -> None:
+    transport = WebSocketTransportWebsockets()
+    transport._adaos_nc = _FakeNC()
+    payload = b"MSG route.to_browser 1 6\r\nPING\r\n\r\n"
+    ws = _FakeWebsocketsWS([payload])
+    transport._ws = ws
+
+    data = await transport.readline()
+
+    assert ws.sent == []
+    assert data == payload
+
+
+@pytest.mark.asyncio
 async def test_aiohttp_transport_consumes_standalone_pong_out_of_band() -> None:
     pytest.importorskip("aiohttp")
 
@@ -275,6 +327,30 @@ async def test_aiohttp_transport_replies_to_standalone_ping_immediately() -> Non
 
 
 @pytest.mark.asyncio
+async def test_aiohttp_transport_replies_to_coalesced_ping_before_msg() -> None:
+    pytest.importorskip("aiohttp")
+
+    transport = WebSocketTransportAiohttp()
+    try:
+        binary = transport._aiohttp.WSMsgType.BINARY
+        transport._adaos_nc = _FakeNC()
+        payload = b"MSG route.to_browser 1 2\r\nok\r\n"
+        transport._ws = _FakeAiohttpWS([_FakeAiohttpMsg(binary, b"PING\r\n" + payload)])
+        sent: list[bytes] = []
+
+        async def _send_bytes(payload: bytes) -> None:
+            sent.append(bytes(payload))
+
+        setattr(transport._ws, "send_bytes", _send_bytes)
+        data = await transport.readline()
+
+        assert sent == [b"PONG\r\n"]
+        assert data == payload
+    finally:
+        await transport._client.close()
+
+
+@pytest.mark.asyncio
 async def test_websockets_transport_falls_back_to_raw_pong_without_nats_client() -> None:
     transport = WebSocketTransportWebsockets()
     ws = _FakeWebsocketsWS([b"PING\r\n", b"INFO {}\r\n"])
@@ -311,14 +387,40 @@ async def test_websockets_transport_does_not_start_io_recv_while_direct_recv_pen
 async def test_websockets_transport_processes_completed_recv_before_send_backlog() -> None:
     transport = WebSocketTransportWebsockets()
     transport._adaos_nc = _FakeNC()
+    transport._io_poll_s = 0.01
     ws = _FairWebsocketsWS(transport, replenish_limit=20)
     transport._ws = ws
     transport.write(b"PUB route.to_browser.sn_1--k 2\r\nok\r\n")
 
-    data = await asyncio.wait_for(transport.readline(), timeout=0.05)
+    data = await asyncio.wait_for(transport.readline(), timeout=1.0)
 
     assert data == b"INFO {}\r\n"
     assert ws.recv_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_cancels_pending_recv_before_shared_io_send() -> None:
+    transport = WebSocketTransportWebsockets()
+    transport._adaos_nc = _FakeNC()
+    transport._io_poll_s = 0.01
+    ws = _BlockingWebsocketsWS()
+    transport._ws = ws
+
+    read_task = asyncio.create_task(transport.readline())
+    await asyncio.wait_for(ws.recv_started.wait(), timeout=1.0)
+
+    payload = b"SUB test 1\r\n"
+    transport.write(payload)
+    await asyncio.wait_for(transport.drain(), timeout=1.0)
+
+    assert ws.recv_cancelled.is_set()
+    assert ws.sent == [payload]
+
+    ws.recv_release.set()
+    data = await asyncio.wait_for(read_task, timeout=1.0)
+
+    assert data == b"INFO {}\r\n"
+    assert ws.recv_calls >= 2
 
 
 @pytest.mark.asyncio
@@ -499,6 +601,18 @@ def test_ws_control_intercept_can_disable(monkeypatch: pytest.MonkeyPatch) -> No
     assert _ws_control_intercept_enabled_from_env() is False
 
 
+def test_ws_proxy_defaults_to_system_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_PROXY", raising=False)
+
+    assert _ws_proxy_from_env() is True
+
+
+def test_ws_proxy_can_force_direct(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_PROXY", "none")
+
+    assert _ws_proxy_from_env() is None
+
+
 @pytest.mark.asyncio
 async def test_websockets_transport_data_heartbeat_sends_pong(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("websockets")
@@ -506,7 +620,7 @@ async def test_websockets_transport_data_heartbeat_sends_pong(monkeypatch: pytes
     monkeypatch.delenv("HUB_NATS_WS_HEARTBEAT_S", raising=False)
     monkeypatch.setenv("HUB_NATS_WS_DATA_HEARTBEAT_S", "5")
     transport = WebSocketTransportWebsockets()
-    fake_ws = _FakeWebsocketsWS([])
+    fake_ws = _FakeWebsocketsWS([], block_when_empty=True)
 
     async def _fake_connect(url: str, **kwargs):
         return fake_ws
@@ -533,7 +647,7 @@ async def test_websockets_transport_data_heartbeat_sends_pong(monkeypatch: pytes
 @pytest.mark.asyncio
 async def test_websockets_transport_data_ping_sends_ping() -> None:
     transport = WebSocketTransportWebsockets()
-    fake_ws = _FakeWebsocketsWS([])
+    fake_ws = _FakeWebsocketsWS([], block_when_empty=True)
     try:
         transport._ws = fake_ws
         transport._adaos_ws_data_ping = 0.01

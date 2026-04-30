@@ -401,26 +401,26 @@ def _ws_proxy_from_env() -> str | bool | None:
     Control proxy handling for long-lived NATS-over-WS tunnels.
 
     `websockets>=15` defaults to `proxy=True`, which may pick up system proxy
-    settings on Windows and route the handshake through HTTP CONNECT. That path
-    has been observed to fail with `InvalidStateError` inside websockets' client
-    parser before the connection is handed to AdaOS.
+    settings and route the handshake through HTTP CONNECT. Our independent
+    `tools/diag_nats_ws.py` probes intentionally use that library default and
+    have been stable on Windows, while forcing a direct route (`proxy=None`) can
+    create one-way client->Root stalls on some networks.
 
     Default:
-    - Windows: disable auto-proxy (`None`)
-    - Other OSes: keep library default (`True`)
+    - keep the `websockets` library default (`True` / system proxy auto-detect)
 
     Override with `HUB_NATS_WS_PROXY`:
-    - `auto`, `system`, `default`, `1`, `true`, `yes` -> `True`
-    - `none`, `off`, `0`, `false`, `no`, empty`       -> `None`
-    - any other value                                 -> explicit proxy URL
+        - `auto`, `system`, `default`, `1`, `true`, `yes` -> `True`
+        - `none`, `off`, `0`, `false`, `no`, empty`       -> `None`
+        - any other value                                 -> explicit proxy URL
     """
     raw = os.getenv("HUB_NATS_WS_PROXY")
     if raw is None:
-        return None if os.name == "nt" else True
+        return True
     try:
         value = str(raw).strip()
     except Exception:
-        return None if os.name == "nt" else True
+        return True
     if not value:
         return None
     normalized = value.lower()
@@ -712,6 +712,66 @@ def _exact_nats_control_frame(data: bytes) -> str | None:
     return None
 
 
+def _strip_nats_ping_control_frames(data: bytes) -> tuple[bytes, int]:
+    """
+    Remove NATS protocol PING control lines that appear on frame boundaries.
+
+    Root's ws-nats-proxy can coalesce `PING\r\n` with route `MSG` frames in the
+    same WebSocket message. The raw tools answer those PINGs immediately; the
+    transport needs the same behavior, while still avoiding false positives for
+    `PING\r\n` bytes that are part of a MSG payload.
+    """
+    if b"PING\r\n" not in data:
+        return data, 0
+
+    out = bytearray()
+    pos = 0
+    pings = 0
+    total = len(data)
+
+    while pos < total:
+        line_end = data.find(b"\n", pos)
+        if line_end < 0:
+            out.extend(data[pos:])
+            break
+
+        line = data[pos : line_end + 1]
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper == b"PING":
+            pings += 1
+            pos = line_end + 1
+            continue
+
+        parts = stripped.split()
+        kind = parts[0].upper() if parts else b""
+        if kind in {b"MSG", b"HMSG", b"PUB", b"HPUB"}:
+            try:
+                payload_len = int(parts[-1])
+            except Exception:
+                out.extend(data[pos:])
+                break
+            frame_end = line_end + 1 + payload_len + 2
+            if frame_end > total:
+                out.extend(data[pos:])
+                break
+            out.extend(data[pos:frame_end])
+            pos = frame_end
+            continue
+
+        if kind in {b"INFO", b"+OK", b"-ERR", b"PONG"}:
+            out.extend(line)
+            pos = line_end + 1
+            continue
+
+        out.extend(data[pos:])
+        break
+
+    if pings <= 0:
+        return data, 0
+    return bytes(out), pings
+
+
 def _nats_parser_diag(nc: Any) -> tuple[Any, int | None]:
     ps = getattr(nc, "_ps", None)
     state = getattr(ps, "state", None) if ps is not None else None
@@ -880,12 +940,41 @@ class WebSocketTransportWebsockets:
     async def read(self, buffer_size: int) -> bytes:
         return await self.readline()
 
-    async def _maybe_consume_direct_control_frame(self, data: bytes) -> bool:
+    async def _maybe_consume_direct_control_frame(self, data: bytes) -> tuple[bytes, bool]:
         kind = _exact_nats_control_frame(data)
-        if kind is None:
-            return False
         nc = getattr(self, "_adaos_nc", None)
         state, buf_len = _nats_parser_diag(nc) if nc is not None else (None, None)
+        if kind is None:
+            # Only scan coalesced frames when nats-py's parser isn't in the middle
+            # of a MSG payload. Otherwise `PING\r\n` may be application bytes.
+            if not (state in (None, 1) and (buf_len in (None, 0))):
+                return data, False
+            cleaned, ping_count = _strip_nats_ping_control_frames(data)
+            if ping_count <= 0:
+                return data, False
+            self._wiretap("rx", data)
+            if self._adaos_ws_trace:
+                self._trace(
+                    "nats ws direct control rx kind=PING "
+                    f"count={ping_count} mode=coalesced parser_state={state} parser_buf_len={buf_len} "
+                    f"cleaned_bytes={len(cleaned)} original_bytes={len(data)}"
+                )
+            try:
+                for _ in range(ping_count):
+                    try:
+                        self._adaos_pings_rx += 1
+                        self._adaos_last_ping_rx_at = time.monotonic()
+                    except Exception:
+                        pass
+                    if self._adaos_ws_trace:
+                        self._trace("nats ws direct control dispatch kind=PING handler=raw_pong mode=coalesced")
+                    await self._send_nats_pong(reason="ping")
+            except Exception as e:
+                self._adaos_last_recv_error = e
+                self._adaos_last_recv_error_at = time.monotonic()
+                raise
+            return cleaned, True
+
         self._wiretap("rx", data)
         if self._adaos_ws_trace:
             self._trace(
@@ -912,10 +1001,10 @@ class WebSocketTransportWebsockets:
                 await self._send_nats_pong(reason="ping")
             else:
                 if nc is None:
-                    return False
+                    return data, False
                 handler = getattr(nc, "_process_pong", None)
                 if not callable(handler):
-                    return False
+                    return data, False
                 if self._adaos_ws_trace:
                     self._trace("nats ws direct control dispatch kind=PONG handler=nats_client")
                 await handler()
@@ -923,7 +1012,7 @@ class WebSocketTransportWebsockets:
             self._adaos_last_recv_error = e
             self._adaos_last_recv_error_at = time.monotonic()
             raise
-        return True
+        return b"", True
 
     async def _send_nats_pong(self, *, reason: str) -> None:
         ws = self._ws
@@ -1265,12 +1354,10 @@ class WebSocketTransportWebsockets:
                 data = bytes(raw)
             else:
                 data = b""
-            if (
-                data
-                and self._control_intercept_enabled
-                and await self._maybe_consume_direct_control_frame(data)
-            ):
-                continue
+            if data and self._control_intercept_enabled:
+                data, consumed_control = await self._maybe_consume_direct_control_frame(data)
+                if consumed_control and not data:
+                    continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:
                 try:
@@ -1428,9 +1515,7 @@ class WebSocketTransportWebsockets:
                 self._drain_event.set()
 
     async def _io_loop(self, ws0: Any) -> None:
-        recv_task: asyncio.Task | None = None
         try:
-            recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
             while True:
                 try:
                     ws1 = self._ws
@@ -1438,51 +1523,6 @@ class WebSocketTransportWebsockets:
                         return
                 except Exception:
                     return
-
-                if recv_task is not None and recv_task.done():
-                    try:
-                        raw = await recv_task
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        try:
-                            self._adaos_last_recv_error = e
-                            self._adaos_last_recv_error_at = time.monotonic()
-                        except Exception:
-                            pass
-                        try:
-                            await self._recv_queue.put(e)
-                        except Exception:
-                            pass
-                        return
-                    finally:
-                        recv_task = None
-
-                    try:
-                        self._adaos_last_rx_at = time.monotonic()
-                    except Exception:
-                        pass
-                    if isinstance(raw, str):
-                        data = raw.encode("utf-8")
-                    elif isinstance(raw, (bytes, bytearray, memoryview)):
-                        data = bytes(raw)
-                    else:
-                        data = b""
-
-                    if (
-                        data
-                        and self._control_intercept_enabled
-                        and await self._maybe_consume_direct_control_frame(data)
-                    ):
-                        recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
-                        continue
-
-                    try:
-                        await self._recv_queue.put(data)
-                    except Exception:
-                        return
-                    recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
-                    continue
 
                 pending_item = self._dequeue_pending_nowait()
                 if pending_item is not None:
@@ -1503,9 +1543,12 @@ class WebSocketTransportWebsockets:
                     continue
 
                 try:
-                    if recv_task is None:
-                        recv_task = asyncio.create_task(ws0.recv(), name="adaos-nats-ws-recv")
-                    await asyncio.wait_for(asyncio.shield(recv_task), timeout=self._io_poll_s)
+                    # Match the independently stable tools/diag_nats_ws.py loop:
+                    # write pending frames, then do one short recv attempt. Avoid a
+                    # long-lived recv task that gets cancelled by outbound traffic;
+                    # on Windows/proxy/websockets that pattern can make local sends
+                    # appear successful while Root stops seeing client frames.
+                    raw = await asyncio.wait_for(ws0.recv(), timeout=self._io_poll_s)
                 except asyncio.TimeoutError:
                     continue
                 except asyncio.CancelledError:
@@ -1521,12 +1564,40 @@ class WebSocketTransportWebsockets:
                     except Exception:
                         pass
                     return
+
+                try:
+                    self._adaos_last_rx_at = time.monotonic()
+                except Exception:
+                    pass
+                if isinstance(raw, str):
+                    data = raw.encode("utf-8")
+                elif isinstance(raw, (bytes, bytearray, memoryview)):
+                    data = bytes(raw)
+                else:
+                    data = b""
+
+                if data and self._control_intercept_enabled:
+                    try:
+                        data, consumed_control = await self._maybe_consume_direct_control_frame(data)
+                    except Exception as e:
+                        try:
+                            self._adaos_last_recv_error = e
+                            self._adaos_last_recv_error_at = time.monotonic()
+                        except Exception:
+                            pass
+                        try:
+                            await self._recv_queue.put(e)
+                        except Exception:
+                            pass
+                        return
+                    if consumed_control and not data:
+                        continue
+
+                try:
+                    await self._recv_queue.put(data)
+                except Exception:
+                    return
         finally:
-            try:
-                if recv_task is not None and not recv_task.done():
-                    recv_task.cancel()
-            except Exception:
-                pass
             try:
                 await self._recv_queue.put(None)
             except Exception:
@@ -1634,12 +1705,10 @@ class WebSocketTransportWebsockets:
                 data = bytes(raw)
             else:
                 data = b""
-            if (
-                data
-                and self._control_intercept_enabled
-                and await self._maybe_consume_direct_control_frame(data)
-            ):
-                continue
+            if data and self._control_intercept_enabled:
+                data, consumed_control = await self._maybe_consume_direct_control_frame(data)
+                if consumed_control and not data:
+                    continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:
                 try:
@@ -2369,12 +2438,39 @@ class WebSocketTransportAiohttp:
     async def read(self, buffer_size: int) -> bytes:
         return await self.readline()
 
-    async def _maybe_consume_direct_control_frame(self, data: bytes) -> bool:
+    async def _maybe_consume_direct_control_frame(self, data: bytes) -> tuple[bytes, bool]:
         kind = _exact_nats_control_frame(data)
-        if kind is None:
-            return False
         nc = getattr(self, "_adaos_nc", None)
         state, buf_len = _nats_parser_diag(nc) if nc is not None else (None, None)
+        if kind is None:
+            if not (state in (None, 1) and (buf_len in (None, 0))):
+                return data, False
+            cleaned, ping_count = _strip_nats_ping_control_frames(data)
+            if ping_count <= 0:
+                return data, False
+            self._wiretap("rx", data)
+            if self._adaos_ws_trace:
+                self._trace(
+                    "nats ws direct control rx kind=PING "
+                    f"count={ping_count} mode=coalesced parser_state={state} parser_buf_len={buf_len} "
+                    f"cleaned_bytes={len(cleaned)} original_bytes={len(data)}"
+                )
+            try:
+                for _ in range(ping_count):
+                    try:
+                        self._adaos_pings_rx += 1
+                        self._adaos_last_ping_rx_at = time.monotonic()
+                    except Exception:
+                        pass
+                    if self._adaos_ws_trace:
+                        self._trace("nats ws direct control dispatch kind=PING handler=raw_pong mode=coalesced")
+                    await self._send_nats_pong(reason="ping")
+            except Exception as e:
+                self._adaos_last_recv_error = e
+                self._adaos_last_recv_error_at = time.monotonic()
+                raise
+            return cleaned, True
+
         self._wiretap("rx", data)
         if self._adaos_ws_trace:
             self._trace(
@@ -2392,10 +2488,10 @@ class WebSocketTransportAiohttp:
                 await self._send_nats_pong(reason="ping")
             else:
                 if nc is None:
-                    return False
+                    return data, False
                 handler = getattr(nc, "_process_pong", None)
                 if not callable(handler):
-                    return False
+                    return data, False
                 if self._adaos_ws_trace:
                     self._trace("nats ws direct control dispatch kind=PONG handler=nats_client")
                 await handler()
@@ -2403,7 +2499,7 @@ class WebSocketTransportAiohttp:
             self._adaos_last_recv_error = e
             self._adaos_last_recv_error_at = time.monotonic()
             raise
-        return True
+        return b"", True
 
     async def _send_nats_pong(self, *, reason: str) -> None:
         ws = self._ws
@@ -2581,12 +2677,10 @@ class WebSocketTransportAiohttp:
             else:
                 data = b""
 
-            if (
-                data
-                and self._control_intercept_enabled
-                and await self._maybe_consume_direct_control_frame(data)
-            ):
-                continue
+            if data and self._control_intercept_enabled:
+                data, consumed_control = await self._maybe_consume_direct_control_frame(data)
+                if consumed_control and not data:
+                    continue
             self._wiretap("rx", data)
             if self._adaos_route_trace and data:
                 try:
