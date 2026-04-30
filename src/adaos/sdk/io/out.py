@@ -14,6 +14,7 @@ from adaos.sdk.core.decorators import tool
 from adaos.sdk.io.context import get_current_meta
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as _emit
+from adaos.services.webspace_id import coerce_webspace_id
 
 __all__ = ["chat_append", "say", "media_route", "stream_publish"]
 
@@ -24,6 +25,31 @@ def _publish(topic: str, payload: dict, *, source: str) -> None:
     if bus is None:
         raise RuntimeError("AgentContext.bus is not initialized")
     _emit(bus, topic, payload, source)
+
+
+def _normalize_meta(meta: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(meta)
+    if "webspace_id" in normalized:
+        normalized["webspace_id"] = coerce_webspace_id(normalized.get("webspace_id"), fallback="default")
+    if "workspace_id" in normalized:
+        normalized["workspace_id"] = coerce_webspace_id(normalized.get("workspace_id"), fallback="default")
+    raw_ids = normalized.get("webspace_ids")
+    if isinstance(raw_ids, (list, tuple)):
+        out: list[str] = []
+        for item in raw_ids:
+            token = coerce_webspace_id(item, fallback="default")
+            if token and token not in out:
+                out.append(token)
+        if out:
+            normalized["webspace_ids"] = out
+    return normalized
+
+
+def _merged_meta(_meta: Mapping[str, Any] | None) -> dict[str, Any]:
+    meta = get_current_meta()
+    if _meta:
+        meta.update(dict(_meta))
+    return _normalize_meta(meta) if meta else meta
 
 
 @tool(
@@ -52,9 +78,7 @@ def chat_append(
         "id": str(msg_id) if msg_id else "",
         "ts": float(ts) if ts is not None else time.time(),
     }
-    meta = get_current_meta()
-    if _meta:
-        meta.update(dict(_meta))
+    meta = _merged_meta(_meta)
     if meta:
         payload["_meta"] = meta
     _publish("io.out.chat.append", payload, source="sdk.io.out")
@@ -90,9 +114,7 @@ def say(
         payload["voice"] = voice.strip()
     if isinstance(rate, (int, float)):
         payload["rate"] = float(rate)
-    meta = get_current_meta()
-    if _meta:
-        meta.update(dict(_meta))
+    meta = _merged_meta(_meta)
     if meta:
         payload["_meta"] = meta
 
@@ -162,9 +184,7 @@ def media_route(
     if isinstance(observed_failure, str) and observed_failure.strip():
         payload["observed_failure"] = observed_failure.strip()
 
-    meta = get_current_meta()
-    if _meta:
-        meta.update(dict(_meta))
+    meta = _merged_meta(_meta)
     if meta:
         payload["_meta"] = meta
 
@@ -196,9 +216,7 @@ def stream_publish(
         "data": data,
         "ts": float(ts) if ts is not None else time.time(),
     }
-    meta = get_current_meta()
-    if _meta:
-        meta.update(dict(_meta))
+    meta = _merged_meta(_meta)
     if meta:
         payload["_meta"] = meta
 

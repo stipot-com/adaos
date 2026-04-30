@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from adaos.services.agent_context import get_ctx
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name) or default)
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+_MAX_HISTORY_BYTES = _env_int("ADAOS_YJS_LOAD_MARK_HISTORY_MAX_BYTES", 10 * 1024 * 1024)
 
 
 def _history_path() -> Path:
@@ -27,6 +39,12 @@ def append_history_snapshot(
     rows: list[dict[str, Any]],
 ) -> None:
     path = _history_path()
+    if _MAX_HISTORY_BYTES > 0:
+        try:
+            if path.exists() and path.stat().st_size >= _MAX_HISTORY_BYTES:
+                return
+        except OSError:
+            return
     token = str(webspace_id or "").strip() or "default"
     with path.open("a", encoding="utf-8") as handle:
         for row in list(rows or []):

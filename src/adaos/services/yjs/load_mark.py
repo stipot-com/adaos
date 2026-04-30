@@ -10,6 +10,7 @@ from typing import Any
 
 from adaos.sdk.core.decorators import subscribe
 from adaos.sdk.io.out import stream_publish
+from adaos.services.webspace_id import coerce_webspace_id
 from adaos.services.yjs.load_mark_history import append_history_snapshot
 from adaos.services.yjs.store import add_ystore_write_listener
 
@@ -26,9 +27,14 @@ _OWNER_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_PREFIX") or "_by_owner/
 _UNKNOWN_OWNER = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNKNOWN_OWNER") or f"{_OWNER_PREFIX}unknown").strip() or f"{_OWNER_PREFIX}unknown"
 _STREAM_RECEIVER = str(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_RECEIVER") or "infrastate.yjs.load_mark").strip() or "infrastate.yjs.load_mark"
 _STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "0.25"))
-_STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "0"))
+_STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "24"))
 _HIGH_WPS = max(1.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_WPS") or "8"))
 _CRITICAL_WPS = max(_HIGH_WPS + 0.1, float(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_WPS") or "32"))
+_GATEWAY_HIGH_WPS = max(_HIGH_WPS, float(os.getenv("ADAOS_YJS_LOAD_MARK_GATEWAY_HIGH_WPS") or "64"))
+_GATEWAY_CRITICAL_WPS = max(
+    _GATEWAY_HIGH_WPS + 0.1,
+    float(os.getenv("ADAOS_YJS_LOAD_MARK_GATEWAY_CRITICAL_WPS") or "128"),
+)
 _OWNER_ALERT_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_MIN_INTERVAL_SEC") or "60"))
 _OWNER_ALERT_QUEUE_MAX = max(1, int(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_ALERT_QUEUE_MAX") or "256"))
 _GATEWAY_OWNER_BUCKET = f"{_OWNER_PREFIX}gateway_ws"
@@ -50,6 +56,10 @@ _OWNER_ALERT_LOGGER_LOCK = threading.Lock()
 _STREAM_TICK_INTERVAL_SEC = max(0.25, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC") or "1.0"))
 _STREAM_TICKER_THREAD: threading.Thread | None = None
 _STREAM_TICKER_STOP = threading.Event()
+
+
+def _webspace_token(value: Any) -> str:
+    return coerce_webspace_id(value, fallback="default")
 
 
 def _clone_json(value: Any) -> Any:
@@ -111,7 +121,7 @@ def capture_ydoc_root_sizes(ydoc: Any) -> dict[str, int]:
 
 
 def _ensure_webspace_state(webspace_id: str) -> dict[str, Any]:
-    key = str(webspace_id or "").strip() or "default"
+    key = _webspace_token(webspace_id)
     state = _WEBSPACE_STATE.get(key)
     if state is None:
         state = {
@@ -147,11 +157,11 @@ def _normalize_owner_bucket(owner: str | None) -> str:
 
 
 def _has_active_stream_subscription_locked(webspace_id: str) -> bool:
-    return int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(str(webspace_id or "").strip() or "default") or 0) > 0
+    return int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(_webspace_token(webspace_id)) or 0) > 0
 
 
 def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
-    key = str(webspace_id or "").strip() or "default"
+    key = _webspace_token(webspace_id)
     with _LOCK:
         current = int(_ACTIVE_STREAM_SUBSCRIPTIONS.get(key) or 0)
         next_value = current + 1 if active else max(0, current - 1)
@@ -179,8 +189,9 @@ def _zero_stale_row_metrics(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stream_payload_items_locked(webspace_id: str, *, now_ts: float, last_published_at: float = 0.0) -> list[dict[str, Any]]:
-    state = _ensure_webspace_state(webspace_id)
-    snapshot = _snapshot_webspace_locked(str(webspace_id or "").strip() or "default", state, now_ts=now_ts)
+    key = _webspace_token(webspace_id)
+    state = _ensure_webspace_state(key)
+    snapshot = _snapshot_webspace_locked(key, state, now_ts=now_ts)
     rows: list[dict[str, Any]] = []
     for item in list(snapshot.get("owner_items") or []):
         if not isinstance(item, dict):
@@ -220,7 +231,7 @@ def _stream_payload_items_locked(webspace_id: str, *, now_ts: float, last_publis
 
 def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = None) -> None:
     now = time.time() if now_ts is None else float(now_ts)
-    key = str(webspace_id or "").strip() or "default"
+    key = _webspace_token(webspace_id)
     with _LOCK:
         if not _has_active_stream_subscription_locked(key):
             return
@@ -396,9 +407,9 @@ def _maybe_log_owner_pressure(
         # Browser attach can legitimately produce a short burst of tiny Yjs
         # gateway writes. Alert here only when the flow is sustained across the
         # load-mark window; keep per-second peaks visible in snapshots/history.
-        if avg_bps >= float(_CRITICAL_BPS) or avg_wps >= float(_CRITICAL_WPS):
+        if avg_bps >= float(_CRITICAL_BPS) or avg_wps >= float(_GATEWAY_CRITICAL_WPS):
             severity = "critical"
-        elif avg_bps >= float(_HIGH_BPS) or avg_wps >= float(_HIGH_WPS):
+        elif avg_bps >= float(_HIGH_BPS) or avg_wps >= float(_GATEWAY_HIGH_WPS):
             severity = "high"
     else:
         if peak_bps >= float(_CRITICAL_BPS) or avg_bps >= float(_CRITICAL_BPS) or peak_wps >= float(_CRITICAL_WPS) or avg_wps >= float(_CRITICAL_WPS):
@@ -528,7 +539,7 @@ def record_root_flow(
     owner: str | None = None,
     channel: str | None = None,
 ) -> None:
-    key = str(webspace_id or "").strip() or "default"
+    key = _webspace_token(webspace_id)
     before = {str(name): int(size or 0) for name, size in (before_sizes or {}).items() if str(name).strip()}
     after = {str(name): int(size or 0) for name, size in (after_sizes or {}).items() if str(name).strip()}
     now = time.time() if now_ts is None else float(now_ts)
@@ -654,7 +665,7 @@ def record_detached_root_update(
                 channel=channel,
             )
             _maybe_log_owner_pressure(
-                str(webspace_id or "").strip() or "default",
+                _webspace_token(webspace_id),
                 owner_bucket=owner_bucket,
                 owner_state=_ensure_bucket_state(webspace_state.setdefault("owners", {}), owner_bucket),
                 now_ts=now,
@@ -727,7 +738,7 @@ def record_write_update(
             channel=channel,
         )
         _maybe_log_owner_pressure(
-            str(webspace_id or "").strip() or "default",
+            _webspace_token(webspace_id),
             owner_bucket=owner_bucket,
             owner_state=_ensure_bucket_state(webspace_state.setdefault("owners", {}), owner_bucket),
             now_ts=now,
@@ -743,7 +754,7 @@ def record_live_room_activity(
     *,
     now_ts: float | None = None,
 ) -> None:
-    key = str(webspace_id or "").strip() or "default"
+    key = _webspace_token(webspace_id)
     now = time.time() if now_ts is None else float(now_ts)
     with _LOCK:
         webspace_state = _ensure_webspace_state(key)
@@ -881,7 +892,7 @@ def _snapshot_webspace_locked(key: str, webspace_state: dict[str, Any], *, now_t
 
 def yjs_load_mark_snapshot(*, webspace_id: str | None = None, now_ts: float | None = None) -> dict[str, Any]:
     now = time.time() if now_ts is None else float(now_ts)
-    selected_webspace_id = str(webspace_id or "").strip() or None
+    selected_webspace_id = _webspace_token(webspace_id) if webspace_id is not None else None
     with _LOCK:
         keys = [selected_webspace_id] if selected_webspace_id else sorted(_WEBSPACE_STATE)
         webspaces: dict[str, Any] = {}
@@ -964,7 +975,7 @@ def on_webio_stream_subscription_changed(evt: Any) -> None:
     receiver = str(payload.get("receiver") or "").strip()
     if receiver != _STREAM_RECEIVER:
         return
-    webspace_id = str(payload.get("webspace_id") or "").strip() or "default"
+    webspace_id = _webspace_token(payload.get("webspace_id"))
     action = str(payload.get("action") or "").strip().lower()
     if action == "subscribed":
         _mark_stream_subscription(webspace_id, active=True)

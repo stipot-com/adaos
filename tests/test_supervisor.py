@@ -395,6 +395,7 @@ def test_hub_root_watchdog_invokes_runtime_reconnect(monkeypatch) -> None:
 
 def test_hub_root_watchdog_resets_browser_route_when_root_control_is_ready(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_ROUTE_DEGRADED_RESET", "1")
     monkeypatch.setenv("ADAOS_SUPERVISOR_HUB_ROOT_VERIFY_TIMEOUT_SEC", "0")
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
 
@@ -438,6 +439,43 @@ def test_hub_root_watchdog_resets_browser_route_when_root_control_is_ready(monke
     assert manager._hub_root_watchdog_last_result["action"] == "runtime_route_reset"
     assert manager._hub_root_watchdog_last_result["decision"]["hub_root_status"] == "ready"
     assert manager._hub_root_watchdog_last_result["decision"]["hub_root_browser_status"] == "degraded"
+
+
+def test_hub_root_watchdog_preserves_runtime_route_on_degraded_browser_route_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_REALTIME_ENABLE", "0")
+    monkeypatch.delenv("ADAOS_SUPERVISOR_HUB_ROOT_ROUTE_DEGRADED_RESET", raising=False)
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        @staticmethod
+        def poll():
+            return None
+
+    calls: list[dict[str, object]] = []
+    manager._proc = _Proc()
+    monkeypatch.setattr(manager, "_sidecar_role", lambda: "hub")
+    monkeypatch.setattr(
+        manager,
+        "_runtime_reliability_payload",
+        lambda timeout=1.5: {
+            "readiness_tree": {
+                "root_control": {"status": "ready"},
+                "route": {"status": "degraded"},
+            },
+            "channel_overview": {
+                "hub_root": {"effective_status": "ready", "effective_state": "stable"},
+                "hub_root_browser": {"effective_status": "degraded", "effective_state": "flapping"},
+            },
+        },
+    )
+    monkeypatch.setattr(manager, "_runtime_request_json", lambda **kwargs: calls.append(dict(kwargs)) or {"ok": True})
+
+    asyncio.run(manager._maybe_reconnect_hub_root_from_watchdog())
+
+    assert calls == []
+    assert manager._hub_root_watchdog_last_state == "degraded"
+    assert manager._hub_root_watchdog_last_reason == "browser route degraded; preserving active runtime-owned tunnels"
+    assert manager._hub_root_watchdog_reconnect_total == 0
 
 
 def test_hub_root_watchdog_restarts_sidecar_when_sidecar_owns_transport(monkeypatch, tmp_path) -> None:
@@ -2768,6 +2806,68 @@ def test_public_memory_status_uses_compact_last_session(monkeypatch, tmp_path) -
     assert payload["memory"]["profile_control_mode"] == "phase2_supervisor_restart"
     assert payload["memory"]["last_session"]["session_id"] == session_id
     assert payload["memory"]["last_session"]["publish_state"] == "published"
+    assert payload["memory"]["auto_profile_min_uptime_sec"] == 300.0
+
+
+def test_memory_policy_auto_profile_waits_for_min_uptime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC", "300")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+    manager._last_start_at = 100.0
+
+    allowed, reason = manager._memory_policy_auto_profile_guard(now=250.0)
+
+    assert allowed is False
+    assert str(reason).startswith("auto_profile_min_uptime:")
+
+    allowed_after_grace, reason_after_grace = manager._memory_policy_auto_profile_guard(now=401.0)
+
+    assert allowed_after_grace is True
+    assert reason_after_grace is None
+
+
+def test_policy_memory_profile_restart_is_delayed_during_min_uptime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC", "300")
+    manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
+
+    class _Proc:
+        pid = 12345
+        args = ["python", "-m", "adaos.apps.autostart_runner"]
+
+        @staticmethod
+        def poll():
+            return None
+
+    manager._proc = _Proc()  # type: ignore[assignment]
+    manager._last_start_at = 100.0
+    manager._memory_active_session_id = "mem-policy"
+    manager._memory_requested_profile_mode = "sampled_profile"
+    supervisor.write_memory_session_summary(
+        "mem-policy",
+        {
+            "session_id": "mem-policy",
+            "profile_mode": "sampled_profile",
+            "session_state": "requested",
+            "trigger_source": "policy",
+            "trigger_reason": "memory.growth_and_slope_threshold",
+            "requested_at": 150.0,
+        },
+    )
+    monkeypatch.setattr(supervisor.time, "time", lambda: 200.0)
+    monkeypatch.setattr(manager, "_persist_runtime_state", lambda: None)
+    restarts: list[str] = []
+
+    async def _restart_runtime(*, reason: str):
+        restarts.append(reason)
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "restart_runtime", _restart_runtime)
+
+    asyncio.run(manager._maybe_apply_memory_profile_mode())
+
+    assert restarts == []
+    assert str(manager._memory_auto_profile_last_block_reason).startswith("auto_profile_min_uptime:")
 
 
 def test_spawn_runtime_locked_prefers_active_slot_manifest(monkeypatch, tmp_path) -> None:

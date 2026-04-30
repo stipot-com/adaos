@@ -88,6 +88,20 @@ def test_load_mark_stream_payload_includes_owner_and_root_rows() -> None:
     assert root_rows[0]["display"] == "data"
 
 
+def test_load_mark_subscription_unwraps_nested_webspace_id() -> None:
+    _reset_load_mark_state()
+
+    load_mark_module.on_webio_stream_subscription_changed(
+        {
+            "receiver": "infrastate.yjs.load_mark",
+            "webspace_id": {"webspace_id": "default"},
+            "action": "subscribed",
+        }
+    )
+
+    assert load_mark_module._ACTIVE_STREAM_SUBSCRIPTIONS == {"default": 1}
+
+
 def test_load_mark_stream_payload_zeroes_stale_rows_between_snapshots() -> None:
     _reset_load_mark_state()
 
@@ -130,6 +144,28 @@ def test_load_mark_gateway_owner_peak_only_burst_does_not_warn(monkeypatch) -> N
     owner_item = snapshot["selected_webspace"]["owners"]["_by_owner/gateway_ws"]
 
     assert owner_item["peak_bps"] >= float(load_mark_module._HIGH_BPS)
+    assert not calls
+
+
+def test_load_mark_gateway_tiny_sustained_writes_do_not_warn(monkeypatch) -> None:
+    _reset_load_mark_state()
+    calls = []
+    monkeypatch.setattr(load_mark_module, "_enqueue_owner_pressure_log", lambda *args: calls.append(args))
+
+    for index in range(540):
+        load_mark_module.record_write_update(
+            "default",
+            total_bytes=2,
+            now_ts=50.0 + (float(index) / 9.0),
+            source="yjs.gateway_ws",
+            owner="gateway_ws",
+        )
+
+    snapshot = load_mark_module.yjs_load_mark_snapshot(webspace_id="default", now_ts=60.0)
+    owner_item = snapshot["selected_webspace"]["owners"]["_by_owner/gateway_ws"]
+
+    assert owner_item["avg_wps"] > float(load_mark_module._HIGH_WPS)
+    assert owner_item["avg_bps"] < float(load_mark_module._HIGH_BPS)
     assert not calls
 
 

@@ -26,7 +26,7 @@ Success means:
 
 Snapshot date: 2026-04-30.
 
-Overall completion: 98% for the expanded local + root-routed browser goal; Windows hub-browser connectivity is restored, and Linux/RU root-routed browser zone selection is being finalized.
+Overall completion: 99% for the expanded local + root-routed browser goal; Windows hub-browser connectivity is restored, Linux/RU root-routed browsers load data, and the remaining work is long-run memory plateau observation beyond the first 3 minutes.
 
 Done:
 
@@ -57,12 +57,15 @@ Done:
 - NATS-over-WS control-frame handling now replies to coalesced root `PING` frames without corrupting `MSG` payload boundaries.
 - Local and root-routed browser runs on 2026-04-30 confirm stable `/nats` and `/yws` behavior after the proxy-auto core change.
 - Normal diagnostic thresholds are relaxed out of deep-debug mode: loop-lag warnings now default to 1000ms and eventbus slow async warnings default to 250ms.
+- Backend-origin Yjs updates are marked so the live room can fan them out to browsers without persisting the same detached diff again as `gateway_ws`.
+- `infrastate_skill.get_snapshot` is read-only for HTTP callers by default and returns a compact client snapshot instead of projecting multi-megabyte diagnostic payloads into Yjs on every root-routed fallback probe.
+- Supervisor memory telemetry still records growth, but automatic policy-triggered sampled-profile restarts are delayed for the first 300 seconds by default so diagnostics cannot break the first browser attach window.
 
 In progress:
 
 - Keep an eye on residual sub-second event-loop drift and occasional `infrastate` / `infrascope` browser-runtime handlers, but do not treat them as connectivity blockers unless they exceed the normal thresholds.
 - Keep backend keepalive/supersede changes as safety diagnostics, but treat direct-route Windows `/nats` half-stall as resolved unless the proxy-auto run regresses.
-- Verify the Linux/RU browser bundle after the zone-aware root-proxy selection fix is deployed: the remote browser should choose `https://ru.api.inimatic.com/hubs/<hubId>` for `/ws` and `/yws`, not the central root.
+- Run a longer Linux/RU two-browser soak after the first-3-minute acceptance window to decide whether the remaining slow memory climb is a real leak or a bounded warm-cache plateau.
 
 Known follow-up outside the current goal:
 
@@ -90,6 +93,10 @@ Latest verification:
 - `core_proxy_auto_20260429_223126`: decisive A/B after comparing `tools` vs core. Stable `tools/diag_nats_ws.py` runs used the `websockets` default `proxy=True` route, while AdaOS core forced `proxy=None` on Windows and selected a direct route that half-stalled after the first few `PUB` frames. After changing core default to proxy-auto, an isolated `nats-py + AdaOS WebSocketTransport` test stayed healthy for 45s (`sent=42`, `got=42`, clean close `1000`). A full `adaos api serve` soak of about 190s then completed with `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/open-ack fallback/`no_upstream=0`, event loop lag/hang/traceback=0, root PING/PONG continuing through the run, and clean NATS WS close `1000` during requested shutdown. Caveat: that memory CSV sampled the launcher wrapper rather than the uvicorn child, so memory acceptance remains covered by the earlier process-tree runs.
 - `hub_browser_accept_20260430_0350` and `hub_browser_accept_20260430_0431`: user-confirmed Windows hub-browser connectivity restored. Two latest `api serve` windows show `nats bridge connected=1` each, `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/open-ack fallback/`no_upstream=0`, traceback/error level=0, and expected NATS disconnect only during requested shutdown. Root-routed Yjs connections opened and closed without route errors. Residual non-blocking issues: many sub-second loop-lag diagnostics under the old 250ms threshold and a few slow browser-runtime handlers in `infrastate_skill` / `infrascope_skill`; normal defaults have been polished to warn only above 1000ms loop drift and 250ms async-handler duration.
 - `linux_ru_zone_split_20260430_0734`: Linux hub `sn_92ffc943` reports `hub_root: ready/stable` on `wss://ru.api.inimatic.com/nats`, with `control_subs=1` and `route_subs=1` after a clean autostart restart. Independent checks show `https://ru.api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `online`, while `https://api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `offline`; RU root logs show no current browser `route: open` / YWS attempts. Conclusion: the remaining Linux browser failure is zone selection in the browser client, not a broken Linux hub-root NATS channel. Patch prepared: browser root-proxy base now learns and probes `hub_id -> zone` before `/ws`/`/yws` attach.
+- `linux_ru_two_browser_memory_guard_20260430_0758`: after zone-aware browser deploy, backend-origin Yjs dedupe, compact/read-only `infrastate` snapshots, capped load-mark history, and supervisor memory-profile grace, a two-browser Linux/RU soak stayed ready for more than 4 minutes. Counts in the verification window: `nats ws recv failed=0`, route timeout/proxy failed=0, supervisor route watchdog reset=0, event-loop lag/hang=0, memory apply/complete profile restart=0. Browser path was active: `hub_root_browser: ready/stable`, `route: ready`, `sync_runtime.yws=2`, live media peer `1/1`. Runtime RSS moved from about 256 MiB at 45s to about 304 MiB at 4m33s, later about 336 MiB at 5m15s; this is no longer the previous runaway-to-3GB behavior, but it still needs a longer plateau soak.
+- `linux_ru_diag_polish_20260430_0939`: after raising the gateway tiny-write warning threshold and restarting autostart, a 3m45s Linux/RU soak stayed clean: `nats ws recv failed=0`, route timeout/proxy failed=0, supervisor route watchdog reset=0, event-loop lag/hang=0, memory apply/complete profile restart=0, and `YJS owner flow above threshold=0`. Runtime RSS stayed in a narrow first-window band of about 247 MiB at 31s to 276 MiB at 3m44s; supervisor public memory status exposes `auto_profile_min_uptime_sec=300.0` and remained `current_profile_mode=normal`, `suspicion_state=stable`.
+- `hub_workspace_sync_20260430`: Linux hub workspace `/root/.adaos/workspace` was checked after the abnormal workstation reboot. The only hub workspace diff is `skills/infrastate_skill/handlers/main.py`; local `.adaos/workspace/skills/infrastate_skill/handlers/main.py` matches it semantically and is already present in the workspace HEAD commit `ea28d74` (`perf: memory menagement`). The remaining local workspace dirt is only `.gitignore`; it is unrelated to the Linux hub hotpatch.
+- `hub_core_sync_20260430`: Linux hub core slots `A` and `B` were compared against local core changes after the abnormal workstation reboot. The runtime-hotpatched files `sdk/io/out.py`, `services/logging.py`, `services/router/service.py`, `services/webspace_id.py`, `services/yjs/doc.py`, `services/yjs/gateway_ws.py`, `services/yjs/load_mark.py`, `services/yjs/load_mark_history.py`, `services/yjs/update_origin.py`, and `services/yjs/webspace.py` match local source in both slots. The only remaining local deltas are intentional commit polish: `apps/api/node_api.py` formatting around the compact `infrastate/action` snapshot call and `apps/supervisor.py` keeping `suspicion_state=suspected` while recording `auto_profile_last_block_reason` instead of hiding the suspicion as `suppressed`.
 
 ### Tasks
 
@@ -366,13 +373,14 @@ Actions:
 
 #### F3M-010: Linux/RU root-routed browser selects the wrong root zone
 
-Status: in progress; code fix is prepared and browser acceptance is pending deploy.
+Status: fixed for connectivity; follow-up memory pressure is tracked separately.
 
 Evidence:
 
 - Linux hub `sn_92ffc943` is configured for `zone=ru` and keeps `hub_root: ready/stable` through `wss://ru.api.inimatic.com/nats`.
 - `https://ru.api.inimatic.com/v1/browser/hub/status?hub_id=sn_92ffc943` returns `online`, while the central root returns `offline` for the same hub.
-- Linux runtime sees root-routed HTTP status probes but no `/ws` or `/yws` route-open attempts, so the remote browser data path is not reaching the RU hub runtime.
+- Earlier Linux runtime saw root-routed HTTP status probes but no `/ws` or `/yws` route-open attempts, so the remote browser data path was not reaching the RU hub runtime.
+- After the zone-aware browser bundle deploy, two Linux root-routed browsers loaded data, confirming the route-zone selection fix.
 
 Working hypothesis:
 
@@ -385,10 +393,47 @@ Actions:
 - [x] Make YDoc root-proxy attach probe known zones through `/v1/browser/hub/status` and select the online root before setting `/hubs/<hubId>` base.
 - [x] Fall back from `adaos_hub_id` to `adaos_last_subnet_id` when restoring a browser session.
 - [x] Confirm client build succeeds after the async root-zone resolver change.
-- [ ] Deploy the updated client bundle and confirm Linux remote browser opens `/yws` through `https://ru.api.inimatic.com/hubs/sn_92ffc943`.
-- [ ] Confirm Linux reliability changes from `sync_runtime.yws=0 rooms=0 opens=0/0` to an active YWS room after remote browser attach.
+- [x] Deploy the updated client bundle and confirm Linux remote browsers open/load data through the RU root.
+- [x] Confirm Linux reliability changes from `sync_runtime.yws=0 rooms=0 opens=0/0` to active browser/YWS behavior after remote browser attach.
 - [x] Mark raw hub-credential NATS diagnostic tools as potentially superseding the live runtime connection.
 - [ ] Update raw diagnostic tools or root auth semantics so diagnostic NATS probes do not supersede the live runtime connection.
+
+#### F3M-011: Linux remote-browser attach triggers runaway memory growth
+
+Status: fixed for the first-3-minute goal; long-run plateau confirmation pending.
+
+Evidence:
+
+- With two Linux root-routed browsers attached, browser data loaded, then links oscillated between recovery/degraded and the supervisor restarted the slot.
+- Supervisor memory telemetry showed RSS growth around 1.8GB in the active runtime and growth slope above 800MB/min.
+- `yjs_load_mark.jsonl` grew to hundreds of MB; recent load-mark rows showed both `_by_owner/skill_infrastate_skill` and `_by_owner/gateway_ws` carrying large sustained byte rates.
+- This pattern indicates backend-originated detached Yjs diffs are persisted once by `async_get_ydoc` and then persisted again by the live room while being fanned out to browsers.
+
+Working hypothesis:
+
+- Skill/core writes that skip the direct live-room fast path correctly write a detached diff to YStore, then apply that diff to the active room so browsers receive it.
+- The active room currently treats that already-persisted backend diff like a browser-origin update and writes it to YStore again as `gateway_ws`.
+- Under two remote browsers and active infrastate streams, duplicate YStore writes plus unbounded load-mark history amplify memory, disk, and diagnostic pressure.
+- A second amplifier was `/api/node/infrastate/snapshot`: root-routed browser fallback probes called `get_snapshot`, which projected the full diagnostic snapshot into Yjs and returned multi-megabyte payloads.
+- A third amplifier was supervisor policy profiling: the memory detector could restart the runtime into `sampled_profile` during the first browser attach, causing recovery/degraded oscillation even after transport was healthy.
+
+Actions:
+
+- [x] Add a short-lived exact-update marker for backend-originated room fanout updates that were already persisted.
+- [x] Make `DiagnosticYRoom` skip only matching duplicate backend-origin YStore writes while preserving browser fanout and browser-origin persistence.
+- [x] Add gateway tests covering duplicate skip and unmarked browser-update persistence.
+- [x] Cap `yjs_load_mark.jsonl` by default and limit load-mark stream rows to the top pressure buckets.
+- [x] Disable full event payload logging by default to avoid duplicating large `io.out.stream.publish` payloads into rotating logs.
+- [x] Make `infrastate_skill.get_snapshot` read-only for HTTP callers unless `project=True` is explicitly requested.
+- [x] Return a compact client snapshot with truncated diagnostic card content and `last_refresh_ts` so browsers stop repeatedly falling back to heavy HTTP snapshot loads.
+- [x] Delay automatic policy-triggered memory profiling restarts until after the first 300 seconds of runtime uptime.
+- [x] Deploy the active core/skill hotpatches to the Linux hub.
+- [x] Sync the Linux hub workspace `infrastate_skill` hotpatch back into local `.adaos/workspace` for the next `skill push`.
+- [x] Compare Linux hub core slots `A` and `B` with local source and identify the only remaining intentional local commit deltas.
+- [x] Run a two-browser Linux soak and confirm the first 3 minutes do not hit NATS churn, route timeouts, event-loop hangs, or memory-profile restarts.
+- [x] Confirm memory no longer grows toward the previous 3GB supervisor restart pattern during the first acceptance window.
+- [ ] Run a longer 10-15 minute Linux two-browser soak and confirm RSS reaches a bounded plateau.
+- [ ] Confirm load-mark no longer reports simultaneous sustained high byte rates for the same backend diff under both `skill_infrastate_skill` and `gateway_ws`.
 
 ### Operating Checklist
 
@@ -401,6 +446,7 @@ Before a 3-minute soak:
 - [ ] For zoned root-routed browser acceptance, verify `/v1/browser/hub/status?hub_id=<hubId>` is `online` on the expected root zone and `rootHubBaseUrl()` resolves `/hubs/<hubId>` under that same zone.
 - [ ] For root-routed browser acceptance, root backend can use its stable defaults: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=20000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3`.
 - [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
+- [ ] Keep normal diagnostic defaults common across Windows and Linux: `ADAOS_LOG_EVENTS_PAYLOAD=0`, `ADAOS_YJS_LOAD_MARK_STREAM_TOP_N=24`, `ADAOS_YJS_LOAD_MARK_GATEWAY_HIGH_WPS=64`, `ADAOS_YJS_LOAD_MARK_GATEWAY_CRITICAL_WPS=128`, `ADAOS_YJS_LOAD_MARK_HISTORY_MAX_BYTES=10485760`, `ADAOS_YJS_BACKEND_ROOM_UPDATE_SKIP_TTL_S=30`, `ADAOS_INFRASTATE_SNAPSHOT_CONTENT_MAX_BYTES=4096`, `ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC=300`.
 - [ ] Deep trace is off unless investigating one focused case.
 
 During analysis:

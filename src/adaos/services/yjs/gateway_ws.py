@@ -35,6 +35,7 @@ from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.observers import attach_room_observers, forget_room_observers
 from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace, ystore_write_metadata_sync
 from adaos.services.yjs.store import ystore_write_metadata
+from adaos.services.yjs.update_origin import consume_backend_room_update
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -180,6 +181,8 @@ class DiagnosticYRoom(YRoom):
         self._diag_peak_pending_store_tasks = 0
         self._diag_update_total = 0
         self._diag_update_bytes_total = 0
+        self._diag_backend_persist_skip_total = 0
+        self._diag_backend_persist_skip_bytes = 0
         self._diag_last_log_mono = 0.0
 
     def _diag_room_id(self) -> str:
@@ -214,6 +217,8 @@ class DiagnosticYRoom(YRoom):
             "pending_store_tasks": int(self._diag_pending_store_tasks),
             "update_total": int(self._diag_update_total),
             "update_bytes_total": int(self._diag_update_bytes_total),
+            "backend_persist_skip_total": int(self._diag_backend_persist_skip_total),
+            "backend_persist_skip_bytes": int(self._diag_backend_persist_skip_bytes),
             "ystore": self._diag_ystore_snapshot() if include_ystore else {},
         }
 
@@ -302,6 +307,19 @@ class DiagnosticYRoom(YRoom):
             return
         self._diag_pending_store_tasks += 1
         try:
+            persisted = consume_backend_room_update(self._diag_room_id(), update)
+            if persisted is not None:
+                update_len = len(update or b"")
+                self._diag_backend_persist_skip_total += 1
+                self._diag_backend_persist_skip_bytes += update_len
+                self.log.debug(
+                    "Skipping duplicate backend-origin YStore write for webspace=%s bytes=%s source=%s owner=%s",
+                    self._diag_room_id(),
+                    update_len,
+                    persisted.get("source"),
+                    persisted.get("owner"),
+                )
+                return
             self._diag_log_pressure("ystore.write.scheduled", update_bytes=len(update))
             async with ystore_write_metadata(
                 source="yjs.gateway_ws",

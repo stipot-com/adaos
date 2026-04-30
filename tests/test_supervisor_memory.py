@@ -308,6 +308,7 @@ def test_supervisor_manager_samples_memory_telemetry_and_marks_suspicion(monkeyp
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_WINDOW_SEC", "60")
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC", "0")
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
 
     class _Proc:
@@ -464,6 +465,7 @@ def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypat
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_GROWTH_BYTES", str(32 * 1024 * 1024))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_SLOPE_BYTES_PER_MIN", str(8 * 1024 * 1024))
     monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC", "0")
     manager = supervisor.SupervisorManager(runtime_host="127.0.0.1", runtime_port=8777, token="dev-local-token")
 
     class _Proc:
@@ -514,8 +516,9 @@ def test_supervisor_memory_policy_guard_suppresses_repeat_auto_profile(monkeypat
 
     status = manager.memory_status()
 
-    assert status["suspicion_state"] == "suppressed"
-    assert status["suspicion_reason"] == "auto_profile_cooldown"
+    assert status["suspicion_state"] == "suspected"
+    assert status["suspicion_reason"] == "growth_and_slope_threshold"
+    assert status["auto_profile_last_block_reason"] == "auto_profile_cooldown"
     assert status["requested_session_id"] is None
 
 

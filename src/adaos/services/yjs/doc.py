@@ -11,6 +11,7 @@ import y_py as Y
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.yjs.store import get_ystore_for_webspace, ystore_write_metadata, ystore_write_metadata_sync
+from adaos.services.yjs.update_origin import mark_backend_room_update
 
 T = TypeVar("T")
 _log = logging.getLogger("adaos.yjs.doc")
@@ -138,7 +139,15 @@ def try_read_live_map_value(webspace_id: str, map_name: str, key: str) -> tuple[
         return True, None
 
 
-def _schedule_room_update(webspace_id: str, update: Optional[bytes]) -> None:
+def _schedule_room_update(
+    webspace_id: str,
+    update: Optional[bytes],
+    *,
+    already_persisted: bool = False,
+    source: str = "yjs.doc.room_update",
+    owner: str | None = None,
+    channel: str | None = None,
+) -> None:
     """
     Apply the given Yjs update to the active room (if any) so connected clients
     receive the change immediately. Falls back silently if no room is active.
@@ -151,6 +160,14 @@ def _schedule_room_update(webspace_id: str, update: Optional[bytes]) -> None:
 
     def _apply() -> None:
         try:
+            if already_persisted:
+                mark_backend_room_update(
+                    webspace_id,
+                    update,
+                    source=source,
+                    owner=owner,
+                    channel=channel,
+                )
             Y.apply_update(room.ydoc, update)
         except Exception:
             pass
@@ -266,24 +283,34 @@ def get_ydoc(
                     stage_started = time.perf_counter()
                     update = _encode_diff(ydoc, before)
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                    owner = _resolve_yjs_write_owner()
+                    persisted = False
                     try:
                         stage_started = time.perf_counter()
                         async with ystore_write_metadata(
                             root_names=tracked_load_mark_roots,
                             source="get_ydoc",
-                            owner=_resolve_yjs_write_owner(),
+                            owner=owner,
                             channel="yjs.doc.sync",
                         ):
                             if update:
                                 await ystore.write_update(update, update_kind="diff")
                             else:
                                 await ystore.write_update(b"", update_kind="diff")
+                        persisted = True
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                     except Exception:
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                         pass
                     stage_started = time.perf_counter()
-                    _schedule_room_update(webspace_id, update)
+                    _schedule_room_update(
+                        webspace_id,
+                        update,
+                        already_persisted=persisted,
+                        source="get_ydoc",
+                        owner=owner,
+                        channel="yjs.doc.sync",
+                    )
                     _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
                 else:
                     _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)
@@ -368,24 +395,34 @@ async def async_get_ydoc(
                     stage_started = time.perf_counter()
                     update = _encode_diff(ydoc, before)
                     _record_doc_timing(timings, "encode_diff", stage_started, prefix=timing_prefix)
+                    owner = _resolve_yjs_write_owner()
+                    persisted = False
                     try:
                         stage_started = time.perf_counter()
                         async with ystore_write_metadata(
                             root_names=tracked_load_mark_roots,
                             source="async_get_ydoc",
-                            owner=_resolve_yjs_write_owner(),
+                            owner=owner,
                             channel="yjs.doc.async",
                         ):
                             if update:
                                 await ystore.write_update(update, update_kind="diff")
                             else:
                                 await ystore.write_update(b"", update_kind="diff")
+                        persisted = True
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                     except Exception as exc:
                         _record_doc_timing(timings, "ystore_write_update", stage_started, prefix=timing_prefix)
                         _log.warning("async_get_ydoc write_update failed for webspace=%s: %s", webspace_id, exc, exc_info=True)
                     stage_started = time.perf_counter()
-                    _schedule_room_update(webspace_id, update)
+                    _schedule_room_update(
+                        webspace_id,
+                        update,
+                        already_persisted=persisted,
+                        source="async_get_ydoc",
+                        owner=owner,
+                        channel="yjs.doc.async",
+                    )
                     _record_doc_timing(timings, "room_update", stage_started, prefix=timing_prefix)
             else:
                 _set_doc_timing(timings, "encode_diff", 0.0, prefix=timing_prefix)

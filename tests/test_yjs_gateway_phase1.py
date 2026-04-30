@@ -76,14 +76,19 @@ if existing_ypy_websocket is None or not hasattr(existing_ypy_websocket, "__path
     yroom_mod = types.ModuleType("ypy_websocket.yroom")
     yroom_mod.YRoom = _StubYRoom
 
+    yutils_mod = types.ModuleType("ypy_websocket.yutils")
+    yutils_mod.create_update_message = lambda update: b"update:" + bytes(update or b"")
+
     sys.modules["ypy_websocket"] = ypy_websocket_mod
     sys.modules["ypy_websocket.ystore"] = ystore_mod
     sys.modules["ypy_websocket.websocket"] = websocket_mod
     sys.modules["ypy_websocket.websocket_server"] = websocket_server_mod
     sys.modules["ypy_websocket.yroom"] = yroom_mod
+    sys.modules["ypy_websocket.yutils"] = yutils_mod
 
 from adaos.services.workspaces import ensure_workspace, set_workspace_manifest
 from adaos.services.yjs import gateway_ws as gateway_module
+from adaos.services.yjs.update_origin import mark_backend_room_update, reset_backend_room_update_markers
 
 
 class _FakeYStore:
@@ -96,6 +101,14 @@ class _FakeYStore:
 
     async def apply_updates(self, ydoc) -> None:  # noqa: ARG002
         self.apply_updates_calls += 1
+
+
+class _FakeWriteYStore:
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+
+    async def write(self, update: bytes) -> None:
+        self.writes.append(update)
 
 
 class _FakeBus:
@@ -112,6 +125,40 @@ class _FakeEventWebSocket:
 
     async def send_text(self, payload: str) -> None:
         self.messages.append(json.loads(payload))
+
+
+def _fake_log() -> SimpleNamespace:
+    return SimpleNamespace(
+        debug=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+
+
+def test_diagnostic_room_skips_duplicate_backend_persisted_update() -> None:
+    reset_backend_room_update_markers()
+    ystore = _FakeWriteYStore()
+    room = gateway_module.DiagnosticYRoom(ystore=ystore, log=_fake_log())
+    room._webspace_id = "desktop"
+
+    mark_backend_room_update("desktop", b"backend-update", source="async_get_ydoc", owner="skill:infrastate_skill")
+
+    asyncio.run(room._tracked_ystore_write(b"backend-update"))
+    asyncio.run(room._tracked_ystore_write(b"backend-update"))
+
+    assert ystore.writes == [b"backend-update"]
+    assert room._diag_backend_persist_skip_total == 1
+    assert room._diag_backend_persist_skip_bytes == len(b"backend-update")
+
+
+def test_diagnostic_room_persists_unmarked_browser_update() -> None:
+    reset_backend_room_update_markers()
+    ystore = _FakeWriteYStore()
+    room = gateway_module.DiagnosticYRoom(ystore=ystore, log=_fake_log())
+    room._webspace_id = "desktop"
+
+    asyncio.run(room._tracked_ystore_write(b"browser-update"))
+
+    assert ystore.writes == [b"browser-update"]
 
 
 def test_ensure_webspace_ready_uses_manifest_defaults(monkeypatch) -> None:

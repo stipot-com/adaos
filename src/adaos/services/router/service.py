@@ -25,6 +25,7 @@ from adaos.services.subnet_alias import display_subnet_alias, load_subnet_alias
 from adaos.sdk.data.env import get_tts_backend
 from adaos.adapters.audio.tts.native_tts import NativeTTS
 from adaos.integrations.rhasspy.tts import RhasspyTTSAdapter
+from adaos.services.webspace_id import coerce_webspace_id
 from adaos.services.yjs.doc import async_get_ydoc
 from adaos.services.yjs.store import ystore_write_metadata
 from adaos.skills.runtime_runner import execute_tool
@@ -435,6 +436,9 @@ class RouterService:
                 return [_coerce_y(it) for it in node]
             return node
 
+        def _coerce_webspace_id(value: Any) -> str:
+            return coerce_webspace_id(value, fallback="default")
+
         def _resolve_webspace_ids_basic(payload: dict | None) -> list[str]:
             if not isinstance(payload, dict):
                 return ["default"]
@@ -444,7 +448,7 @@ class RouterService:
             if isinstance(raw_ids, list):
                 out: list[str] = []
                 for v in raw_ids:
-                    s = str(v or "").strip()
+                    s = _coerce_webspace_id(v)
                     if not s:
                         continue
                     if s not in out:
@@ -459,8 +463,7 @@ class RouterService:
                 or payload.get("workspace_id")
                 or "default"
             )
-            ws = str(raw or "").strip()
-            return [ws or "default"]
+            return [_coerce_webspace_id(raw)]
 
         _route_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
 
@@ -582,7 +585,7 @@ class RouterService:
             source: str,
             ts: float,
         ) -> None:
-            ws = str(webspace_id or "").strip() or "default"
+            ws = coerce_webspace_id(webspace_id, fallback="default")
             receiver_id = str(receiver or "").strip()
             if not receiver_id:
                 return

@@ -1273,7 +1273,11 @@ async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, 
 
     def _load_snapshot() -> dict[str, Any]:
         try:
-            result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
+            result = mgr.run_tool(
+                "infrastate_skill",
+                "get_snapshot",
+                {"webspace_id": target_webspace_id, "project": False},
+            )
             return result if isinstance(result, dict) else {"summary": {}, "raw": result}
         except Exception as exc:
             _log.warning("node infrastate snapshot fallback webspace=%s", target_webspace_id, exc_info=True)
@@ -1392,7 +1396,11 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
             _log.debug("wait_for_idle failed after infrastate.action", exc_info=True)
 
     def _load_snapshot() -> dict[str, Any]:
-        result = mgr.run_tool("infrastate_skill", "get_snapshot", {"webspace_id": target_webspace_id})
+        result = mgr.run_tool(
+            "infrastate_skill",
+            "get_snapshot",
+            {"webspace_id": target_webspace_id, "project": False},
+        )
         return result if isinstance(result, dict) else {"summary": {}, "raw": result}
 
     snapshot = await anyio.to_thread.run_sync(_load_snapshot)

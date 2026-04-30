@@ -179,9 +179,9 @@ def attach_event_logger(bus: EventBus, logger: Optional[logging.Logger] = None) 
         pass
     base_logger = logger or logging.getLogger("adaos.events")
     try:
-        include_payload = str(os.getenv("ADAOS_LOG_EVENTS_PAYLOAD", "1") or "1").strip() != "0"
+        include_payload = str(os.getenv("ADAOS_LOG_EVENTS_PAYLOAD", "0") or "0").strip() != "0"
     except Exception:
-        include_payload = True
+        include_payload = False
 
     def _handler(ev: Event) -> None:
         iso_time = datetime.fromtimestamp(getattr(ev, "ts", 0), tz=timezone.utc).isoformat() if getattr(ev, "ts", None) else None

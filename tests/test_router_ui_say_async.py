@@ -64,3 +64,53 @@ async def test_io_out_stream_publish_routes_to_webspace_scoped_browser_topic() -
     assert getattr(event, "payload", {}).get("data") == {"value": 42}
     assert getattr(event, "payload", {}).get("webspace_id") == "default"
 
+
+async def test_io_out_stream_publish_unwraps_nested_webspace_id() -> None:
+    bus = LocalEventBus()
+    router = RouterService(eventbus=bus, base_dir=Path("."))
+    await router.start()
+
+    seen: list[object] = []
+    bus.subscribe("webio.stream.default.telemetry_feed", lambda ev: seen.append(ev))
+    bus.publish(
+        Event(
+            type="io.out.stream.publish",
+            source="test",
+            ts=123.0,
+            payload={
+                "receiver": "telemetry_feed",
+                "data": {"value": 42},
+                "_meta": {"webspace_id": {"webspace_id": "default"}},
+            },
+        )
+    )
+
+    await bus.wait_for_idle(timeout=1.0)
+    assert len(seen) == 1
+    assert getattr(seen[0], "type", "") == "webio.stream.default.telemetry_feed"
+
+
+async def test_io_out_stream_publish_unwraps_stringified_webspace_id() -> None:
+    bus = LocalEventBus()
+    router = RouterService(eventbus=bus, base_dir=Path("."))
+    await router.start()
+
+    seen: list[object] = []
+    bus.subscribe("webio.stream.default.telemetry_feed", lambda ev: seen.append(ev))
+    bus.publish(
+        Event(
+            type="io.out.stream.publish",
+            source="test",
+            ts=123.0,
+            payload={
+                "receiver": "telemetry_feed",
+                "data": {"value": 42},
+                "_meta": {"webspace_id": "{'webspace_id': 'default'}"},
+            },
+        )
+    )
+
+    await bus.wait_for_idle(timeout=1.0)
+    assert len(seen) == 1
+    assert getattr(seen[0], "type", "") == "webio.stream.default.telemetry_feed"
+

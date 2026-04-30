@@ -193,6 +193,16 @@ def _memory_auto_profile_cooldown_sec() -> float:
         return 600.0
 
 
+def _memory_auto_profile_min_uptime_sec() -> float:
+    try:
+        return max(
+            0.0,
+            float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC") or "300").strip()),
+        )
+    except Exception:
+        return 300.0
+
+
 def _memory_auto_profile_circuit_window_sec() -> float:
     try:
         return max(300.0, float(str(os.getenv("ADAOS_SUPERVISOR_MEMORY_PROFILE_CIRCUIT_WINDOW_SEC") or "1800").strip()))
@@ -423,6 +433,13 @@ def _hub_root_watchdog_cooldown_sec() -> float:
         return max(5.0, float(str(os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_RECONNECT_COOLDOWN_SEC") or "30").strip()))
     except Exception:
         return 30.0
+
+
+def _hub_root_watchdog_reset_degraded_route_enabled() -> bool:
+    raw = os.getenv("ADAOS_SUPERVISOR_HUB_ROOT_ROUTE_DEGRADED_RESET")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _hub_root_watchdog_verify_timeout_sec() -> float:
@@ -1137,6 +1154,8 @@ class SupervisorManager:
         self._memory_last_growth_bytes_per_min: float | None = None
         self._memory_last_available_bytes: int | None = None
         self._memory_last_telemetry_at: float | None = None
+        self._memory_auto_profile_last_block_reason: str | None = None
+        self._memory_auto_profile_last_block_at: float | None = None
         self._sidecar_launch_cwd: str | None = None
         self._sidecar_last_start_reason: str | None = None
         self._sidecar_last_restart_reason: str | None = None
@@ -1454,6 +1473,19 @@ class SupervisorManager:
         mode = str(self._memory_requested_profile_mode or "").strip().lower() or "normal"
         return mode if mode in {"normal", "sampled_profile", "trace_profile"} else "normal"
 
+    def _managed_runtime_uptime_sec(self, *, now: float | None = None) -> float | None:
+        if self._last_start_at is None:
+            return None
+        current_time = time.time() if now is None else float(now)
+        return max(0.0, current_time - float(self._last_start_at))
+
+    def _active_memory_profile_trigger_source(self) -> str:
+        session_id = str(self._memory_active_session_id or "").strip()
+        if not session_id:
+            return ""
+        summary = read_memory_session_summary(session_id) or {}
+        return str(summary.get("trigger_source") or "").strip().lower()
+
     def _memory_session_index_items(self) -> list[dict[str, Any]]:
         index = read_memory_session_index()
         items = index.get("sessions") if isinstance(index.get("sessions"), list) else []
@@ -1691,6 +1723,12 @@ class SupervisorManager:
         self._upsert_memory_session_summary(summary)
 
     def _memory_policy_auto_profile_guard(self, *, now: float) -> tuple[bool, str | None]:
+        min_uptime_sec = _memory_auto_profile_min_uptime_sec()
+        if min_uptime_sec > 0:
+            uptime_sec = self._managed_runtime_uptime_sec(now=now)
+            if uptime_sec is None or uptime_sec < min_uptime_sec:
+                observed = "unknown" if uptime_sec is None else f"{uptime_sec:.1f}s"
+                return False, f"auto_profile_min_uptime:{observed}<{min_uptime_sec:.1f}s"
         cooldown_cutoff = now - _memory_auto_profile_cooldown_sec()
         circuit_cutoff = now - _memory_auto_profile_circuit_window_sec()
         recent_policy_sessions = 0
@@ -1707,6 +1745,28 @@ class SupervisorManager:
                 if recent_policy_sessions >= _memory_auto_profile_circuit_limit():
                     return False, "auto_profile_circuit_open"
         return True, None
+
+    def _memory_profile_restart_guard(self, *, desired_mode: str, now: float | None = None) -> tuple[bool, str | None]:
+        normalized_mode = str(desired_mode or "").strip().lower()
+        if normalized_mode == "normal":
+            return True, None
+        if self._active_memory_profile_trigger_source() != "policy":
+            return True, None
+        min_uptime_sec = _memory_auto_profile_min_uptime_sec()
+        if min_uptime_sec <= 0:
+            return True, None
+        uptime_sec = self._managed_runtime_uptime_sec(now=now)
+        if uptime_sec is None or uptime_sec < min_uptime_sec:
+            observed = "unknown" if uptime_sec is None else f"{uptime_sec:.1f}s"
+            return False, f"auto_profile_min_uptime:{observed}<{min_uptime_sec:.1f}s"
+        return True, None
+
+    def _record_memory_auto_profile_block(self, reason: str | None, *, now: float | None = None) -> None:
+        reason_text = str(reason or "").strip()
+        if not reason_text:
+            return
+        self._memory_auto_profile_last_block_reason = reason_text
+        self._memory_auto_profile_last_block_at = time.time() if now is None else float(now)
 
     def _should_finalize_active_memory_profile(self, *, now: float | None = None) -> dict[str, Any] | None:
         session_id = str(self._memory_active_session_id or "").strip()
@@ -1746,6 +1806,11 @@ class SupervisorManager:
         if self._proc is None or self._proc.poll() is not None:
             return
         if _is_transition_in_progress(read_core_update_status(), _read_update_attempt()):
+            return
+        allowed, block_reason = self._memory_profile_restart_guard(desired_mode=desired_mode)
+        if not allowed:
+            self._record_memory_auto_profile_block(block_reason)
+            self._persist_runtime_state()
             return
         await self.restart_runtime(reason=f"supervisor.memory.apply_profile_mode.{desired_mode}")
 
@@ -1839,8 +1904,7 @@ class SupervisorManager:
                 except HTTPException:
                     pass
             else:
-                self._memory_suspicion_state = "suppressed"
-                self._memory_suspicion_reason = auto_block_reason
+                self._record_memory_auto_profile_block(auto_block_reason, now=now)
         self._persist_runtime_state()
         return sample
 
@@ -2223,6 +2287,7 @@ class SupervisorManager:
             "last_reconnect_at": self._hub_root_watchdog_last_reconnect_at,
             "reconnect_total": int(self._hub_root_watchdog_reconnect_total),
             "cooldown_sec": _hub_root_watchdog_cooldown_sec(),
+            "reset_degraded_route": _hub_root_watchdog_reset_degraded_route_enabled(),
             "verify_timeout_sec": _hub_root_watchdog_verify_timeout_sec(),
             "log_path": str(log_path),
             "recent_events": _read_jsonl_tail(log_path, limit=10),
@@ -2326,6 +2391,7 @@ class SupervisorManager:
         transport_owner = "sidecar" if sidecar_enabled else "runtime"
         root_down = self._hub_root_channel_down(channel_state)
         route_degraded = self._hub_root_route_degraded(channel_state)
+        route_degraded_reset_enabled = _hub_root_watchdog_reset_degraded_route_enabled()
         action = (
             "sidecar_restart"
             if sidecar_enabled
@@ -2344,6 +2410,12 @@ class SupervisorManager:
             )
             self._hub_root_watchdog_last_state = state
             self._hub_root_watchdog_last_reason = "hub-root and browser route are not down"
+            return None
+
+        if route_degraded and not root_down and not route_degraded_reset_enabled:
+            state = hub_root_browser_status or hub_root_browser_state or route_status or "route_degraded"
+            self._hub_root_watchdog_last_state = state
+            self._hub_root_watchdog_last_reason = "browser route degraded; preserving active runtime-owned tunnels"
             return None
 
         cooldown = _hub_root_watchdog_cooldown_sec()
@@ -2953,6 +3025,9 @@ class SupervisorManager:
             "rss_growth_bytes_per_min": self._memory_last_growth_bytes_per_min,
             "suspicion_growth_threshold_bytes": _memory_suspicion_growth_threshold_bytes(),
             "suspicion_slope_threshold_bytes_per_min": _memory_suspicion_slope_threshold_bytes_per_min(),
+            "auto_profile_min_uptime_sec": _memory_auto_profile_min_uptime_sec(),
+            "auto_profile_last_block_reason": self._memory_auto_profile_last_block_reason,
+            "auto_profile_last_block_at": self._memory_auto_profile_last_block_at,
             "telemetry_path": str(supervisor_memory_telemetry_path()),
             "sessions_index_path": str(supervisor_memory_sessions_index_path()),
             "implemented_operation_events": list(TOP_LEVEL_OPERATION_EVENTS),
@@ -3467,6 +3542,11 @@ class SupervisorManager:
             return
         profile_mode = self._desired_memory_profile_mode()
         profile_session_id = str(self._memory_active_session_id or "").strip() or None
+        allowed, block_reason = self._memory_profile_restart_guard(desired_mode=profile_mode)
+        if not allowed:
+            self._record_memory_auto_profile_block(block_reason)
+            profile_mode = "normal"
+            profile_session_id = None
         argv, command, env, cwd, runtime_instance_id, transition_role = self._runtime_launch_spec(
             profile_mode=profile_mode,
             profile_session_id=profile_session_id,
@@ -4228,6 +4308,10 @@ class SupervisorManager:
                 "baseline_family_rss_bytes": runtime.get("baseline_family_rss_bytes"),
                 "rss_growth_bytes": runtime.get("rss_growth_bytes"),
                 "rss_growth_bytes_per_min": runtime.get("rss_growth_bytes_per_min"),
+                "auto_profile_min_uptime_sec": runtime.get("auto_profile_min_uptime_sec"),
+                "auto_profile_last_block_reason": str(runtime.get("auto_profile_last_block_reason") or "").strip()
+                or None,
+                "auto_profile_last_block_at": runtime.get("auto_profile_last_block_at"),
                 "selected_profiler_adapter": str(runtime.get("selected_profiler_adapter") or DEFAULT_PROFILER_ADAPTER),
                 "sessions_total": int(runtime.get("sessions_total") or 0),
                 "last_session": compact_session,

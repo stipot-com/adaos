@@ -72,3 +72,24 @@ def test_load_mark_history_appends_and_filters(monkeypatch, tmp_path: Path) -> N
     assert owner_rows["items"][0]["bucket_id"] == "_by_owner/skill_infrastate_skill"
     assert filtered_rows["count"] == 1
     assert filtered_rows["items"][0]["avg_bps"] == 123.0
+
+
+def test_load_mark_history_skips_when_file_exceeds_cap(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "yjs_load_mark.jsonl"
+    path.write_text("x" * 64, encoding="utf-8")
+    monkeypatch.setattr(history_mod, "_history_path", lambda: path)
+    monkeypatch.setattr(history_mod, "_MAX_HISTORY_BYTES", 32)
+
+    history_mod.append_history_snapshot(
+        webspace_id="desktop",
+        ts=100.0,
+        rows=[
+            {
+                "kind": "owner",
+                "id": "_by_owner/skill_infrastate_skill",
+                "status": "critical",
+            }
+        ],
+    )
+
+    assert path.read_text(encoding="utf-8") == "x" * 64
