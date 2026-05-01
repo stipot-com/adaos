@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,6 +108,23 @@ def test_skill_memory_and_skill_env_share_same_store(tmp_path: Path, monkeypatch
 
     skill_memory_set("beta", 42)
     assert get_env("beta") == 42
+
+
+def test_skill_memory_concurrent_writes_share_atomic_store(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / "db" / "skill_env.json"
+    monkeypatch.setenv("ADAOS_SKILL_ENV_PATH", str(env_path))
+    monkeypatch.delenv("ADAOS_SKILL_MEMORY_PATH", raising=False)
+
+    def _write(index: int) -> None:
+        skill_memory_set(f"k{index}", {"value": index})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_write, range(32)))
+
+    payload = read_env()
+    for index in range(32):
+        assert payload[f"k{index}"] == {"value": index}
+    assert not list(env_path.parent.glob("*.tmp"))
 
 
 def test_skill_env_prefers_ctx_runtime_path_over_env_var(monkeypatch) -> None:

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
 from nats.errors import ProtocolError
 from nats.protocol.parser import Parser
 
+import adaos.services.nats_ws_transport as nats_ws_transport
 from adaos.services.nats_ws_transport import (
     WebSocketTransportAiohttp,
     WebSocketTransportWebsockets,
@@ -14,8 +17,15 @@ from adaos.services.nats_ws_transport import (
     _ws_control_intercept_enabled_from_env,
     _ws_data_heartbeat_s_from_env,
     _ws_data_ping_s_from_env,
+    _ws_impl_from_env,
     _ws_proxy_from_env,
+    _without_adaos_legacy_ws_proxy_env,
 )
+
+
+async def _wait_until(predicate) -> None:
+    while not predicate():
+        await asyncio.sleep(0.001)
 
 
 class _FakeNC:
@@ -150,6 +160,32 @@ class _FairWebsocketsWS:
         if len(self.sent) <= self._replenish_limit:
             self._transport.write(b"PUB route.to_browser.sn_1--k 2\r\nok\r\n")
         await asyncio.sleep(0.01)
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state = "CLOSED"
+
+
+class _InboundBurstWebsocketsWS:
+    def __init__(self, transport: WebSocketTransportWebsockets, payload: bytes) -> None:
+        self._transport = transport
+        self._payload = payload
+        self.sent: list[bytes] = []
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.state = "OPEN"
+        self.recv_calls = 0
+
+    async def recv(self) -> bytes | str:
+        self.recv_calls += 1
+        if self.recv_calls == 1:
+            self._transport.write(self._payload)
+        await asyncio.sleep(0)
+        return b"MSG route.to_browser 1 2\r\nok\r\n"
+
+    async def send(self, payload: bytes) -> None:
+        self.sent.append(bytes(payload))
 
     async def close(self) -> None:
         self.closed = True
@@ -398,6 +434,26 @@ async def test_websockets_transport_processes_completed_recv_before_send_backlog
 
 
 @pytest.mark.asyncio
+async def test_websockets_transport_sends_between_inbound_burst_frames() -> None:
+    transport = WebSocketTransportWebsockets()
+    transport._adaos_nc = _FakeNC()
+    transport._io_poll_s = 0.01
+    payload = b"PUB route.to_browser.sn_1--k 2\r\nok\r\n"
+    ws = _InboundBurstWebsocketsWS(transport, payload)
+    transport._ws = ws
+
+    data = await asyncio.wait_for(transport.readline(), timeout=1.0)
+
+    assert data == b"MSG route.to_browser 1 2\r\nok\r\n"
+    await asyncio.wait_for(_wait_until(lambda: ws.sent == [payload]), timeout=1.0)
+    assert ws.recv_calls >= 2
+
+    if transport._io_task is not None:
+        transport._io_task.cancel()
+        await asyncio.gather(transport._io_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_websockets_transport_cancels_pending_recv_before_shared_io_send() -> None:
     transport = WebSocketTransportWebsockets()
     transport._adaos_nc = _FakeNC()
@@ -575,10 +631,46 @@ def test_ws_data_heartbeat_can_disable(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _ws_data_heartbeat_s_from_env() is None
 
 
+def test_ws_impl_auto_uses_websockets_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_IMPL", raising=False)
+    monkeypatch.setattr(nats_ws_transport.os, "name", "nt")
+
+    assert _ws_impl_from_env() == "websockets"
+
+
+def test_ws_impl_auto_keeps_websockets_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_IMPL", "auto")
+    monkeypatch.setattr(nats_ws_transport.os, "name", "posix")
+
+    assert _ws_impl_from_env() == "websockets"
+
+
+def test_ws_impl_explicit_websockets_overrides_windows_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_IMPL", "websockets")
+    monkeypatch.setattr(nats_ws_transport.os, "name", "nt")
+
+    assert _ws_impl_from_env() == "websockets"
+
+
 def test_ws_data_ping_defaults_for_windows_websockets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HUB_NATS_WS_DATA_PING_S", raising=False)
+    monkeypatch.setattr(nats_ws_transport.os, "name", "nt")
+
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") == 5.0
+
+
+def test_ws_data_ping_defaults_disabled_for_non_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_NATS_WS_DATA_PING_S", raising=False)
+    monkeypatch.setattr(nats_ws_transport.os, "name", "posix")
 
     assert _ws_data_ping_s_from_env(ws_impl="websockets") is None
+
+
+def test_ws_data_ping_auto_uses_windows_websockets_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_DATA_PING_S", "auto")
+    monkeypatch.setattr(nats_ws_transport.os, "name", "nt")
+
+    assert _ws_data_ping_s_from_env(ws_impl="websockets") == 5.0
 
 
 def test_ws_data_ping_can_enable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -607,14 +699,32 @@ def test_ws_control_intercept_can_disable(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_ws_proxy_defaults_to_system_auto(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HUB_NATS_WS_PROXY", raising=False)
+    monkeypatch.delenv("HUB_NATS_WS_PROXY_MODE", raising=False)
+
+    assert _ws_proxy_from_env() is True
+
+
+def test_ws_proxy_mode_preferred_over_legacy_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_PROXY", "none")
+    monkeypatch.setenv("HUB_NATS_WS_PROXY_MODE", "auto")
 
     assert _ws_proxy_from_env() is True
 
 
 def test_ws_proxy_can_force_direct(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HUB_NATS_WS_PROXY", "none")
+    monkeypatch.delenv("HUB_NATS_WS_PROXY", raising=False)
+    monkeypatch.setenv("HUB_NATS_WS_PROXY_MODE", "none")
 
     assert _ws_proxy_from_env() is None
+
+
+def test_ws_proxy_legacy_env_is_hidden_during_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_NATS_WS_PROXY", "auto")
+
+    with _without_adaos_legacy_ws_proxy_env():
+        assert "HUB_NATS_WS_PROXY" not in os.environ
+
+    assert os.environ["HUB_NATS_WS_PROXY"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -655,7 +765,8 @@ async def test_websockets_transport_data_ping_sends_ping() -> None:
     try:
         transport._ws = fake_ws
         transport._adaos_ws_data_ping = 0.01
-        transport._adaos_last_rx_at = 0.0
+        transport._adaos_last_rx_at = time.monotonic()
+        transport._adaos_last_tx_at = time.monotonic()
         transport._start_data_ping_task()
 
         await asyncio.sleep(0.05)
@@ -663,6 +774,26 @@ async def test_websockets_transport_data_ping_sends_ping() -> None:
         assert b"PING\r\n" in fake_ws.sent
         assert transport._adaos_data_pings_tx >= 1
     finally:
+        transport.close()
+        await transport.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_websockets_transport_data_ping_queues_without_full_drain() -> None:
+    transport = WebSocketTransportWebsockets()
+    io_task = asyncio.create_task(asyncio.sleep(60))
+    try:
+        transport._ws = _FakeWebsocketsWS([], block_when_empty=True)
+        transport._io_task = io_task
+        transport.write(b"PUB route.to_browser.sn_1--k 2\r\nok\r\n")
+
+        await asyncio.wait_for(transport._send_nats_ping(reason="data_ping"), timeout=0.05)
+
+        assert transport._pending_hi.get_nowait() == b"PING\r\n"
+        assert transport._pending.qsize() == 1
+        assert transport._adaos_data_pings_tx == 1
+    finally:
+        io_task.cancel()
         transport.close()
         await transport.wait_closed()
 

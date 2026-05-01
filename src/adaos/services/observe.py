@@ -1,6 +1,6 @@
 # src/adaos/services/observe.py
 from __future__ import annotations
-import asyncio, json, time, uuid, gzip, os
+import asyncio, json, time, uuid, gzip, os, queue, threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +36,9 @@ _LOG_TASK: Optional[asyncio.Task] = None
 _QUEUE: "asyncio.Queue[Dict[str, Any]]" | None = None
 _ORIG_EMIT = None
 _LOG_FILE: Path | None = None
+_LOCAL_LOG_QUEUE: "queue.Queue[Dict[str, Any] | None] | None" = None
+_LOCAL_LOG_THREAD: threading.Thread | None = None
+_LOCAL_LOG_DROPPED = 0
 
 
 class EventBroadcaster:
@@ -130,6 +133,90 @@ def _write_local(e: Dict[str, Any]) -> None:
         f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
 
+def _local_log_queue_max() -> int:
+    try:
+        raw = str(os.getenv("ADAOS_OBSERVE_LOCAL_QUEUE_MAX", "5000") or "5000").strip()
+        value = int(raw)
+    except Exception:
+        value = 5000
+    return max(100, value)
+
+
+def _local_log_enabled() -> bool:
+    raw = os.getenv("ADAOS_OBSERVE_LOCAL_LOG")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _local_log_worker(q: "queue.Queue[Dict[str, Any] | None]") -> None:
+    while True:
+        item = q.get()
+        try:
+            if item is None:
+                return
+            _write_local(item)
+        except Exception:
+            pass
+        finally:
+            try:
+                q.task_done()
+            except Exception:
+                pass
+
+
+def _ensure_local_log_worker() -> None:
+    global _LOCAL_LOG_QUEUE, _LOCAL_LOG_THREAD
+    if not _local_log_enabled():
+        return
+    if _LOCAL_LOG_QUEUE is None:
+        _LOCAL_LOG_QUEUE = queue.Queue(maxsize=_local_log_queue_max())
+    if _LOCAL_LOG_THREAD is not None and _LOCAL_LOG_THREAD.is_alive():
+        return
+    _LOCAL_LOG_THREAD = threading.Thread(
+        target=_local_log_worker,
+        args=(_LOCAL_LOG_QUEUE,),
+        name="adaos-observe-local-log",
+        daemon=True,
+    )
+    _LOCAL_LOG_THREAD.start()
+
+
+def _enqueue_local(e: Dict[str, Any]) -> None:
+    global _LOCAL_LOG_DROPPED
+    if not _local_log_enabled():
+        return
+    try:
+        _ensure_local_log_worker()
+        q = _LOCAL_LOG_QUEUE
+        if q is None:
+            return
+        q.put_nowait(e)
+    except queue.Full:
+        _LOCAL_LOG_DROPPED += 1
+    except Exception:
+        pass
+
+
+def _stop_local_log_worker() -> None:
+    global _LOCAL_LOG_QUEUE, _LOCAL_LOG_THREAD
+    q = _LOCAL_LOG_QUEUE
+    thread = _LOCAL_LOG_THREAD
+    _LOCAL_LOG_QUEUE = None
+    _LOCAL_LOG_THREAD = None
+    if q is None:
+        return
+    try:
+        q.put_nowait(None)
+    except Exception:
+        pass
+    if thread is not None and thread.is_alive():
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+
 async def _push_loop():
     """Фоновая отправка батчей логов на hub (для member)."""
     assert _QUEUE is not None
@@ -192,7 +279,7 @@ async def _emit_wrapper(topic: str, payload: Dict[str, Any], **kwargs):
             pass
     except Exception:
         conf = load_config()
-    _write_local(event)
+    _enqueue_local(event)
     await BROADCAST.publish(event)
     if conf.role == "member" and _QUEUE:
         try:
@@ -223,6 +310,7 @@ async def start_observer():
 
     _ORIG_EMIT = bus_module.emit
     bus_module.emit = _emit_wrapper  # type: ignore
+    _ensure_local_log_worker()
 
     try:
         ctx = get_ctx()
@@ -251,6 +339,7 @@ async def stop_observer():
             pass
         _LOG_TASK = None
     _QUEUE = None
+    _stop_local_log_worker()
     if _ORIG_EMIT is not None:
         bus_module.emit = _ORIG_EMIT  # type: ignore
         _ORIG_EMIT = None

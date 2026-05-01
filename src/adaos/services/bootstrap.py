@@ -2585,7 +2585,44 @@ class BootstrapService:
                                     "last_data_ping_tx_ago_s": _ago("_adaos_last_data_ping_tx_at"),
                                     "last_tx_kind": getattr(tr, "_adaos_last_tx_kind", None) if tr is not None else None,
                                     "last_tx_subj": getattr(tr, "_adaos_last_tx_subj", None) if tr is not None else None,
+                                    "io_loop_ago_s": _ago("_adaos_io_loop_at"),
+                                    "io_sending": getattr(tr, "_io_sending", None) if tr is not None else None,
+                                    "current_send_kind": getattr(tr, "_adaos_current_send_kind", None) if tr is not None else None,
+                                    "current_send_subj": getattr(tr, "_adaos_current_send_subj", None) if tr is not None else None,
+                                    "current_send_len": getattr(tr, "_adaos_current_send_len", None) if tr is not None else None,
+                                    "current_send_ago_s": _ago("_adaos_current_send_started_at"),
+                                    "last_send_kind": getattr(tr, "_adaos_last_send_kind", None) if tr is not None else None,
+                                    "last_send_subj": getattr(tr, "_adaos_last_send_subj", None) if tr is not None else None,
+                                    "last_send_len": getattr(tr, "_adaos_last_send_len", None) if tr is not None else None,
+                                    "last_send_done_ago_s": _ago("_adaos_last_send_done_at"),
+                                    "last_send_duration_s": getattr(tr, "_adaos_last_send_duration_s", None) if tr is not None else None,
+                                    "send_count": getattr(tr, "_adaos_send_count", None) if tr is not None else None,
+                                    "send_fail_count": getattr(tr, "_adaos_send_fail_count", None) if tr is not None else None,
+                                    "last_send_error": (
+                                        f"{type(getattr(tr, '_adaos_last_send_error', None)).__name__}: {getattr(tr, '_adaos_last_send_error', None)}"
+                                        if tr is not None and getattr(tr, "_adaos_last_send_error", None) is not None
+                                        else None
+                                    ),
+                                    "last_send_error_ago_s": _ago("_adaos_last_send_error_at"),
+                                    "transport_pending_hi_q": (
+                                        getattr(getattr(tr, "_pending_hi", None), "qsize", lambda: None)()
+                                        if tr is not None and getattr(tr, "_pending_hi", None) is not None
+                                        else None
+                                    ),
+                                    "transport_pending_q": (
+                                        getattr(getattr(tr, "_pending", None), "qsize", lambda: None)()
+                                        if tr is not None and getattr(tr, "_pending", None) is not None
+                                        else None
+                                    ),
                                     "pending_data_size": getattr(nc_for_diag, "_pending_data_size", None),
+                                    "io_task": _nats_task_snapshot(getattr(tr, "_io_task", None), stack_limit=stack_limit)
+                                    if tr is not None
+                                    else None,
+                                    "data_ping_task": _nats_task_snapshot(
+                                        getattr(tr, "_data_ping_task", None), stack_limit=stack_limit
+                                    )
+                                    if tr is not None
+                                    else None,
                                     "reading_task": _nats_task_snapshot(getattr(nc_for_diag, "_reading_task", None), stack_limit=stack_limit),
                                     "flusher_task": _nats_task_snapshot(getattr(nc_for_diag, "_flusher_task", None), stack_limit=stack_limit),
                                     "ping_interval_task": _nats_task_snapshot(getattr(nc_for_diag, "_ping_interval_task", None), stack_limit=stack_limit),
@@ -2812,6 +2849,55 @@ class BootstrapService:
                                         ws_last_ping_tx_ago_s = ws_last_ping_tx_ago_s or None
                                         ws_last_ping_wait_ms = ws_last_ping_wait_ms or None
                                         ws_last_ping_send_ms = ws_last_ping_send_ms or None
+                                    io_loop_ago_s = None
+                                    current_send_kind = None
+                                    current_send_subj = None
+                                    current_send_len = None
+                                    current_send_ago_s = None
+                                    last_send_kind = None
+                                    last_send_subj = None
+                                    last_send_len = None
+                                    last_send_done_ago_s = None
+                                    last_send_duration_ms = None
+                                    send_count = None
+                                    send_fail_count = None
+                                    last_send_err = None
+                                    last_send_err_ago_s = None
+                                    try:
+                                        io_loop_at = getattr(tr, "_adaos_io_loop_at", None) if tr is not None else None
+                                        if isinstance(io_loop_at, (int, float)):
+                                            io_loop_ago_s = round(time.monotonic() - float(io_loop_at), 3)
+                                        current_send_kind = getattr(tr, "_adaos_current_send_kind", None) if tr is not None else None
+                                        current_send_subj = getattr(tr, "_adaos_current_send_subj", None) if tr is not None else None
+                                        current_send_len = getattr(tr, "_adaos_current_send_len", None) if tr is not None else None
+                                        current_send_at = (
+                                            getattr(tr, "_adaos_current_send_started_at", None) if tr is not None else None
+                                        )
+                                        if isinstance(current_send_at, (int, float)):
+                                            current_send_ago_s = round(time.monotonic() - float(current_send_at), 3)
+                                        last_send_kind = getattr(tr, "_adaos_last_send_kind", None) if tr is not None else None
+                                        last_send_subj = getattr(tr, "_adaos_last_send_subj", None) if tr is not None else None
+                                        last_send_len = getattr(tr, "_adaos_last_send_len", None) if tr is not None else None
+                                        last_send_done_at = (
+                                            getattr(tr, "_adaos_last_send_done_at", None) if tr is not None else None
+                                        )
+                                        if isinstance(last_send_done_at, (int, float)):
+                                            last_send_done_ago_s = round(time.monotonic() - float(last_send_done_at), 3)
+                                        last_send_duration_s = (
+                                            getattr(tr, "_adaos_last_send_duration_s", None) if tr is not None else None
+                                        )
+                                        if isinstance(last_send_duration_s, (int, float)):
+                                            last_send_duration_ms = round(float(last_send_duration_s) * 1000.0, 3)
+                                        send_count = getattr(tr, "_adaos_send_count", None) if tr is not None else None
+                                        send_fail_count = getattr(tr, "_adaos_send_fail_count", None) if tr is not None else None
+                                        last_send_err = getattr(tr, "_adaos_last_send_error", None) if tr is not None else None
+                                        last_send_err_at = (
+                                            getattr(tr, "_adaos_last_send_error_at", None) if tr is not None else None
+                                        )
+                                        if isinstance(last_send_err_at, (int, float)):
+                                            last_send_err_ago_s = round(time.monotonic() - float(last_send_err_at), 3)
+                                    except Exception:
+                                        pass
                                     server0 = _resolve_nats_log_server(
                                         server=server,
                                         current_attempt=nats_attempt_server,
@@ -2827,7 +2913,7 @@ class BootstrapService:
                                     extra_suffix = (" " + " ".join(extra_parts)) if extra_parts else ""
                                     _rl_log(
                                         rate_key,
-                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_hb_mode={ws_hb_mode} ws_data_hb_s={ws_data_hb} ws_data_ping_s={ws_data_ping} data_pings_tx={data_pings_tx} data_last_ping_tx_ago_s={data_last_ping_tx_ago_s} ws_recv_timeout_s={ws_recv_timeout} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_hi_q={tr_pending_hi_q} transport_pending_q={tr_pending_q} send_lock={send_lock_locked} ka_pings_rx={ka_pings_rx} ka_last_ping_rx_ago_s={ka_last_ping_rx_ago_s} ka_pongs_tx={ka_pongs_tx} ka_last_pong_tx_ago_s={ka_last_pong_tx_ago_s} ka_last_pong_wait_ms={ka_last_pong_wait_ms} ka_last_pong_send_ms={ka_last_pong_send_ms} ws_pings_tx={ws_pings_tx} ws_last_ping_tx_ago_s={ws_last_ping_tx_ago_s} ws_last_ping_wait_ms={ws_last_ping_wait_ms} ws_last_ping_send_ms={ws_last_ping_send_ms} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
+                                        f"[hub-io] nats ws diag: tag={ws_tag} server={server0} ws_hb_s={ws_hb} ws_hb_mode={ws_hb_mode} ws_data_hb_s={ws_data_hb} ws_data_ping_s={ws_data_ping} data_pings_tx={data_pings_tx} data_last_ping_tx_ago_s={data_last_ping_tx_ago_s} ws_recv_timeout_s={ws_recv_timeout} ws_url={ws_url} closed={ws_closed} close_code={ws_close_code} close_reason={ws_close_reason} ws_exc={ws_exc} last_rx_ago_s={last_rx_ago_s} last_tx_ago_s={last_tx_ago_s} io_loop_ago_s={io_loop_ago_s} tx_connect_ago_s={tx_connect_ago_s} rx_info_ago_s={rx_info_ago_s} max_payload={max_payload} pending_data_size={pending_data_size} pings_outstanding={pings_outstanding} pongs_q={pongs_q} transport_pending_hi_q={tr_pending_hi_q} transport_pending_q={tr_pending_q} send_lock={send_lock_locked} current_send_kind={current_send_kind} current_send_subj={current_send_subj} current_send_len={current_send_len} current_send_ago_s={current_send_ago_s} last_send_kind={last_send_kind} last_send_subj={last_send_subj} last_send_len={last_send_len} last_send_done_ago_s={last_send_done_ago_s} last_send_duration_ms={last_send_duration_ms} send_count={send_count} send_fail_count={send_fail_count} last_send_err={type(last_send_err).__name__ if last_send_err is not None else None} last_send_err_ago_s={last_send_err_ago_s} ka_pings_rx={ka_pings_rx} ka_last_ping_rx_ago_s={ka_last_ping_rx_ago_s} ka_pongs_tx={ka_pongs_tx} ka_last_pong_tx_ago_s={ka_last_pong_tx_ago_s} ka_last_pong_wait_ms={ka_last_pong_wait_ms} ka_last_pong_send_ms={ka_last_pong_send_ms} ws_pings_tx={ws_pings_tx} ws_last_ping_tx_ago_s={ws_last_ping_tx_ago_s} ws_last_ping_wait_ms={ws_last_ping_wait_ms} ws_last_ping_send_ms={ws_last_ping_send_ms} ws_proto={ws_proto} last_tx_kind={last_tx_kind} last_tx_subj={last_tx_subj} last_tx_len={last_tx_len} last_recv_err={type(last_recv_err).__name__ if last_recv_err is not None else None} last_recv_err_ago_s={last_recv_err_ago_s}{extra_suffix}",
                                         every_s=every_s,
                                     )
                                 except Exception:
@@ -4418,6 +4504,15 @@ class BootstrapService:
                             "last_publish_slow_ms": 0.0,
                             "last_flush_slow_key_tag": "",
                             "last_flush_slow_ms": 0.0,
+                            "dispatch_queue_size": 0,
+                            "dispatch_queue_max": 0,
+                            "dispatch_enqueued_total": 0,
+                            "dispatch_handled_total": 0,
+                            "dispatch_drop_total": 0,
+                            "dispatch_slow_total": 0,
+                            "last_dispatch_ms": 0.0,
+                            "last_dispatch_slow_ms": 0.0,
+                            "last_dispatch_key_tag": "",
                         }
 
                         def _route_refresh_starvation_state() -> None:
@@ -5147,7 +5242,7 @@ class BootstrapService:
                                             )
                                         except Exception:
                                             pass
-                                    elif flush_took_s >= max(0.5, float(tout) * 0.9) and t in ("http_resp", "close", "open_ack"):
+                                    elif flush_took_s >= max(0.5, float(tout) * 0.9):
                                         route_diag_state["reply_flush_slow_total"] = int(
                                             route_diag_state.get("reply_flush_slow_total") or 0
                                         ) + 1
@@ -5169,16 +5264,6 @@ class BootstrapService:
                                             key=key,
                                             extra=f"threshold_bytes={_route_pending_data_warn_bytes}",
                                         )
-                                    elif flush_took_s >= max(0.5, float(tout) * 0.9) and t == "http_resp":
-                                        # Slow flush can still cause root timeouts even if publish succeeds.
-                                        try:
-                                            _rl_log(
-                                                "hub-route.flush_slow",
-                                                f"[hub-route] flush slow took_s={flush_took_s:.3f} t={t} key={key} {_route_nc_diag()}",
-                                                every_s=1.0,
-                                            )
-                                        except Exception:
-                                            pass
                                     if _route_tx_verbose:
                                         try:
                                             print(f"[hub-route] tx {t} key={key}")
@@ -5660,7 +5745,7 @@ class BootstrapService:
                                     payload_bytes=len(text_blob.encode("utf-8")),
                                 )
 
-                        async def _route_cb(msg) -> None:
+                        async def _route_handle_msg(msg) -> None:
                             key = ""
                             subject = ""
                             is_http_key = False
@@ -6814,6 +6899,124 @@ class BootstrapService:
                                     except Exception:
                                         pass
                                 return
+
+                        class _QueuedRouteMsg:
+                            __slots__ = ("subject", "data")
+
+                            def __init__(self, subject: str, data: bytes) -> None:
+                                self.subject = subject
+                                self.data = data
+
+                        try:
+                            route_handler_queue_max = int(os.getenv("HUB_ROUTE_HANDLER_QUEUE_MAX", "4096") or "4096")
+                        except Exception:
+                            route_handler_queue_max = 4096
+                        if route_handler_queue_max < 128:
+                            route_handler_queue_max = 128
+                        route_handler_queue: asyncio.Queue[tuple[str, bytes]] = asyncio.Queue(maxsize=route_handler_queue_max)
+                        route_diag_state["dispatch_queue_max"] = int(route_handler_queue_max)
+
+                        def _route_key_from_subject(subject: str) -> str:
+                            try:
+                                parts = subject.split(".")
+                                if subject.startswith("route.v2.to_hub.") and len(parts) >= 5:
+                                    return str(parts[4] or "")
+                                if subject.startswith("route.to_hub.") and len(parts) >= 3:
+                                    return str(parts[2] or "")
+                            except Exception:
+                                pass
+                            return ""
+
+                        async def _route_handler_worker() -> None:
+                            while True:
+                                subject, raw = await route_handler_queue.get()
+                                started0 = time.monotonic()
+                                key0 = _route_key_from_subject(subject)
+                                try:
+                                    route_diag_state["dispatch_queue_size"] = int(route_handler_queue.qsize())
+                                    route_diag_state["last_dispatch_key_tag"] = _key_tag(key0) if key0 else ""
+                                    await _route_handle_msg(_QueuedRouteMsg(subject, raw))
+                                    route_diag_state["dispatch_handled_total"] = int(route_diag_state.get("dispatch_handled_total") or 0) + 1
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as e:
+                                    try:
+                                        self._log.warning(
+                                            "hub route handler failed subject=%s type=%s err=%s",
+                                            subject,
+                                            type(e).__name__,
+                                            e,
+                                        )
+                                    except Exception:
+                                        pass
+                                finally:
+                                    try:
+                                        took_ms = (time.monotonic() - started0) * 1000.0
+                                        route_diag_state["last_dispatch_ms"] = round(took_ms, 1)
+                                        if took_ms >= 250.0:
+                                            route_diag_state["dispatch_slow_total"] = int(route_diag_state.get("dispatch_slow_total") or 0) + 1
+                                            route_diag_state["last_dispatch_slow_ms"] = round(took_ms, 1)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        route_handler_queue.task_done()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        route_diag_state["dispatch_queue_size"] = int(route_handler_queue.qsize())
+                                    except Exception:
+                                        pass
+
+                        async def _route_cb(msg) -> None:
+                            try:
+                                subject = str(getattr(msg, "subject", "") or "")
+                            except Exception:
+                                subject = ""
+                            try:
+                                raw = bytes(getattr(msg, "data", b"") or b"")
+                            except Exception:
+                                raw = b""
+                            try:
+                                route_handler_queue.put_nowait((subject, raw))
+                                route_diag_state["dispatch_enqueued_total"] = int(route_diag_state.get("dispatch_enqueued_total") or 0) + 1
+                                route_diag_state["dispatch_queue_size"] = int(route_handler_queue.qsize())
+                            except asyncio.QueueFull:
+                                key0 = _route_key_from_subject(subject)
+                                route_diag_state["dispatch_drop_total"] = int(route_diag_state.get("dispatch_drop_total") or 0) + 1
+                                route_diag_state["dispatch_queue_size"] = int(route_handler_queue.qsize())
+                                route_diag_state["last_dispatch_key_tag"] = _key_tag(key0) if key0 else ""
+                                try:
+                                    _rl_log(
+                                        "hub-route.dispatch_queue_full",
+                                        (
+                                            "[hub-route] dispatch queue full "
+                                            f"qsize={route_handler_queue.qsize()} max={route_handler_queue_max} key={_key_tag(key0)}"
+                                        ),
+                                        every_s=1.0,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    note_route_incident(
+                                        status="dispatch_queue_full",
+                                        summary="hub route handler queue is full; dropping inbound route frame",
+                                        details={
+                                            "key_tag": _key_tag(key0),
+                                            "queue_size": int(route_handler_queue.qsize()),
+                                            "queue_max": int(route_handler_queue_max),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+
+                        try:
+                            route_handler_task = asyncio.create_task(
+                                _route_handler_worker(),
+                                name="adaos-hub-route-handler",
+                            )
+                            sub_workers.append(route_handler_task)
+                        except Exception:
+                            pass
 
                         try:
                             # Legacy v1 subject. Disabled by default because it cannot be isolated by hub id,

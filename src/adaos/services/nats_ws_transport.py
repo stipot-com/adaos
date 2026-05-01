@@ -8,6 +8,7 @@ import re
 import ssl
 import socket
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import ParseResult
 
@@ -35,17 +36,25 @@ def _emit_hub_io_console_log(
 
 
 def _ws_impl_from_env() -> str:
-    try:
-        raw = str(os.getenv("HUB_NATS_WS_IMPL", "websockets") or "websockets").strip().lower()
-    except Exception:
-        raw = "websockets"
-    if raw in ("auto", ""):
+    def _default_impl() -> str:
+        # Keep the confirmed Windows/Linux hub-root profile on the patched
+        # `websockets` transport. `aiohttp` remains available as an explicit
+        # diagnostic override, but it still fails on Windows multi-browser load
+        # with "Cannot write to closing transport".
         return "websockets"
+
+    try:
+        raw_value = os.getenv("HUB_NATS_WS_IMPL")
+        raw = str(raw_value or "").strip().lower()
+    except Exception:
+        raw = ""
+    if raw in ("auto", ""):
+        return _default_impl()
     if raw in ("ws", "websockets"):
         return "websockets"
     if raw in ("aio", "aiohttp"):
         return "aiohttp"
-    return "websockets"
+    return _default_impl()
 
 
 def _ws_max_size_from_env() -> int | None:
@@ -238,27 +247,37 @@ def _ws_data_ping_s_from_env(*, ws_impl: str | None = None) -> float | None:
     NATS protocol data ping for WS transports (send `PING\\r\\n` as WS *data*).
 
     This is intentionally separate from WebSocket PING control frames and from
-    nats-py's ping interval task. It is disabled by default because the stable
-    root-routed browser path relies on route traffic, TCP keepalive, and
-    proxy-managed upstream liveness; an extra client `PING` during route/Yjs load
-    can perturb Root proxy accounting on Windows. Enable it only for focused
-    diagnostics.
+    nats-py's ping interval task. The Windows `websockets` path keeps the
+    confirmed stable hub-root profile by sending a conservative data ping; Linux
+    leaves it disabled unless explicitly requested.
 
     Control:
     - HUB_NATS_WS_DATA_PING_S:
-        * unset         -> disabled
-        * empty         -> disable
+        * unset / empty / auto -> Windows+websockets uses 5s, other paths disable
+        * off/none/disabled    -> disable
         * <= 0          -> disable
         * > 0           -> enable with that interval (seconds; min 5)
     """
+
+    def _auto_default() -> float | None:
+        try:
+            impl = (ws_impl or _ws_impl_from_env()).strip().lower()
+        except Exception:
+            impl = "websockets"
+        if os.name == "nt" and impl == "websockets":
+            return 5.0
+        return None
+
     raw = os.getenv("HUB_NATS_WS_DATA_PING_S")
     if raw is None:
-        return None
+        return _auto_default()
     try:
-        s = str(raw).strip()
+        s = str(raw).strip().lower()
     except Exception:
         return None
-    if not s:
+    if not s or s == "auto":
+        return _auto_default()
+    if s in {"off", "none", "disabled", "disable", "false", "no"}:
         return None
     try:
         v = float(s)
@@ -404,12 +423,19 @@ def _ws_proxy_from_env() -> str | bool | None:
     Default:
     - keep the `websockets` library default (`True` / system proxy auto-detect)
 
-    Override with `HUB_NATS_WS_PROXY`:
+    Override with `HUB_NATS_WS_PROXY_MODE`:
         - `auto`, `system`, `default`, `1`, `true`, `yes` -> `True`
         - `none`, `off`, `0`, `false`, `no`, empty`       -> `None`
         - any other value                                 -> explicit proxy URL
+
+    `HUB_NATS_WS_PROXY` is still accepted for compatibility, but don't set it
+    in steady-state environments: Python treats any `*_PROXY` variable as a
+    proxy configuration candidate, which can alter the route before our code
+    has a chance to interpret the value.
     """
-    raw = os.getenv("HUB_NATS_WS_PROXY")
+    raw = os.getenv("HUB_NATS_WS_PROXY_MODE")
+    if raw is None:
+        raw = os.getenv("HUB_NATS_WS_PROXY")
     if raw is None:
         return True
     try:
@@ -424,6 +450,26 @@ def _ws_proxy_from_env() -> str | bool | None:
     if normalized in {"none", "off", "0", "false", "no"}:
         return None
     return value
+
+
+@contextmanager
+def _without_adaos_legacy_ws_proxy_env():
+    """
+    Hide AdaOS' legacy proxy-mode variable from Python proxy auto-discovery.
+
+    `urllib.request.getproxies()` recognizes every `*_PROXY` environment
+    variable. A value like `HUB_NATS_WS_PROXY=auto` is meaningful to AdaOS, but
+    it can still perturb lower-level WebSocket proxy discovery. We pass the
+    already-parsed value to `websockets.connect(proxy=...)`, so the raw legacy
+    env var doesn't need to remain visible during the connect call.
+    """
+    sentinel = object()
+    previous = os.environ.pop("HUB_NATS_WS_PROXY", sentinel)
+    try:
+        yield
+    finally:
+        if previous is not sentinel:
+            os.environ["HUB_NATS_WS_PROXY"] = str(previous)
 
 
 def _ws_headers_to_tuples(headers: Optional[Dict[str, List[str]]]) -> Optional[List[Tuple[str, str]]]:
@@ -782,9 +828,10 @@ class WebSocketTransportWebsockets:
     Drop-in replacement for `nats.aio.transport.WebSocketTransport` using `websockets` instead of `aiohttp`.
 
     Why:
-    - On some Windows environments aiohttp WS client disconnects with close 1006 under sustained PUB load
-      (`Cannot write to closing transport`), causing hub to appear offline in browser (`yjs_sync_timeout`).
-    - `websockets` library has been observed to be stable in the same conditions.
+    - The stable implementation is selected by `HUB_NATS_WS_IMPL` (`auto` by default).
+    - `auto` keeps the patched `websockets` client on both Windows and Linux.
+    - `aiohttp` remains an explicit diagnostic override, but it still fails on
+      Windows multi-browser root-routed load with "Cannot write to closing transport".
 
     Notes:
     - WS-level heartbeat pings are opt-in (HUB_NATS_WS_HEARTBEAT_S). Root's ws-nats-proxy still sends NATS protocol
@@ -857,6 +904,20 @@ class WebSocketTransportWebsockets:
         self._adaos_last_data_ping_tx_at: float | None = None
         self._adaos_last_data_ping_tx_wait_s: float | None = None
         self._adaos_last_data_ping_tx_send_s: float | None = None
+        self._adaos_io_loop_at: float | None = None
+        self._adaos_current_send_kind: str | None = None
+        self._adaos_current_send_subj: str | None = None
+        self._adaos_current_send_len: int | None = None
+        self._adaos_current_send_started_at: float | None = None
+        self._adaos_last_send_kind: str | None = None
+        self._adaos_last_send_subj: str | None = None
+        self._adaos_last_send_len: int | None = None
+        self._adaos_last_send_done_at: float | None = None
+        self._adaos_last_send_duration_s: float | None = None
+        self._adaos_send_count: int = 0
+        self._adaos_send_fail_count: int = 0
+        self._adaos_last_send_error: Exception | None = None
+        self._adaos_last_send_error_at: float | None = None
 
     def _trace(self, msg: str) -> None:
         if not self._adaos_ws_trace:
@@ -1153,11 +1214,15 @@ class WebSocketTransportWebsockets:
             io_task = None
             current_task = None
         if io_task is not None:
+            # With the shared IO loop, keepalive PING must not wait for a full
+            # drain of normal PUB traffic. Under remote-browser/YJS load the
+            # route stream can stay non-empty for long stretches, and awaiting
+            # `drain()` here turns the periodic keepalive into a one-shot ping.
+            # Queue it on the high-priority lane and let the IO loop serialize
+            # the actual websocket write before normal frames.
             self.write(payload)
             if current_task is io_task:
                 await self._direct_drain()
-            else:
-                await self.drain()
             try:
                 self._adaos_data_pings_tx += 1
                 self._adaos_last_data_ping_tx_wait_s = 0.0
@@ -1169,7 +1234,7 @@ class WebSocketTransportWebsockets:
                 if self._adaos_ws_trace:
                     n = int(getattr(self, "_adaos_data_pings_tx", 0) or 0)
                     self._trace(
-                        f"nats ws data heartbeat tx kind=PING reason={reason} wait_ms=0.0 send_ms=0.0 n={n}"
+                        f"nats ws data heartbeat queued kind=PING reason={reason} wait_ms=0.0 send_ms=0.0 n={n}"
                     )
             except Exception:
                 pass
@@ -1421,14 +1486,25 @@ class WebSocketTransportWebsockets:
         if ws is None:
             return
         self._io_sending = True
+        send_started_at: float | None = None
+        send_kind: str | None = kind
+        send_subj: str | None = None
+        send_len: int | None = None
         try:
             if kind == "ws_ping":
                 ping_started_at = time.monotonic()
+                send_started_at = ping_started_at
+                send_kind = "WS.PING"
+                send_len = 0
                 try:
                     self._adaos_last_tx_at = ping_started_at
                     self._adaos_last_tx_kind = "WS.PING"
                     self._adaos_last_tx_subj = None
                     self._adaos_last_tx_len = 0
+                    self._adaos_current_send_kind = send_kind
+                    self._adaos_current_send_subj = None
+                    self._adaos_current_send_len = send_len
+                    self._adaos_current_send_started_at = send_started_at
                 except Exception:
                     pass
                 await ws.ping()
@@ -1438,6 +1514,12 @@ class WebSocketTransportWebsockets:
                     self._adaos_last_ws_ping_tx_at = ping_started_at
                     self._adaos_last_ws_ping_tx_wait_s = 0.0
                     self._adaos_last_ws_ping_tx_send_s = ping_done_at - ping_started_at
+                    self._adaos_send_count += 1
+                    self._adaos_last_send_kind = send_kind
+                    self._adaos_last_send_subj = None
+                    self._adaos_last_send_len = send_len
+                    self._adaos_last_send_done_at = ping_done_at
+                    self._adaos_last_send_duration_s = ping_done_at - ping_started_at
                 except Exception:
                     pass
                 try:
@@ -1457,10 +1539,6 @@ class WebSocketTransportWebsockets:
                 data = bytes(payload)
             else:
                 data = payload
-            try:
-                self._adaos_last_tx_at = time.monotonic()
-            except Exception:
-                pass
             self._wiretap("tx", data)
             try:
                 head = data[:256] if isinstance(data, (bytes, bytearray)) else b""
@@ -1489,9 +1567,31 @@ class WebSocketTransportWebsockets:
                 self._adaos_last_tx_kind = kind0
                 self._adaos_last_tx_subj = subj0
                 self._adaos_last_tx_len = len(data) if hasattr(data, "__len__") else None
+                send_kind = kind0 or kind
+                send_subj = subj0
+                send_len = len(data) if hasattr(data, "__len__") else None
+            except Exception:
+                pass
+            send_started_at = time.monotonic()
+            try:
+                self._adaos_last_tx_at = send_started_at
+                self._adaos_current_send_kind = send_kind
+                self._adaos_current_send_subj = send_subj
+                self._adaos_current_send_len = send_len
+                self._adaos_current_send_started_at = send_started_at
             except Exception:
                 pass
             await ws.send(data)
+            send_done_at = time.monotonic()
+            try:
+                self._adaos_send_count += 1
+                self._adaos_last_send_kind = send_kind
+                self._adaos_last_send_subj = send_subj
+                self._adaos_last_send_len = send_len
+                self._adaos_last_send_done_at = send_done_at
+                self._adaos_last_send_duration_s = send_done_at - send_started_at
+            except Exception:
+                pass
             if self._adaos_ws_trace:
                 try:
                     line = _route_tx_trace_line(
@@ -1504,7 +1604,22 @@ class WebSocketTransportWebsockets:
                         self._trace(line)
                 except Exception:
                     pass
+        except Exception as e:
+            try:
+                self._adaos_send_fail_count += 1
+                self._adaos_last_send_error = e
+                self._adaos_last_send_error_at = time.monotonic()
+            except Exception:
+                pass
+            raise
         finally:
+            try:
+                self._adaos_current_send_kind = None
+                self._adaos_current_send_subj = None
+                self._adaos_current_send_len = None
+                self._adaos_current_send_started_at = None
+            except Exception:
+                pass
             self._io_sending = False
             if self._pending_empty():
                 self._drain_event.set()
@@ -1512,6 +1627,10 @@ class WebSocketTransportWebsockets:
     async def _io_loop(self, ws0: Any) -> None:
         try:
             while True:
+                try:
+                    self._adaos_io_loop_at = time.monotonic()
+                except Exception:
+                    pass
                 try:
                     ws1 = self._ws
                     if ws1 is None or ws1 is not ws0 or self.at_eof():
@@ -1538,11 +1657,11 @@ class WebSocketTransportWebsockets:
                     continue
 
                 try:
-                    # Match the independently stable tools/diag_nats_ws.py loop:
-                    # write pending frames, then do one short recv attempt. Avoid a
-                    # long-lived recv task that gets cancelled by outbound traffic;
-                    # on Windows/proxy/websockets that pattern can make local sends
-                    # appear successful while Root stops seeing client frames.
+                    # Match the independently stable tools/diag_nats_ws.py loop and
+                    # the confirmed Windows hub-root profile from 0cfbc9e: write all
+                    # pending frames, then do one short recv attempt. A long-lived
+                    # shielded recv task can make local ws.send() report success while
+                    # Root stops observing client frames under multi-browser route load.
                     raw = await asyncio.wait_for(ws0.recv(), timeout=self._io_poll_s)
                 except asyncio.TimeoutError:
                     continue
@@ -1955,13 +2074,6 @@ class WebSocketTransportWebsockets:
                 except Exception:
                     return
                 try:
-                    now = time.monotonic()
-                    last_rx_at = getattr(self, "_adaos_last_rx_at", None)
-                    if isinstance(last_rx_at, (int, float)) and (now - float(last_rx_at)) < interval_s:
-                        continue
-                except Exception:
-                    pass
-                try:
                     await self._send_nats_ping(reason="data_ping")
                 except Exception:
                     return
@@ -2077,19 +2189,20 @@ class WebSocketTransportWebsockets:
             pass
 
         try:
-            try:
-                if headers:
-                    self._ws = await websockets.connect(target, additional_headers=headers, **ws_kwargs)
-                else:
-                    self._ws = await websockets.connect(target, **ws_kwargs)
-            except TypeError:
-                # Older websockets may use `extra_headers=...` and may not support `proxy=...`.
-                retry_kwargs = dict(ws_kwargs)
-                retry_kwargs.pop("proxy", None)
-                if headers:
-                    self._ws = await websockets.connect(target, extra_headers=headers, **retry_kwargs)
-                else:
-                    self._ws = await websockets.connect(target, **retry_kwargs)
+            with _without_adaos_legacy_ws_proxy_env():
+                try:
+                    if headers:
+                        self._ws = await websockets.connect(target, additional_headers=headers, **ws_kwargs)
+                    else:
+                        self._ws = await websockets.connect(target, **ws_kwargs)
+                except TypeError:
+                    # Older websockets may use `extra_headers=...` and may not support `proxy=...`.
+                    retry_kwargs = dict(ws_kwargs)
+                    retry_kwargs.pop("proxy", None)
+                    if headers:
+                        self._ws = await websockets.connect(target, extra_headers=headers, **retry_kwargs)
+                    else:
+                        self._ws = await websockets.connect(target, **retry_kwargs)
         except Exception as e:
             if self._adaos_ws_trace:
                 try:
@@ -3039,7 +3152,7 @@ class WebSocketTransportAiohttp:
 
 def install_nats_ws_transport_patch(*, verbose: bool = False) -> str:
     """
-    Patch nats-py websocket transport to use `websockets`.
+    Patch nats-py websocket transport for AdaOS root `/nats`.
     Returns the active impl name ("websockets" or "aiohttp").
     """
     from nats.aio import transport as nats_transport  # type: ignore

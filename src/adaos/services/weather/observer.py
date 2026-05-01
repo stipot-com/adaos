@@ -238,12 +238,18 @@ def _ensure_city_observer(webspace_id: str, ydoc):
         _PENDING_DOC_CHECKS[key] = True
 
         def _run_safe() -> None:
+            started = time.perf_counter()
             try:
                 _emit_current()
             except Exception:
                 stats["error_total"] = int(stats.get("error_total") or 0) + 1
                 _log.debug("weather observer callback failed webspace=%s", key, exc_info=True)
             finally:
+                elapsed_s = time.perf_counter() - started
+                stats["last_duration_s"] = elapsed_s
+                if elapsed_s >= 0.05:
+                    stats["slow_total"] = int(stats.get("slow_total") or 0) + 1
+                    _log.warning("weather observer slow webspace=%s duration_s=%.3f", key, elapsed_s)
                 _PENDING_DOC_CHECKS.pop(key, None)
 
         target_loop = _YDOC_LOOPS.get(key)

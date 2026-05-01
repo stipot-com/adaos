@@ -24,9 +24,9 @@ Success means:
 
 ### Current Status
 
-Snapshot date: 2026-04-30.
+Snapshot date: 2026-05-01.
 
-Overall completion: 97% for the expanded local + root-routed browser goal; Linux/RU root-routed browsers load data and stay inside the first-window memory guard, while a Windows `/nats` regression observed on 2026-04-30 is reopened around NATS `PING` handling in the Root WS proxy / nats-py-style client path.
+Overall completion: 99% for the expanded local + root-routed browser goal. Windows root-routed `/nats` is accepted again after fixing an AdaOS env-name collision: the legacy `HUB_NATS_WS_PROXY=auto` variable was treated by Python proxy discovery as a generic `*_PROXY` variable and selected the bad one-way route. The stable default is now `HUB_NATS_WS_PROXY_MODE=auto`, with the legacy name hidden during `websockets.connect`. Linux/RU root-routed browsers already load data and stay inside the first-window memory guard; the remaining work is a rollout reconfirmation and longer plateau soak, not a first-window blocker.
 
 Done:
 
@@ -53,7 +53,8 @@ Done:
 - Skill service discovery refresh no longer submits recurring watchdog work to the default thread executor, avoiding the observed Windows `Thread.start()` event-loop freeze path.
 - Control lifecycle await-resume stack watcher is now opt-in diagnostics only, avoiding a fresh diagnostic thread on every control heartbeat during normal runs.
 - Backend route-open retry is deployed and visible in root logs: `open ack retry`/`open republish` replaced the old fallback flush path.
-- NATS-over-WS core transport now follows the stable `tools` behavior by default: `websockets` system proxy auto-detect (`proxy=True`) is used unless `HUB_NATS_WS_PROXY=none` explicitly forces direct-route diagnostics.
+- NATS-over-WS core transport now follows the stable `tools` behavior by default: `websockets` system proxy auto-detect (`proxy=True`) is used unless `HUB_NATS_WS_PROXY_MODE=none` explicitly forces direct-route diagnostics.
+- The legacy `HUB_NATS_WS_PROXY` name remains backward-compatible but is no longer documented as the steady-state default because Python treats any `*_PROXY` environment variable as a proxy setting.
 - NATS-over-WS control-frame handling now replies to coalesced root `PING` frames without corrupting `MSG` payload boundaries.
 - Local and root-routed browser runs on 2026-04-30 initially confirmed stable `/nats` and `/yws` behavior after the proxy-auto core change.
 - Normal diagnostic thresholds are relaxed out of deep-debug mode: loop-lag warnings now default to 1000ms and eventbus slow async warnings default to 250ms.
@@ -64,7 +65,7 @@ Done:
 In progress:
 
 - Keep an eye on residual sub-second event-loop drift and occasional `infrastate` / `infrascope` browser-runtime handlers, but do not treat them as connectivity blockers unless they exceed the normal thresholds.
-- Reconfirm Windows root-routed browser acceptance after disabling optional client-originated NATS data ping by default and deploying the Root WS proxy upstream-`PING` termination patch.
+- Reconfirm Windows after rollout from a clean operator environment where `HUB_NATS_WS_PROXY` is unset and `HUB_NATS_WS_PROXY_MODE=auto` is used.
 - Run a longer Linux/RU two-browser soak after the first-3-minute acceptance window to decide whether the remaining slow memory climb is a real leak or a bounded warm-cache plateau.
 
 Known follow-up outside the current goal:
@@ -97,15 +98,23 @@ Latest verification:
 - `linux_ru_diag_polish_20260430_0939`: after raising the gateway tiny-write warning threshold and restarting autostart, a 3m45s Linux/RU soak stayed clean: `nats ws recv failed=0`, route timeout/proxy failed=0, supervisor route watchdog reset=0, event-loop lag/hang=0, memory apply/complete profile restart=0, and `YJS owner flow above threshold=0`. Runtime RSS stayed in a narrow first-window band of about 247 MiB at 31s to 276 MiB at 3m44s; supervisor public memory status exposes `auto_profile_min_uptime_sec=300.0` and remained `current_profile_mode=normal`, `suspicion_state=stable`.
 - `hub_workspace_sync_20260430`: Linux hub workspace `/root/.adaos/workspace` was checked after the abnormal workstation reboot. The only hub workspace diff is `skills/infrastate_skill/handlers/main.py`; local `.adaos/workspace/skills/infrastate_skill/handlers/main.py` matches it semantically and is already present in the workspace HEAD commit `ea28d74` (`perf: memory menagement`). The remaining local workspace dirt is only `.gitignore`; it is unrelated to the Linux hub hotpatch.
 - `hub_core_sync_20260430`: Linux hub core slots `A` and `B` were compared against local core changes after the abnormal workstation reboot. The runtime-hotpatched files `sdk/io/out.py`, `services/logging.py`, `services/router/service.py`, `services/webspace_id.py`, `services/yjs/doc.py`, `services/yjs/gateway_ws.py`, `services/yjs/load_mark.py`, `services/yjs/load_mark_history.py`, `services/yjs/update_origin.py`, and `services/yjs/webspace.py` match local source in both slots. The only remaining local deltas are intentional commit polish: `apps/api/node_api.py` formatting around the compact `infrastate/action` snapshot call and `apps/supervisor.py` keeping `suspicion_state=suspected` while recording `auto_profile_last_block_reason` instead of hiding the suspicion as `suppressed`.
-- `windows_data_ping_regression_20260430`: Windows root-routed browser load regressed after the earlier acceptance runs. Evidence: `/nats` fails after about 40s with `ConnectionClosedError` / `WinError 121`, remote browser does not load data, while independent AdaOS transport tooling can keep the raw `/nats` echo stable. Local `nats_ws_diag.jsonl` from the failing runtime shows client data `PING` transmissions even though nats-py's ping task is disabled. Patch prepared: make `HUB_NATS_WS_DATA_PING_S` disabled by default on all OSes, keep it explicit opt-in for focused diagnostics, and surface `ws_data_ping_s` / `data_pings_tx` in runtime and tool diagnostics.
-- `windows_raw_ws_channel_20260430`: raw WebSocket tools show the public `/nats` channel itself is healthy. `tools/diag_nats_ws_concurrent.py` held 90s with concurrent reader/writer (`tx_pub=88`, `rx_msg=88`, `rx_ping=10`, `tx_pong=10`, `errors=[]`). `tools/diag_nats_ws.py` with nats-py CONNECT style, empty queue/reply spacing, split PUB frames, and binary frames held 90s (`pubs_tx=80`, `msgs_rx=80`, `nats_pings_rx=10`, `nats_pongs_tx=10`, `errors=[]`). By contrast, `tools/diag_nats_client.py` through AdaOS `WebSocketTransportWebsockets` and `tools/diag_nats_py_ws.py` through stock nats-py/aiohttp both stop receiving after 3-4 echo messages and close with `1006` / `WinError 121` or `UnexpectedEOF`. Conclusion: the current failure is not a raw root channel failure; it is in nats-py-style transport/runtime behavior around the first keepalive window.
+- `windows_data_ping_regression_20260430`: Windows root-routed browser load regressed after the earlier acceptance runs. Evidence: `/nats` fails after about 40s with `ConnectionClosedError` / `WinError 121`, remote browser does not load data, while independent AdaOS transport tooling can keep the raw `/nats` echo stable. An initial hypothesis blamed client data `PING`, but the later `sn_6acf0c01-b5f3b8a6d2` run failed with `data_pings_tx=0`, `ka_pings_rx=0`, and root still reporting `route downstream send done`. Conclusion: client data ping is not the root cause and may be part of the confirmed Windows-stable profile. Patch prepared: restore Windows+`websockets` `HUB_NATS_WS_DATA_PING_S=auto` to a conservative 5s, while Linux stays disabled unless explicitly requested.
+- `windows_raw_ws_channel_20260430`: raw WebSocket tools show the public `/nats` channel itself is healthy. `tools/diag_nats_ws_concurrent.py` held 90s with concurrent reader/writer (`tx_pub=88`, `rx_msg=88`, `rx_ping=10`, `tx_pong=10`, `errors=[]`). `tools/diag_nats_ws.py` with nats-py CONNECT style, empty queue/reply spacing, split PUB frames, and binary frames held 90s (`pubs_tx=80`, `msgs_rx=80`, `nats_pings_rx=10`, `nats_pongs_tx=10`, `errors=[]`). At that checkpoint, `tools/diag_nats_client.py` through AdaOS `WebSocketTransportWebsockets` and `tools/diag_nats_py_ws.py` through stock nats-py/aiohttp both stopped receiving after 3-4 echo messages and closed with `1006` / `WinError 121` or `UnexpectedEOF`. Conclusion: the failure was not a raw root channel failure; it was in nats-py-style transport/runtime behavior around the first keepalive window. Later `windows_ws_control_ping_guard_20260430` re-validated AdaOS transport in isolation after backend keepalive hardening.
 - `windows_proxy_ping_termination_20260430`: follow-up root-log analysis shows the failing nats-py-style path correlates with Root/proxy NATS `PING` data frames delivered downstream to the hub: after the first proxy/upstream keepalive window, Root reports missing PONG/client data and the hub sees `ConnectionClosedError`. The confirmed Windows commit had `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`; current defaults are restored to that. Backend patch prepared: for normal hub WS-NATS clients, Root now answers upstream NATS `PING` locally and strips those `PING` command frames before forwarding downstream; transparent realtime sidecar connections (`rt-*`) still receive raw NATS control frames. The stripper is protocol-aware and skips `MSG/HMSG` payload bytes, so route/Yjs payloads containing `PING\r\n` are not modified.
+- `windows_legacy_keepalive_guard_20260430`: after deploying upstream-`PING` termination, the Windows regression persisted. Fresh client diagnostics show `data_pings_tx=0` but `ka_pings_rx=2`, and a partial root log read shows both `ping (upstream->proxy) answered and stripped downstream` and a separate `ping (keepalive -> client) sent`. Conclusion: the backend patch is active, but the active root env can still enable the older client-facing NATS-data keepalive. Patch prepared: legacy `WS_NATS_PROXY_KEEPALIVE_ENABLE=1` is ignored for normal hub clients unless `WS_NATS_PROXY_KEEPALIVE_FORCE=1`; focused diagnostics must use `WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=1`.
+- `windows_ws_control_ping_guard_20260430`: after the legacy NATS-data keepalive guard, standalone `tools/diag_nats_client.py` held 75s cleanly on the AdaOS `WebSocketTransportWebsockets`, but full `adaos api serve` still dropped during browser/Yjs load. Root logs for `sn_6acf0c01-753137252c` show `ws ping enabled pingMs=10000`, `wsPingsSent=6`, `wsPongsReceived=2`, then close `1006`; no NATS-data client keepalive was sent (`natsKeepalivesSent=0`). Conclusion: a stale root `WS_NATS_PROXY_WS_PING=1` can still break Windows hub clients under full runtime load. Patch prepared: ignore legacy `WS_NATS_PROXY_WS_PING=1` for normal hub clients unless `WS_NATS_PROXY_WS_PING_FORCE=1`; explicit diagnostics use `WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=1`. Realtime sidecar `rt-*` remains allowed to use its own WS ping.
+- `windows_observe_and_transport_ab_20260501`: the weather observer hypothesis was ruled out again; the observed hard stall was in `services.observe._write_local`, where synchronous `events.log` file I/O blocked the event loop for about 56s during the two-browser load. Local observe logging now goes through a non-blocking queue and daemon writer thread. A follow-up aiohttp run had `observe.py=0`, `_write_local=0`, loop lag=0, and `flush_slow=0`, but still flapped every 20-50s with `RuntimeError: ws closed` / `ClientConnectionResetError: Cannot write to closing transport`. A follow-up websockets run also flapped under the current Root env, with no observe/loop starvation, indicating the remaining delta from the confirmed `0cfbc9e` profile is Root-side keepalive/proxy behavior rather than local file I/O. `0cfbc9e` used `HUB_NATS_WS_IMPL=websockets` and `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
+- `windows_supersede_grace_experiment_20260501`: after root env/container refresh, a 190-second Windows two-browser run still flapped (`nats ws recv failed=7`, `ConnectionClosedError=56`, `yws open/close=9/9`) while memory stayed bounded around 213 MiB and observe/weather/event-loop diagnostics stayed clean. Root logs showed `supersede_grace_ms=15000` for the fresh runtime tags, so the immediate-supersede hypothesis has not been tested yet. With current backend parsing, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=0` would be coerced back to `15000`; use `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=1` for the focused no-code experiment, and only patch parser/defaults if that experiment proves useful.
+- `windows_proxy_env_collision_20260501`: decisive bisection found a local env collision, not a Root channel failure. Raw `tools/diag_nats_ws.py` with `HUB_NATS_WS_PROXY=auto` changed the Root-observed source to `77.37.240.23` and reproduced one-way/`1006` behavior; the same raw probe with the variable unset used the stable `217.216.106.x` route and closed cleanly. Fix prepared and verified: introduce `HUB_NATS_WS_PROXY_MODE=auto`, keep legacy `HUB_NATS_WS_PROXY` as compatibility input only, and hide the legacy variable during `websockets.connect` so Python proxy discovery cannot consume it.
+- `windows_proxy_env_sanitized_20260501`: standalone `tools/diag_nats_client.py` intentionally ran with legacy `HUB_NATS_WS_PROXY=auto` still set. The patched AdaOS transport held 45s cleanly (`tx_count=8`, `rx_count=7`, no task errors, close `1000`). Root confirmed the healthy route: `from=217.216.106.4`, `pub=8`, `msg=8`, `keepaliveMisses=0`, `downstreamSendErrors=0`, close `code=1000`.
+- `windows_two_browser_accept_20260501`: full `adaos api serve` under browser load ran about 178s and stopped cleanly. Local logs: `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/starvation=0, event-loop lag/hang=0. Root logs for `rt-a-5358db7fb0`: `from=217.216.106.4`, `uptime_s=177.789`, `pub=1054`, `keepaliveMisses=0`, `downstreamSendErrors=0`, close `code=1000`.
+- `windows_memory_recheck_20260501`: follow-up run monitored the real uvicorn PID instead of the launcher wrapper. RSS moved from 135.7 MiB at 5s to 165.3 MiB at 121s; PrivateMemory moved from 137.8 MiB to 169.5 MiB. Root confirmed a clean 121.6s NATS session (`code=1000`, `keepaliveMisses=0`, `downstreamSendErrors=0`). Residual non-blocking signals: expected shutdown disconnect, high first-attach `infrastate` YJS owner-flow bursts, and one slow weather handler at 0.264s.
 
 ### Tasks
 
 #### F3M-001: NATS-over-WS disconnects after 25-60 seconds
 
-Status: reopened for Windows root-routed `/nats`; Linux/RU first-window connectivity remains accepted.
+Status: accepted again for Windows root-routed `/nats` after the local proxy-env collision fix; Linux/RU first-window connectivity remains accepted. Local observe file I/O starvation is fixed.
 
 Evidence:
 
@@ -121,9 +130,13 @@ Working hypothesis:
 - The public root `/nats` endpoint is reachable and stable with raw `websockets` tooling.
 - The decisive difference was route selection: tooling used `websockets` system proxy auto-detect (`proxy=True`), while AdaOS core forced direct route (`proxy=None`) on Windows.
 - The direct route can become one-way under active NATS traffic: local sends appear successful, but Root stops receiving client frames and later closes with `1006`.
-- Proxy-auto fixed the first Windows regression and remains the correct core default.
+- Proxy-auto fixed the first Windows regression and remains the correct core default, but the mode must be expressed as `HUB_NATS_WS_PROXY_MODE=auto` or left unset. The legacy `HUB_NATS_WS_PROXY=auto` name can perturb Python proxy discovery before AdaOS parses it.
 - The current reopened regression is narrower: nats-py-style hub clients can stall after Root/proxy-originated or upstream NATS `PING` command frames are delivered downstream during route/Yjs load.
 - Backend keepalive and frame-accounting diagnostics remain useful, but the current primary fix is to make Root terminate those NATS `PING` frames for normal hub WS-NATS clients while preserving transparent control frames for realtime sidecar clients.
+- Aiohttp is not the stable fallback for Windows multi-browser root-routed load; it still fails with `Cannot write to closing transport`.
+- `HUB_NATS_WS_IMPL=auto` should resolve to the patched websockets transport on both Windows and Linux; aiohttp remains an explicit diagnostic override.
+- The latest Windows regression was not fixed by supersede or keepalive changes; it was fixed by preventing `HUB_NATS_WS_PROXY=auto` from leaking into Python proxy auto-discovery.
+- Weather observer callbacks are not the blocker; slow-callback diagnostics stayed at zero during the focused transport runs.
 
 Actions:
 
@@ -136,7 +149,7 @@ Actions:
 - [x] Confirm no local pending-data backpressure during the verified 180-second runs.
 - [x] Reopen after root-routed browser load captured repeated remote reconnects and quiet NATS WS diagnostics.
 - [x] Compare root proxy upstream ping/pong cadence against client-side `last_rx_ago_s`.
-- [x] Keep backend WS-NATS `nats keepalive -> client` available, still overridable with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`.
+- [x] Keep backend WS-NATS `nats keepalive -> client` available only as an explicit diagnostic opt-in (`WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=1` or legacy `WS_NATS_PROXY_KEEPALIVE_ENABLE=1` plus `WS_NATS_PROXY_KEEPALIVE_FORCE=1`).
 - [x] Confirm root currently runs with `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`; treat `natsKeepalivesSent=0` as expected in that mode.
 - [x] Increase backend WS-NATS supersede max grace to 10s, close superseded peers on new route readiness, and log resolved proxy config on startup.
 - [x] Deploy backend route-open retry / supersede-grace patch to root.
@@ -155,19 +168,32 @@ Actions:
 - [x] Confirm frame counters show route traffic reaches the hub before the root closes on the first keepalive miss.
 - [x] Prepare backend patch to stagger WS ping vs NATS-data keepalive and close only after repeated keepalive misses (`WS_NATS_PROXY_KEEPALIVE_MAX_MISSES`, default 3).
 - [x] Compare stable `tools` WebSocket route with failing AdaOS core route and identify the proxy-auto vs direct-route difference.
-- [x] Change core default to `proxy=True` / system proxy auto-detect, with `HUB_NATS_WS_PROXY=none` as an explicit direct-route diagnostic override.
+- [x] Change core default to `proxy=True` / system proxy auto-detect, with `HUB_NATS_WS_PROXY_MODE=none` as an explicit direct-route diagnostic override.
 - [x] Add transport regression tests for proxy default and coalesced root `PING` control frames.
 - [x] Verify isolated `nats-py + AdaOS WebSocketTransport` stays connected and echoes traffic for 45s through the proxy-auto route.
 - [x] Re-run `adaos api serve` for about 190 seconds and confirm no NATS watchdog reconnect, route timeout, remote-route fallback, or event-loop lag/hang before requested shutdown.
 - [x] Re-run live local + root-routed browser acceptance with the updated core and confirm the remote browser loads Yjs data.
-- [x] Update code/env defaults so the stable route is the default: `HUB_NATS_WS_PROXY=auto` / unset, and direct route only via `HUB_NATS_WS_PROXY=none`.
-- [x] Reopen the Windows 2026-04-30 regression and disable optional client-originated NATS data ping by default (`HUB_NATS_WS_DATA_PING_S=` / unset); keep data ping as explicit opt-in diagnostics only.
+- [x] Update code/env defaults so the stable route is the default: `HUB_NATS_WS_PROXY_MODE=auto` / unset, and direct route only via `HUB_NATS_WS_PROXY_MODE=none`.
+- [x] Reopen the Windows 2026-04-30 regression and test with client-originated NATS data ping disabled; confirm `/nats` still fails without any `data_pings_tx`.
+- [x] Restore the confirmed Windows profile: `HUB_NATS_WS_DATA_PING_S=auto` sends a conservative 5s NATS-data ping only on Windows+`websockets`; Linux remains disabled unless explicitly requested.
 - [x] Validate raw `/nats` channel with `tools/diag_nats_ws.py` and `tools/diag_nats_ws_concurrent.py`; confirm raw WebSocket framing remains healthy for 90s under concurrent PUB/MSG and Root NATS keepalive traffic.
 - [x] Confirm nats-py-style clients still fail while raw WebSocket clients stay healthy.
 - [x] Prepare Root WS proxy fix for nats-py-style clients: disable proxy-originated client keepalive by default and terminate upstream NATS `PING` frames at the proxy for non-transparent hub clients.
-- [ ] Deploy Root WS proxy ping-handling patch and confirm root logs show no `nats keepalive pong missing` / no downstream upstream-`PING` delivery for normal hub clients.
-- [ ] Re-run Windows root-routed browser acceptance and confirm remote Yjs data loads without `/nats` watchdog reconnects.
-- [ ] If proxy-auto + data-ping-off + nats-py transport fix still regresses, revisit backend repeated-miss keepalive deployment and root proxy route behavior.
+- [x] Harden Root WS proxy against stale root env: ignore legacy `WS_NATS_PROXY_KEEPALIVE_ENABLE=1` for normal hub clients unless `WS_NATS_PROXY_KEEPALIVE_FORCE=1`; use `WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=1` only for targeted diagnostics.
+- [x] Harden Root WS proxy against stale root WS control ping env: ignore legacy `WS_NATS_PROXY_WS_PING=1` for normal hub clients unless `WS_NATS_PROXY_WS_PING_FORCE=1`; use `WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=1` only for targeted diagnostics.
+- [x] Add `WebSocketTransportWebsockets` send-path diagnostics (`current_send`, `last_send`, send counters/errors) to prove whether local sends actually correspond to Root-received client frames.
+- [x] Add weather observer slow-callback diagnostics and rule out weather as the source of the `/nats` disconnect.
+- [x] Move local `events.log` observe writes off the event loop; confirm two-browser run no longer shows `observe.py`, `_write_local`, loop lag, or `flush_slow` starvation.
+- [x] Re-test aiohttp under two-browser load; confirm the old aiohttp `Cannot write to closing transport` failure still exists.
+- [x] Re-test websockets under the current Root env; confirm it still flaps, so the remaining blocker is not the local observe file I/O path alone.
+- [x] Change `HUB_NATS_WS_IMPL=auto` back to the patched websockets transport on both Windows and Linux; keep aiohttp explicit-only.
+- [x] Restore Root env to the confirmed Windows profile for normal hub clients: `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_KEEPALIVE_FORCE=0`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=0`, `WS_NATS_PROXY_WS_PING_FORCE=0`, and disable deep wiretap/ping trace unless diagnosing one run.
+- [x] Detect that current backend parsing would coerce `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=0` back to `15000`.
+- [x] Run a no-code Root env experiment with `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=1` and verify root logs show `supersede_grace_ms=1` / immediate `closing superseded hub ws-nats connection`; conclude this was not the decisive fix.
+- [x] Identify and fix the decisive Windows route regression: do not expose the legacy `HUB_NATS_WS_PROXY=auto` environment variable to Python proxy discovery.
+- [x] Re-run live Windows root-routed browser acceptance after the proxy-env fix; confirm remote Yjs data loads without `/nats` watchdog reconnects and without route starvation.
+- [x] Decide not to patch backend supersede parser/defaults for the current acceptance path; keep `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=1` as an optional Root experiment, not the primary stable profile.
+- [ ] Reconfirm Linux/RU after rollout still uses `auto -> websockets` and keeps the accepted first-window behavior.
 
 #### F3M-002: Root-routed HTTP requests timeout during startup
 
@@ -453,9 +479,9 @@ Before a 3-minute soak:
 - [ ] `ADAOS_WIN_SELECTOR_LOOP=0`.
 - [ ] `HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl`.
 - [ ] `HUB_ROOT_LOG_SNAPSHOT=1`.
-- [ ] `HUB_NATS_WS_PROXY` is unset or set to `auto` for normal Windows and Linux runs; use `HUB_NATS_WS_PROXY=none` only for direct-route diagnostics.
+- [ ] `HUB_NATS_WS_PROXY` is unset in normal Windows and Linux runs. Use `HUB_NATS_WS_PROXY_MODE=auto` for the stable route and `HUB_NATS_WS_PROXY_MODE=none` only for direct-route diagnostics.
 - [ ] For zoned root-routed browser acceptance, verify `/v1/browser/hub/status?hub_id=<hubId>` is `online` on the expected root zone and `rootHubBaseUrl()` resolves `/hubs/<hubId>` under that same zone.
-- [ ] For root-routed browser acceptance, root backend can use its stable defaults: `WS_NATS_PROXY_KEEPALIVE_ENABLE=1`, `WS_NATS_PROXY_KEEPALIVE_MS=20000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3`.
+- [ ] For root-routed browser acceptance, root backend can use its stable defaults: `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_KEEPALIVE_FORCE=0`, `WS_NATS_PROXY_KEEPALIVE_MS=20000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=0`, `WS_NATS_PROXY_WS_PING_FORCE=0`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3`.
 - [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
 - [ ] Keep normal diagnostic defaults common across Windows and Linux: `ADAOS_LOG_EVENTS_PAYLOAD=0`, `ADAOS_YJS_LOAD_MARK_STREAM_TOP_N=24`, `ADAOS_YJS_LOAD_MARK_GATEWAY_HIGH_WPS=64`, `ADAOS_YJS_LOAD_MARK_GATEWAY_CRITICAL_WPS=128`, `ADAOS_YJS_LOAD_MARK_HISTORY_MAX_BYTES=10485760`, `ADAOS_YJS_BACKEND_ROOM_UPDATE_SKIP_TTL_S=30`, `ADAOS_INFRASTATE_SNAPSHOT_CONTENT_MAX_BYTES=4096`, `ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC=300`.
 - [ ] Deep trace is off unless investigating one focused case.

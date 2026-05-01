@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,6 +20,27 @@ __all__ = [
     "write_env",
     "skill_env_path",
 ]
+
+
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock_key(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve())
+    except Exception:
+        return str(path)
+
+
+def _path_lock(path: Path) -> threading.RLock:
+    key = _path_lock_key(path)
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
@@ -159,31 +182,55 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 
 def _write_json_object(path: Path, payload: Mapping[str, Any]) -> None:
+    with _path_lock(path):
+        _write_json_object_unlocked(path, payload)
+
+
+def _write_json_object_unlocked(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp")
     tmp.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    delay_s = 0.01
+    try:
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt >= 7:
+                    raise
+                time.sleep(delay_s)
+                delay_s = min(delay_s * 2.0, 0.25)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
 
 
 def read_env() -> dict[str, Any]:
     target = skill_env_path()
-    merged = _read_json_object(target) if target.exists() else {}
-    changed = not target.exists()
-    for legacy in _legacy_paths(target):
-        if not legacy.exists() or not legacy.is_file():
-            continue
-        payload = _read_json_object(legacy)
-        if not payload:
-            continue
-        merged = _deep_merge(payload, merged)
-        changed = True
-    if changed and merged:
-        _write_json_object(target, merged)
-    return merged
+    with _path_lock(target):
+        merged = _read_json_object(target) if target.exists() else {}
+        changed = not target.exists()
+        for legacy in _legacy_paths(target):
+            if not legacy.exists() or not legacy.is_file():
+                continue
+            payload = _read_json_object(legacy)
+            if not payload:
+                continue
+            merged = _deep_merge(payload, merged)
+            changed = True
+        if changed and merged:
+            _write_json_object_unlocked(target, merged)
+        return merged
 
 
 def write_env(payload: Mapping[str, Any]) -> None:
-    _write_json_object(skill_env_path(), payload)
+    target = skill_env_path()
+    with _path_lock(target):
+        _write_json_object_unlocked(target, payload)
 
 
 def get_env(key: str, default: Any | None = None) -> Any:
@@ -191,13 +238,17 @@ def get_env(key: str, default: Any | None = None) -> Any:
 
 
 def set_env(key: str, value: Any) -> None:
-    payload = read_env()
-    payload[key] = value
-    write_env(payload)
+    target = skill_env_path()
+    with _path_lock(target):
+        payload = read_env()
+        payload[key] = value
+        _write_json_object_unlocked(target, payload)
 
 
 def delete_env(key: str) -> None:
-    payload = read_env()
-    if key in payload:
-        payload.pop(key, None)
-        write_env(payload)
+    target = skill_env_path()
+    with _path_lock(target):
+        payload = read_env()
+        if key in payload:
+            payload.pop(key, None)
+            _write_json_object_unlocked(target, payload)
