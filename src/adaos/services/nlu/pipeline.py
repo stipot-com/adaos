@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ _WEATHER_CITY_EN_RE = re.compile(
 _RULES_CACHE_TTL_S = 2.0
 _rules_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _rules_lock = asyncio.Lock()
+_USE_NEURAL_STAGE = os.getenv("ADAOS_NLU_NEURAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def invalidate_dynamic_regex_cache(*, webspace_id: str | None = None) -> None:
@@ -370,9 +372,10 @@ async def _on_detect_request(evt: Any) -> None:
         )
         return
 
+    downstream_event = "nlp.intent.detect.neural" if _USE_NEURAL_STAGE else "nlp.intent.detect.rasa"
     bus_emit(
         ctx.bus,
-        "nlp.intent.detect.rasa",
+        downstream_event,
         {"text": text, "webspace_id": webspace_id, "request_id": rid, "_meta": meta},
         source="nlu.pipeline",
     )
