@@ -485,13 +485,14 @@ def _autostart_service_token() -> str:
 def _autostart_cli_token(token: Optional[str] = None) -> str:
     ctx = get_ctx()
     conf = getattr(ctx, "config", None)
+    service_token = _autostart_service_token()
     return str(
         token
+        or service_token
         or os.getenv("ADAOS_TOKEN")
         or os.getenv("ADAOS_HUB_TOKEN")
         or os.getenv("HUB_TOKEN")
         or getattr(conf, "token", None)
-        or _autostart_service_token()
         or ""
     ).strip()
 

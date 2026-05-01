@@ -248,6 +248,9 @@ Current browser-facing rules:
   target one concrete node
 * desktop drag ordering is currently browser-local per webspace; it is not yet
   a shared Yjs contract
+* desktop app and widget cards now expose explicit drag handles instead of
+  making the whole card a drag target, so text inside the card remains
+  selectable
 
 This means the UI is already node-aware at the catalog/widget surface even
 though the broader projection ABI and node-reserved Yjs envelope are still in
