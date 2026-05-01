@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -26,7 +27,8 @@ _UNATTRIBUTED_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNATTRIBUTED_PREFIX") 
 _OWNER_PREFIX = str(os.getenv("ADAOS_YJS_LOAD_MARK_OWNER_PREFIX") or "_by_owner/").strip() or "_by_owner/"
 _UNKNOWN_OWNER = str(os.getenv("ADAOS_YJS_LOAD_MARK_UNKNOWN_OWNER") or f"{_OWNER_PREFIX}unknown").strip() or f"{_OWNER_PREFIX}unknown"
 _STREAM_RECEIVER = str(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_RECEIVER") or "infrastate.yjs.load_mark").strip() or "infrastate.yjs.load_mark"
-_STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "0.25"))
+_STREAM_PUBLISH_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC") or "2.0"))
+_STREAM_UNCHANGED_KEEPALIVE_SEC = max(0.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_UNCHANGED_KEEPALIVE_SEC") or "30.0"))
 _STREAM_TOP_N = max(0, int(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TOP_N") or "24"))
 _HIGH_WPS = max(1.0, float(os.getenv("ADAOS_YJS_LOAD_MARK_HIGH_WPS") or "8"))
 _CRITICAL_WPS = max(_HIGH_WPS + 0.1, float(os.getenv("ADAOS_YJS_LOAD_MARK_CRITICAL_WPS") or "32"))
@@ -49,11 +51,12 @@ _LOCK = threading.RLock()
 _WEBSPACE_STATE: dict[str, dict[str, Any]] = {}
 _ACTIVE_STREAM_SUBSCRIPTIONS: dict[str, int] = {}
 _LAST_STREAM_PUBLISH_AT: dict[str, float] = {}
+_LAST_STREAM_FINGERPRINT: dict[str, str] = {}
 _OWNER_ALERTS: dict[str, float] = {}
 _OWNER_ALERT_QUEUE: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=_OWNER_ALERT_QUEUE_MAX)
 _OWNER_ALERT_LOGGER_THREAD: threading.Thread | None = None
 _OWNER_ALERT_LOGGER_LOCK = threading.Lock()
-_STREAM_TICK_INTERVAL_SEC = max(0.25, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC") or "1.0"))
+_STREAM_TICK_INTERVAL_SEC = max(0.25, float(os.getenv("ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC") or "2.0"))
 _STREAM_TICKER_THREAD: threading.Thread | None = None
 _STREAM_TICKER_STOP = threading.Event()
 
@@ -81,6 +84,29 @@ def _json_size(value: Any) -> int:
     except Exception:
         payload = json.dumps(_clone_json(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return len(payload.encode("utf-8"))
+
+
+def _stable_stream_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_stream_value(item)
+            for key, item in sorted(value.items())
+            if str(key) not in {"last_changed_ago_s"}
+        }
+    if isinstance(value, list):
+        return [_stable_stream_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_stable_stream_value(item) for item in value]
+    return value
+
+
+def _stream_payload_fingerprint(payload: Any) -> str:
+    try:
+        stable_payload = _stable_stream_value(payload)
+        raw = json.dumps(stable_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except Exception:
+        raw = repr(_clone_json(payload))
+    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _coerce_map_value(node: Any) -> dict[str, Any]:
@@ -170,6 +196,7 @@ def _mark_stream_subscription(webspace_id: str, *, active: bool) -> None:
         else:
             _ACTIVE_STREAM_SUBSCRIPTIONS.pop(key, None)
             _LAST_STREAM_PUBLISH_AT.pop(key, None)
+            _LAST_STREAM_FINGERPRINT.pop(key, None)
     if active:
         _ensure_stream_ticker_running()
 
@@ -240,7 +267,20 @@ def _maybe_publish_stream_update(webspace_id: str, *, now_ts: float | None = Non
             if now - last_published < _STREAM_PUBLISH_MIN_INTERVAL_SEC:
                 return
         payload = _stream_payload_items_locked(key, now_ts=now, last_published_at=last_published)
+        if not payload and last_published > 0.0:
+            return
+        fingerprint = _stream_payload_fingerprint(payload)
+        previous_fingerprint = _LAST_STREAM_FINGERPRINT.get(key)
+        unchanged = previous_fingerprint == fingerprint
+        keepalive_due = (
+            _STREAM_UNCHANGED_KEEPALIVE_SEC > 0.0
+            and last_published > 0.0
+            and now - last_published >= _STREAM_UNCHANGED_KEEPALIVE_SEC
+        )
+        if unchanged and not keepalive_due:
+            return
         _LAST_STREAM_PUBLISH_AT[key] = now
+        _LAST_STREAM_FINGERPRINT[key] = fingerprint
     try:
         stream_publish(
             _STREAM_RECEIVER,

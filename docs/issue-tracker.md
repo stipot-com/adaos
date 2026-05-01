@@ -61,12 +61,13 @@ Done:
 - Backend-origin Yjs updates are marked so the live room can fan them out to browsers without persisting the same detached diff again as `gateway_ws`.
 - `infrastate_skill.get_snapshot` is read-only for HTTP callers by default and returns a compact client snapshot instead of projecting multi-megabyte diagnostic payloads into Yjs on every root-routed fallback probe.
 - Supervisor memory telemetry still records growth, but automatic policy-triggered sampled-profile restarts are delayed for the first 300 seconds by default so diagnostics cannot break the first browser attach window.
+- `infrascope_skill`, `infrastate_skill`, and core Yjs load-mark streams now publish only active subscribed receivers, deduplicate unchanged payloads, and rate-limit high-churn diagnostics under browser load.
 
 In progress:
 
 - Keep an eye on residual sub-second event-loop drift and occasional `infrastate` / `infrascope` browser-runtime handlers, but do not treat them as connectivity blockers unless they exceed the normal thresholds.
 - Reconfirm Windows after rollout from a clean operator environment where `HUB_NATS_WS_PROXY` is unset and `HUB_NATS_WS_PROXY_MODE=auto` is used.
-- Run a longer Linux/RU two-browser soak after the first-3-minute acceptance window to decide whether the remaining slow memory climb is a real leak or a bounded warm-cache plateau.
+- Reduce follow-up Linux/RU YStore replay pressure (`sync_runtime: pressure`, replay around 700 KiB) without reintroducing expensive live-backup work on the runtime hot path.
 
 Known follow-up outside the current goal:
 
@@ -109,6 +110,7 @@ Latest verification:
 - `windows_proxy_env_sanitized_20260501`: standalone `tools/diag_nats_client.py` intentionally ran with legacy `HUB_NATS_WS_PROXY=auto` still set. The patched AdaOS transport held 45s cleanly (`tx_count=8`, `rx_count=7`, no task errors, close `1000`). Root confirmed the healthy route: `from=217.216.106.4`, `pub=8`, `msg=8`, `keepaliveMisses=0`, `downstreamSendErrors=0`, close `code=1000`.
 - `windows_two_browser_accept_20260501`: full `adaos api serve` under browser load ran about 178s and stopped cleanly. Local logs: `nats ws recv failed=0`, watchdog/`ConnectionClosedError`/`WinError=0`, route timeout/proxy failed/starvation=0, event-loop lag/hang=0. Root logs for `rt-a-5358db7fb0`: `from=217.216.106.4`, `uptime_s=177.789`, `pub=1054`, `keepaliveMisses=0`, `downstreamSendErrors=0`, close `code=1000`.
 - `windows_memory_recheck_20260501`: follow-up run monitored the real uvicorn PID instead of the launcher wrapper. RSS moved from 135.7 MiB at 5s to 165.3 MiB at 121s; PrivateMemory moved from 137.8 MiB to 169.5 MiB. Root confirmed a clean 121.6s NATS session (`code=1000`, `keepaliveMisses=0`, `downstreamSendErrors=0`). Residual non-blocking signals: expected shutdown disconnect, high first-attach `infrastate` YJS owner-flow bursts, and one slow weather handler at 0.264s.
+- `linux_ru_two_browser_plateau_20260501`: live Linux hub `192.168.0.30` with two browsers attached was hotpatched with active-receiver/fingerprint stream guards for `infrascope_skill`, `infrastate_skill`, and core `yjs.load_mark`. A 6-minute window warmed from about 245 MiB RSS to about 439 MiB and plateaued; a follow-up 10-minute window moved from about 462 MiB to about 547 MiB, then stayed flat for the last 3-4 minutes. Connectivity stayed stable: `hub_root: ready/stable`, `hub_root_browser: ready/stable`, `media_runtime live_peers=2/2`, `nats ws recv failed=0`, route timeout/proxy failed=0, event-loop lag/hang=0. Remaining issue is bounded YStore replay pressure (`sync_runtime: pressure`, replay about 715 KiB), not the previous 3 GiB runaway/restart pattern. A manual live `/api/node/yjs/webspaces/*/backup` request did not return within 60s, so live compaction needs a safer off-hot-path design.
 
 ### Tasks
 
@@ -469,8 +471,10 @@ Actions:
 - [x] Compare Linux hub core slots `A` and `B` with local source and identify the only remaining intentional local commit deltas.
 - [x] Run a two-browser Linux soak and confirm the first 3 minutes do not hit NATS churn, route timeouts, event-loop hangs, or memory-profile restarts.
 - [x] Confirm memory no longer grows toward the previous 3GB supervisor restart pattern during the first acceptance window.
-- [ ] Run a longer 10-15 minute Linux two-browser soak and confirm RSS reaches a bounded plateau.
-- [ ] Confirm load-mark no longer reports simultaneous sustained high byte rates for the same backend diff under both `skill_infrastate_skill` and `gateway_ws`.
+- [x] Run a longer 10-15 minute Linux two-browser soak and confirm RSS reaches a bounded plateau.
+- [x] Confirm load-mark no longer reports simultaneous sustained high byte rates for the same backend diff under both `skill_infrastate_skill` and `gateway_ws`.
+- [ ] Design safe off-hot-path YStore replay compaction for live browser load; direct live backup can exceed a 60s request window.
+- [ ] Tune YStore replay defaults or background compaction so `sync_runtime` leaves `pressure` after browser warm-up.
 
 ### Operating Checklist
 
@@ -483,7 +487,7 @@ Before a 3-minute soak:
 - [ ] For zoned root-routed browser acceptance, verify `/v1/browser/hub/status?hub_id=<hubId>` is `online` on the expected root zone and `rootHubBaseUrl()` resolves `/hubs/<hubId>` under that same zone.
 - [ ] For root-routed browser acceptance, root backend can use its stable defaults: `WS_NATS_PROXY_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=0`, `WS_NATS_PROXY_KEEPALIVE_FORCE=0`, `WS_NATS_PROXY_KEEPALIVE_MS=20000`, `WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1`, `WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000`, `WS_NATS_PROXY_WS_PING=0`, `WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=0`, `WS_NATS_PROXY_WS_PING_FORCE=0`, `WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0`, `WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000`, `WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1`, `WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3`.
 - [ ] Capture process-tree memory samples during loading-to-ready and final acceptance runs.
-- [ ] Keep normal diagnostic defaults common across Windows and Linux: `ADAOS_LOG_EVENTS_PAYLOAD=0`, `ADAOS_YJS_LOAD_MARK_STREAM_TOP_N=24`, `ADAOS_YJS_LOAD_MARK_GATEWAY_HIGH_WPS=64`, `ADAOS_YJS_LOAD_MARK_GATEWAY_CRITICAL_WPS=128`, `ADAOS_YJS_LOAD_MARK_HISTORY_MAX_BYTES=10485760`, `ADAOS_YJS_BACKEND_ROOM_UPDATE_SKIP_TTL_S=30`, `ADAOS_INFRASTATE_SNAPSHOT_CONTENT_MAX_BYTES=4096`, `ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC=300`.
+- [ ] Keep normal diagnostic defaults common across Windows and Linux: `ADAOS_LOG_EVENTS_PAYLOAD=0`, `ADAOS_YJS_LOAD_MARK_STREAM_MIN_INTERVAL_SEC=2.0`, `ADAOS_YJS_LOAD_MARK_STREAM_TICK_INTERVAL_SEC=2.0`, `ADAOS_YJS_LOAD_MARK_STREAM_UNCHANGED_KEEPALIVE_SEC=30.0`, `ADAOS_YJS_LOAD_MARK_STREAM_TOP_N=24`, `ADAOS_YJS_LOAD_MARK_GATEWAY_HIGH_WPS=64`, `ADAOS_YJS_LOAD_MARK_GATEWAY_CRITICAL_WPS=128`, `ADAOS_YJS_LOAD_MARK_HISTORY_MAX_BYTES=10485760`, `ADAOS_YJS_BACKEND_ROOM_UPDATE_SKIP_TTL_S=30`, `ADAOS_INFRASTATE_SNAPSHOT_CONTENT_MAX_BYTES=4096`, `ADAOS_SUPERVISOR_MEMORY_AUTO_PROFILE_MIN_UPTIME_SEC=300`.
 - [ ] Deep trace is off unless investigating one focused case.
 
 During analysis:
