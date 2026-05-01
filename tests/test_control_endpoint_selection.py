@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
+
+import pytest
 
 if "nats" not in sys.modules:
     sys.modules["nats"] = types.SimpleNamespace()
@@ -279,3 +282,33 @@ def test_member_link_client_does_not_reemit_hub_mirrored_events(monkeypatch) -> 
     fake_bus.subscriber(mirrored)
 
     assert client._out_q.empty()
+
+
+@pytest.mark.asyncio
+async def test_member_link_ping_loop_exits_when_pong_goes_stale(monkeypatch) -> None:
+    class _FakeWs:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    now = {"value": 100.0}
+
+    async def _fake_sleep(_seconds: float) -> None:
+        now["value"] += 10.0
+
+    monkeypatch.setattr("adaos.services.subnet.link_client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("adaos.services.subnet.link_client.time.time", lambda: now["value"])
+
+    client = MemberLinkClient()
+    client._ws_url = "ws://hub/ws/subnet"
+    client._connected_at = 100.0
+    client._last_pong_at = 100.0
+    monkeypatch.setattr(client, "_pong_stale_after_s", lambda: 15.0)
+
+    ws = _FakeWs()
+
+    await client._ping_loop(ws)
+
+    assert ws.sent == [json.dumps({"t": "ping", "ts": 110.0})]

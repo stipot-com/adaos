@@ -115,6 +115,7 @@ def _local_node_label() -> str:
     return _local_node_id()
 
 
+
 def _read_node_scoped_scenario_entry(scenarios_root: Any, scenario_id: str, *, node_id: str | None = None) -> dict[str, Any]:
     root = _coerce_dict(scenarios_root or {})
     target_node_id = str(node_id or "").strip() or _local_node_id()
@@ -920,6 +921,8 @@ class MemberUpdateRequest(BaseModel):
 
 class WebspaceYjsActionRequest(BaseModel):
     scenario_id: str | None = None
+    scenario_ref: dict[str, Any] | None = None
+    home_scenario_ref: dict[str, Any] | None = None
     set_home: bool | None = None
     wait_for_rebuild: bool | None = None
     recreate_room: bool | None = None
@@ -931,12 +934,14 @@ class WebspaceCreateRequest(BaseModel):
     id: str | None = None
     title: str | None = None
     scenario_id: str | None = None
+    scenario_ref: dict[str, Any] | None = None
     dev: bool = False
 
 
 class WebspaceUpdateRequest(BaseModel):
     title: str | None = None
     home_scenario: str | None = None
+    home_scenario_ref: dict[str, Any] | None = None
 
 
 class WebspaceToggleInstallRequest(BaseModel):
@@ -1571,6 +1576,7 @@ async def node_yjs_webspaces() -> dict[str, Any]:
             "created_at": item.created_at,
             "kind": item.kind,
             "home_scenario": item.home_scenario,
+            "home_scenario_ref": getattr(item, "home_scenario_ref", None),
             "source_mode": item.source_mode,
             "node_id": getattr(item, "node_id", None) or _local_node_id(),
             "node_label": getattr(item, "node_label", None) or _local_node_label(),
@@ -1605,6 +1611,7 @@ async def node_yjs_create_webspace(payload: WebspaceCreateRequest) -> dict[str, 
         str(payload.id or "").strip() or None,
         str(payload.title or "").strip() or None,
         scenario_id=scenario_id,
+        scenario_ref=payload.scenario_ref if isinstance(payload.scenario_ref, dict) else None,
         dev=bool(payload.dev),
     )
     return {
@@ -1616,6 +1623,7 @@ async def node_yjs_create_webspace(payload: WebspaceCreateRequest) -> dict[str, 
             "created_at": info.created_at,
             "kind": info.kind,
             "home_scenario": info.home_scenario,
+            "home_scenario_ref": getattr(info, "home_scenario_ref", None),
             "source_mode": info.source_mode,
         },
         "runtime": yjs_sync_runtime_snapshot(
@@ -1733,10 +1741,15 @@ async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequ
             "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
+    update_kwargs: dict[str, Any] = {
+        "title": str(payload.title or "").strip() or None,
+        "home_scenario": str(payload.home_scenario or "").strip() or None,
+    }
+    if "home_scenario_ref" in getattr(payload, "model_fields_set", set()):
+        update_kwargs["home_scenario_ref"] = payload.home_scenario_ref
     info = await WebspaceService().update_metadata(
         target_webspace_id,
-        title=str(payload.title or "").strip() or None,
-        home_scenario=str(payload.home_scenario or "").strip() or None,
+        **update_kwargs,
     )
     if info is None:
         return {
@@ -1754,6 +1767,7 @@ async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequ
             "created_at": info.created_at,
             "kind": info.kind,
             "home_scenario": info.home_scenario,
+            "home_scenario_ref": getattr(info, "home_scenario_ref", None),
             "source_mode": info.source_mode,
         },
         "runtime": yjs_sync_runtime_snapshot(
@@ -2120,7 +2134,16 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
             "webspace_id": str(webspace_id or "default") or "default",
             "error": "scenario_id_required",
         }
-    info = await WebspaceService().set_home_scenario(str(webspace_id or "default") or "default", scenario_id)
+    set_home_kwargs: dict[str, Any] = {}
+    if "home_scenario_ref" in getattr(payload, "model_fields_set", set()):
+        set_home_kwargs["home_scenario_ref"] = payload.home_scenario_ref
+    elif "scenario_ref" in getattr(payload, "model_fields_set", set()):
+        set_home_kwargs["home_scenario_ref"] = payload.scenario_ref
+    info = await WebspaceService().set_home_scenario(
+        str(webspace_id or "default") or "default",
+        scenario_id,
+        **set_home_kwargs,
+    )
     result: dict[str, Any]
     if info is None:
         result = {
@@ -2137,6 +2160,7 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
             "webspace_id": info.id,
             "scenario_id": scenario_id,
             "home_scenario": info.home_scenario,
+            "home_scenario_ref": getattr(info, "home_scenario_ref", None),
         }
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,

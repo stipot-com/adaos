@@ -243,7 +243,7 @@ Current browser-facing rules:
 * member `widgets` are allowed in the shared desktop/widget space
 * member `apps` are shown in desktop catalogs, but dev-only and
   scenario/skill-authoring surfaces remain hub-only for now
-* widget and catalog cards may display the producing `node_id`
+* widget and catalog cards may display the producing node label/name
 * install actions may carry `node_id` so marketplace/runtime install flows can
   target one concrete node
 * desktop drag ordering is now shared per webspace through
@@ -251,6 +251,11 @@ Current browser-facing rules:
 * desktop app and widget cards now expose explicit drag handles instead of
   making the whole card a drag target, so text inside the card remains
   selectable
+* modal titles, widget headers, and catalog badges now prefer node labels
+  (first node name) over generic `hub` / `member` labels
+* webspaces themselves remain shared Yjs documents; node binding currently
+  belongs to node-owned apps/widgets/streams and to the selected
+  `home_scenario_ref`, not to the webspace container itself
 
 This means the UI is already node-aware at the catalog/widget surface even
 though the broader projection ABI and node-reserved Yjs envelope are still in
@@ -271,7 +276,8 @@ progress.
   scenario payload into those branches.
 * **Syncing across docs** - the core runtime updates `data.webspaces` in each
   YDoc when a webspace is created, renamed, or deleted. Each entry carries
-  `{ id, title, created_at, node_id, node_label }` plus current home/validation
+  `{ id, title, created_at, node_id, node_label }` plus current
+  `home_scenario`, optional node-bound `home_scenario_ref`, and validation
   metadata so any client can render the available desktops without inventing
   ownership labels locally.
 * **Switching webspaces** - the frontend remembers a preferred webspace in
@@ -380,6 +386,11 @@ For the current desktop/subnet migration scope, the browser should treat those
 effective branches as the render contract and should not depend on
 `ui.scenarios.*` fallback reads for desktop schema or modal definitions.
 Scenario compatibility caches remain backend/runtime data only.
+
+For workspace/home selection in the same migration scope, the browser may
+consume a node-aware `home_scenario_ref` from `data.webspaces` and
+`/api/node/yjs/webspaces`, while the webspace document itself remains shared
+and node-agnostic.
 
 The control API (`/api/node/yjs/webspaces/<id>`) and `YDocService` expose a
 shared materialization diagnostic contract:

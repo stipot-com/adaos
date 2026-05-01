@@ -5,6 +5,8 @@ from pydantic import BaseModel
 
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import get_ctx, AgentContext
+from adaos.services.node_config import load_config
+from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.adapters.db import SqliteScenarioRegistry
@@ -54,6 +56,41 @@ def _meta_id(meta: Any) -> str:
     return getattr(mid, "value", str(mid))
 
 
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+    except Exception:
+        pass
+    return "hub"
+
+
+def _local_node_label() -> str:
+    try:
+        conf = load_config()
+        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
+        if isinstance(node_names, list):
+            for item in node_names:
+                label = str(item or "").strip()
+                if label:
+                    return label
+    except Exception:
+        pass
+    return _local_node_id()
+
+
+def _node_label_from_directory(node: Dict[str, Any]) -> str:
+    runtime_projection = node.get("runtime_projection") if isinstance(node.get("runtime_projection"), dict) else {}
+    node_names = runtime_projection.get("node_names") if isinstance(runtime_projection.get("node_names"), list) else []
+    for item in node_names:
+        label = str(item or "").strip()
+        if label:
+            return label
+    return str(node.get("node_id") or "").strip() or "hub"
+
+
 # --- API (тонкий фасад CLI) --------------------------------------------------
 class InstallReq(BaseModel):
     name: str
@@ -75,7 +112,55 @@ class UninstallReq(BaseModel):
 @router.get("/list")
 async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_manager)):
     rows = mgr.list_installed()
-    items = [_to_mapping(r) for r in (rows or [])]
+    items: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    local_node_id = _local_node_id()
+    local_node_label = _local_node_label()
+    for row in rows or []:
+        item = _to_mapping(row)
+        scenario_id = str(item.get("name") or item.get("id") or item.get("repr") or "").strip()
+        if not scenario_id:
+            continue
+        key = (local_node_id, scenario_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        item["id"] = scenario_id
+        item["name"] = scenario_id
+        item["node_id"] = local_node_id
+        item["node_label"] = local_node_label
+        item["source"] = "local_installed"
+        items.append(item)
+    try:
+        conf = load_config()
+        if str(getattr(conf, "role", "") or "").strip().lower() == "hub":
+            for node in get_directory().list_known_nodes():
+                node_id = str(node.get("node_id") or "").strip()
+                if not node_id:
+                    continue
+                node_label = _node_label_from_directory(node)
+                capacity = node.get("capacity") if isinstance(node.get("capacity"), dict) else {}
+                scenarios = capacity.get("scenarios") if isinstance(capacity.get("scenarios"), list) else []
+                for scenario in scenarios:
+                    if not isinstance(scenario, dict):
+                        continue
+                    scenario_id = str(scenario.get("name") or scenario.get("id") or "").strip()
+                    if not scenario_id:
+                        continue
+                    key = (node_id, scenario_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    items.append({
+                        **scenario,
+                        "id": scenario_id,
+                        "name": scenario_id,
+                        "node_id": node_id,
+                        "node_label": node_label,
+                        "source": "subnet_capacity",
+                    })
+    except Exception:
+        pass
     result: Dict[str, Any] = {"items": items}
     if fs:
         present = {_meta_id(m) for m in mgr.list_present()}

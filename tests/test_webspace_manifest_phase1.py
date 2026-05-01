@@ -27,6 +27,7 @@ from adaos.services.workspaces import (
     get_workspace_page_schema_overlay,
     get_workspace_icon_order_overlay,
     get_workspace_widget_order_overlay,
+    get_workspace_home_scenario_ref_overlay,
     has_workspace_overlay,
     normalize_workspaces,
     set_workspace_installed_overlay,
@@ -35,6 +36,7 @@ from adaos.services.workspaces import (
     set_workspace_topbar_overlay,
     set_workspace_page_schema_overlay,
     set_workspace_widget_order_overlay,
+    set_workspace_home_scenario_ref_overlay,
     set_workspace_manifest,
 )
 
@@ -223,6 +225,10 @@ def test_webspace_listing_exposes_manifest_metadata(monkeypatch) -> None:
 
     service = webspace_runtime_module.WebspaceService()
     asyncio.run(service.create("metadata-space", "Metadata Space", scenario_id="prompt_engineer_scenario", dev=True))
+    set_workspace_home_scenario_ref_overlay(
+        "metadata-space",
+        {"scenario_id": "prompt_engineer_scenario", "node_id": "member-01", "node_label": "Edge One"},
+    )
 
     items = {item["id"]: item for item in webspace_runtime_module._webspace_listing()}
     row = items["metadata-space"]
@@ -230,7 +236,28 @@ def test_webspace_listing_exposes_manifest_metadata(monkeypatch) -> None:
     assert row["title"] == "DEV: Metadata Space"
     assert row["kind"] == "dev"
     assert row["home_scenario"] == "prompt_engineer_scenario"
+    assert row["home_scenario_ref"] == {
+        "scenario_id": "prompt_engineer_scenario",
+        "node_id": "member-01",
+        "node_label": "Edge One",
+    }
     assert row["source_mode"] == "dev"
+
+
+def test_workspace_home_scenario_ref_overlay_roundtrip() -> None:
+    ensure_workspace("scenario-ref-space")
+
+    set_workspace_home_scenario_ref_overlay(
+        "scenario-ref-space",
+        {"scenario_id": "infra_state", "node_id": "member-02", "node_label": "Infra Node"},
+    )
+
+    assert get_workspace_home_scenario_ref_overlay("scenario-ref-space") == {
+        "scenario_id": "infra_state",
+        "node_id": "member-02",
+        "node_label": "Infra Node",
+    }
+    assert get_workspace_overlay("scenario-ref-space")["workspace"]["homeScenarioRef"]["scenario_id"] == "infra_state"
 
 
 def test_webspace_reload_defaults_to_manifest_home_scenario(monkeypatch) -> None:

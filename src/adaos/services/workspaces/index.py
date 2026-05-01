@@ -132,6 +132,32 @@ def _clone_overlay_text_list(value: Any) -> list[str]:
     return out
 
 
+def _normalize_home_scenario_ref(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    scenario_id = _normalize_optional_text(
+        value.get("scenario_id") or value.get("id") or value.get("name")
+    )
+    if not scenario_id:
+        return {}
+    out: dict[str, Any] = {"scenario_id": scenario_id}
+    node_id = _normalize_optional_text(value.get("node_id") or value.get("nodeId"))
+    if node_id:
+        out["node_id"] = node_id
+    node_label = _normalize_optional_text(
+        value.get("node_label")
+        or value.get("nodeLabel")
+        or value.get("node_name")
+        or value.get("nodeName")
+    )
+    if node_label:
+        out["node_label"] = node_label
+    title = _normalize_optional_text(value.get("title") or value.get("scenario_title"))
+    if title and title != scenario_id:
+        out["title"] = title
+    return out
+
+
 def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -161,6 +187,13 @@ def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     widget_order = _clone_overlay_text_list(widget_order_source)
     overlay: dict[str, Any] = {}
     desktop: dict[str, Any] = {}
+    workspace_raw = value.get("workspace") if isinstance(value.get("workspace"), dict) else {}
+    home_scenario_ref_source = (
+        workspace_raw.get("homeScenarioRef")
+        if "homeScenarioRef" in workspace_raw
+        else value.get("homeScenarioRef")
+    )
+    home_scenario_ref = _normalize_home_scenario_ref(home_scenario_ref_source)
     if has_installed or installed["apps"] or installed["widgets"]:
         desktop["installed"] = installed
     if has_pinned_widgets or pinned_widgets:
@@ -171,6 +204,8 @@ def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
         desktop["widgetOrder"] = widget_order
     if desktop:
         overlay["desktop"] = desktop
+    if home_scenario_ref:
+        overlay["workspace"] = {"homeScenarioRef": home_scenario_ref}
     return overlay
 
 
@@ -289,6 +324,16 @@ class WebspaceManifest:
         return _decode_ui_overlay_json(self.ui_overlay_json)
 
     @property
+    def workspace_overlay(self) -> dict[str, Any]:
+        workspace = self.ui_overlay.get("workspace") if isinstance(self.ui_overlay.get("workspace"), dict) else {}
+        out: dict[str, Any] = {}
+        if "homeScenarioRef" in workspace:
+            normalized = _normalize_home_scenario_ref(workspace.get("homeScenarioRef"))
+            if normalized:
+                out["homeScenarioRef"] = normalized
+        return out
+
+    @property
     def desktop_overlay(self) -> dict[str, Any]:
         desktop = self.ui_overlay.get("desktop") if isinstance(self.ui_overlay.get("desktop"), dict) else {}
         out: dict[str, Any] = {}
@@ -339,6 +384,10 @@ class WebspaceManifest:
         return _clone_overlay_text_list(self.desktop_overlay.get("widgetOrder"))
 
     @property
+    def home_scenario_ref_overlay(self) -> dict[str, Any]:
+        return _normalize_home_scenario_ref(self.workspace_overlay.get("homeScenarioRef"))
+
+    @property
     def has_installed_overlay(self) -> bool:
         return "installed" in self.desktop_overlay
 
@@ -361,6 +410,10 @@ class WebspaceManifest:
     @property
     def has_widget_order_overlay(self) -> bool:
         return "widgetOrder" in self.desktop_overlay
+
+    @property
+    def has_home_scenario_ref_overlay(self) -> bool:
+        return "homeScenarioRef" in self.workspace_overlay
 
     @property
     def has_ui_overlay(self) -> bool:
@@ -772,6 +825,13 @@ def get_workspace_widget_order_overlay(workspace_id: str) -> list[str]:
     return row.widget_order_overlay
 
 
+def get_workspace_home_scenario_ref_overlay(workspace_id: str) -> dict[str, Any]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return {}
+    return row.home_scenario_ref_overlay
+
+
 def set_workspace_overlay(workspace_id: str, overlay: Any) -> WebspaceManifest:
     return set_workspace_manifest(workspace_id, ui_overlay_json=overlay)
 
@@ -780,6 +840,23 @@ def set_workspace_desktop_overlay(workspace_id: str, desktop: Any) -> WebspaceMa
     current = get_workspace_overlay(workspace_id)
     overlay = dict(current) if isinstance(current, dict) else {}
     overlay["desktop"] = desktop
+    return set_workspace_overlay(workspace_id, overlay)
+
+
+def set_workspace_home_scenario_ref_overlay(workspace_id: str, scenario_ref: Any) -> WebspaceManifest:
+    current = get_workspace_overlay(workspace_id)
+    overlay = dict(current) if isinstance(current, dict) else {}
+    workspace = dict(overlay.get("workspace")) if isinstance(overlay.get("workspace"), dict) else {}
+    normalized = _normalize_home_scenario_ref(scenario_ref)
+    if normalized:
+        workspace["homeScenarioRef"] = normalized
+        overlay["workspace"] = workspace
+    else:
+        workspace.pop("homeScenarioRef", None)
+        if workspace:
+            overlay["workspace"] = workspace
+        else:
+            overlay.pop("workspace", None)
     return set_workspace_overlay(workspace_id, overlay)
 
 

@@ -152,6 +152,10 @@ Current checkpoint as of 2026-05-01:
 - node multiplicity is therefore now visible in the browser contract, but the
   backend projection record shape and reserved top-level Yjs ownership branches
   are still open work
+- for current desktop/subnet work, webspaces themselves still remain shared
+  Yjs documents; node-aware ownership is now carried by catalog items,
+  stream routes, and persisted `home_scenario_ref` metadata rather than by
+  making the webspace container node-owned
 
 Primary sources:
 
@@ -218,6 +222,10 @@ Current checkpoint as of 2026-05-01:
 - desktop apps/widgets ordering is now emitted through shared desktop state
   (`data.desktop.iconOrder`, `data.desktop.widgetOrder`) instead of staying in
   browser-local storage only
+- workspace-manager state now also persists a node-aware `home_scenario_ref`
+  alongside plain `home_scenario`, so UI selection can distinguish
+  same-named scenarios on different nodes even though full runtime resolution
+  of remote scenario refs remains follow-on backend work
 - this means the pilot has started, but the roadmap item should remain open
   until the same semantics are emitted through the shared dispatcher/projection
   ABI instead of compatibility-era catalog/runtime branches

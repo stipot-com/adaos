@@ -133,6 +133,9 @@ def _local_node_label() -> str:
     return _local_node_id()
 
 
+_HOME_SCENARIO_REF_UNSET = object()
+
+
 @dataclass(slots=True)
 class WebUIRegistryEntry:
     """
@@ -164,6 +167,7 @@ class WebspaceInfo:
     created_at: int
     kind: str = "workspace"
     home_scenario: str = "web_desktop"
+    home_scenario_ref: dict[str, Any] | None = None
     source_mode: str = "workspace"
     node_id: str = "hub"
     node_label: str = "hub"
@@ -196,6 +200,7 @@ class WebspaceOperationalState:
     is_dev: bool
     stored_home_scenario: str | None
     effective_home_scenario: str
+    home_scenario_ref: dict[str, Any] | None
     current_scenario: str | None
     stored_home_scenario_exists: bool | None = None
     home_scenario_exists: bool = True
@@ -213,6 +218,7 @@ class WebspaceOperationalState:
             "is_dev": self.is_dev,
             "stored_home_scenario": self.stored_home_scenario,
             "home_scenario": self.effective_home_scenario,
+            "home_scenario_ref": self.home_scenario_ref,
             "current_scenario": self.current_scenario,
             "stored_home_scenario_exists": self.stored_home_scenario_exists,
             "home_scenario_exists": self.home_scenario_exists,
@@ -2774,6 +2780,7 @@ def _webspace_listing() -> List[Dict[str, Any]]:
                 "created_at": row.created_at,
                 "kind": row.effective_kind,
                 "home_scenario": row.effective_home_scenario,
+                "home_scenario_ref": getattr(row, "home_scenario_ref_overlay", {}) or None,
                 "source_mode": row.effective_source_mode,
                 "node_id": _local_node_id(),
                 "node_label": _local_node_label(),
@@ -2797,6 +2804,7 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
         created_at=row.created_at,
         kind=row.effective_kind,
         home_scenario=row.effective_home_scenario,
+        home_scenario_ref=getattr(row, "home_scenario_ref_overlay", {}) or None,
         source_mode=row.effective_source_mode,
         node_id=_local_node_id(),
         node_label=_local_node_label(),
@@ -2839,6 +2847,7 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
             is_dev=row.is_dev,
             stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
             effective_home_scenario=row.effective_home_scenario,
+            home_scenario_ref=getattr(row, "home_scenario_ref_overlay", {}) or None,
             current_scenario=current_scenario,
             stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
             home_scenario_exists=bool(validation.get("home_scenario_exists")),
@@ -2871,6 +2880,7 @@ async def describe_webspace_operational_state(webspace_id: str) -> WebspaceOpera
         is_dev=row.is_dev,
         stored_home_scenario=str(row.home_scenario).strip() if row.home_scenario else None,
         effective_home_scenario=row.effective_home_scenario,
+        home_scenario_ref=getattr(row, "home_scenario_ref_overlay", {}) or None,
         current_scenario=current_scenario,
         stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
         home_scenario_exists=bool(validation.get("home_scenario_exists")),
@@ -3096,6 +3106,7 @@ class WebspaceService:
         title: Optional[str],
         *,
         scenario_id: str = "web_desktop",
+        scenario_ref: Any = None,
         dev: bool = False,
     ) -> WebspaceInfo:
         webspace_id = _allocate_webspace_id(requested_id)
@@ -3111,6 +3122,8 @@ class WebspaceService:
             home_scenario=str(scenario_id or "").strip() or "web_desktop",
             source_mode=source_mode,
         )
+        if isinstance(scenario_ref, Mapping):
+            row = workspace_index.set_workspace_home_scenario_ref_overlay(webspace_id, dict(scenario_ref))
         await _seed_webspace_from_scenario(webspace_id, scenario_id, dev=dev)
         await self._sync_listing()
         return _webspace_info_from_row(row)
@@ -3140,6 +3153,7 @@ class WebspaceService:
         *,
         title: str | None = None,
         home_scenario: str | None = None,
+        home_scenario_ref: Any = _HOME_SCENARIO_REF_UNSET,
     ) -> Optional[WebspaceInfo]:
         webspace_id = str(webspace_id or "").strip()
         if not webspace_id:
@@ -3162,14 +3176,22 @@ class WebspaceService:
         if next_home_scenario:
             manifest_kwargs["home_scenario"] = next_home_scenario
 
-        if not manifest_kwargs:
+        if not manifest_kwargs and home_scenario_ref is _HOME_SCENARIO_REF_UNSET:
             return _webspace_info_from_row(row)
 
-        updated = workspace_index.set_workspace_manifest(webspace_id, **manifest_kwargs)
+        updated = row if not manifest_kwargs else workspace_index.set_workspace_manifest(webspace_id, **manifest_kwargs)
+        if home_scenario_ref is not _HOME_SCENARIO_REF_UNSET:
+            updated = workspace_index.set_workspace_home_scenario_ref_overlay(webspace_id, home_scenario_ref)
         await self._sync_listing()
         return _webspace_info_from_row(updated)
 
-    async def set_home_scenario(self, webspace_id: str, scenario_id: str) -> Optional[WebspaceInfo]:
+    async def set_home_scenario(
+        self,
+        webspace_id: str,
+        scenario_id: str,
+        *,
+        home_scenario_ref: Any = _HOME_SCENARIO_REF_UNSET,
+    ) -> Optional[WebspaceInfo]:
         webspace_id = (webspace_id or "").strip()
         scenario_id = (scenario_id or "").strip()
         if not webspace_id or not scenario_id:
@@ -3179,6 +3201,8 @@ class WebspaceService:
             _log.warning("cannot set home_scenario for missing webspace %s", webspace_id)
             return None
         row = workspace_index.set_workspace_manifest(webspace_id, home_scenario=scenario_id)
+        if home_scenario_ref is not _HOME_SCENARIO_REF_UNSET:
+            row = workspace_index.set_workspace_home_scenario_ref_overlay(webspace_id, home_scenario_ref)
         await self._sync_listing()
         return _webspace_info_from_row(row)
 
@@ -3435,9 +3459,16 @@ async def _on_webspace_create(evt: Dict[str, Any]) -> None:
     requested = payload.get("id") or payload.get("webspace_id")
     title = payload.get("title")
     scenario_id = str(payload.get("scenario_id") or "web_desktop")
+    scenario_ref = payload.get("scenario_ref") if isinstance(payload.get("scenario_ref"), Mapping) else None
     dev = bool(payload.get("dev"))
     svc = WebspaceService(get_ctx())
-    await svc.create(str(requested) if requested is not None else None, str(title) if title is not None else None, scenario_id=scenario_id, dev=dev)
+    await svc.create(
+        str(requested) if requested is not None else None,
+        str(title) if title is not None else None,
+        scenario_id=scenario_id,
+        scenario_ref=scenario_ref,
+        dev=dev,
+    )
 
 
 @subscribe("desktop.webspace.rename")
@@ -3459,11 +3490,17 @@ async def _on_webspace_update(evt: Dict[str, Any]) -> None:
         return
     title = str(payload.get("title") or "").strip() or None
     home_scenario = str(payload.get("home_scenario") or payload.get("scenario_id") or "").strip() or None
+    home_scenario_ref = (
+        payload.get("home_scenario_ref")
+        if "home_scenario_ref" in payload
+        else _HOME_SCENARIO_REF_UNSET
+    )
     svc = WebspaceService(get_ctx())
     await svc.update_metadata(
         webspace_id,
         title=title,
         home_scenario=home_scenario,
+        home_scenario_ref=home_scenario_ref,
     )
 
 
@@ -4720,7 +4757,7 @@ async def set_current_webspace_home(webspace_id: str) -> dict[str, Any]:
             "error": "current_scenario_unavailable",
         }
     svc = WebspaceService(get_ctx())
-    info = await svc.set_home_scenario(webspace_id, scenario_id)
+    info = await svc.set_home_scenario(webspace_id, scenario_id, home_scenario_ref=None)
     if info is None:
         return {
             "ok": False,
@@ -4909,7 +4946,12 @@ async def _on_webspace_set_home(evt: Dict[str, Any]) -> None:
     if not webspace_id or not scenario_id:
         return
     svc = WebspaceService(get_ctx())
-    await svc.set_home_scenario(webspace_id, scenario_id)
+    home_scenario_ref = (
+        payload.get("home_scenario_ref")
+        if "home_scenario_ref" in payload
+        else _HOME_SCENARIO_REF_UNSET
+    )
+    await svc.set_home_scenario(webspace_id, scenario_id, home_scenario_ref=home_scenario_ref)
 
 
 @subscribe("desktop.webspace.set_home_current")

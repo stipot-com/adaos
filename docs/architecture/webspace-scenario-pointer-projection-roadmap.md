@@ -35,6 +35,12 @@ phase-aware materialization.
   carry local `node_id` and `node_label`, and `io.out.stream.publish` can
   fan out to both hub-routed and node-qualified browser topics when ownership
   is provided in `_meta.node_id`
+- Home scenario checkpoint as of 2026-05-02:
+  workspace-manager selection now keeps a node-aware `home_scenario_ref`
+  in shared workspace metadata. This preserves which node owns the chosen
+  home scenario without making the webspace document itself node-owned.
+  Runtime reload/go-home still primarily resolves plain `home_scenario`
+  until remote scenario-content aggregation is completed.
 - Desktop state checkpoint as of 2026-05-02:
   desktop app/widget order is now part of shared webspace desktop state
   through `data.desktop.iconOrder` and `data.desktop.widgetOrder`, so drag
@@ -110,6 +116,7 @@ These are the authoritative inputs to a webspace scenario rebuild:
 
 - `WebspaceManifest` and related persistent metadata
 - `home_scenario`
+- optional node-aware `home_scenario_ref`
 - `ui.current_scenario` as the live runtime selection
 - scenario content loaded from `scenario.json`
 - skill UI contributions loaded from `webui.json`
@@ -201,8 +208,9 @@ following:
 1. Validate that the requested scenario exists in the relevant source space.
 2. Update `ui.current_scenario`.
 3. Optionally update `home_scenario` when policy requires it.
-4. Schedule or trigger semantic rebuild.
-5. Return quickly with rebuild state metadata.
+4. Persist or update `home_scenario_ref` when the selection is node-specific.
+5. Schedule or trigger semantic rebuild.
+6. Return quickly with rebuild state metadata.
 
 It should not be responsible for eagerly copying the full scenario payload into
 the active runtime tree.

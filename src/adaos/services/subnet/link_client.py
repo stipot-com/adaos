@@ -73,6 +73,15 @@ class MemberLinkClient:
         self._last_control_completed_at = 0.0
 
     @staticmethod
+    def _pong_stale_after_s() -> float:
+        raw = str(os.getenv("ADAOS_SUBNET_PONG_STALE_AFTER_S") or "").strip()
+        try:
+            value = float(raw or 35.0)
+        except Exception:
+            value = 35.0
+        return max(15.0, value)
+
+    @staticmethod
     def _parse_bus_prefixes(raw: str | None) -> list[str] | None:
         txt = str(raw or "").strip()
         if not txt:
@@ -339,6 +348,7 @@ class MemberLinkClient:
                     self._connected.set()
                     self._connected_at = time.time()
                     self._last_message_at = self._connected_at
+                    self._last_pong_at = self._connected_at
                     backoff = 1.0
 
                     hello = {
@@ -467,8 +477,19 @@ class MemberLinkClient:
             backoff = min(backoff * 2.0, 15.0)
 
     async def _ping_loop(self, ws) -> None:
+        pong_stale_after_s = self._pong_stale_after_s()
         while True:
             await asyncio.sleep(10.0)
+            now = time.time()
+            last_pong_at = float(self._last_pong_at or self._connected_at or 0.0)
+            if last_pong_at > 0.0 and (now - last_pong_at) > pong_stale_after_s:
+                _log.warning(
+                    "subnet link pong watchdog expired ws=%s age_s=%.3f threshold_s=%.3f",
+                    self._ws_url,
+                    now - last_pong_at,
+                    pong_stale_after_s,
+                )
+                return
             try:
                 await ws.send(json.dumps({"t": "ping", "ts": time.time()}))
             except Exception:
