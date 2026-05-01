@@ -919,6 +919,36 @@ def test_probe_http_json_uses_default_autostart_headers(monkeypatch) -> None:
     assert captured["headers"]["Accept"] == "application/json"
 
 
+def test_probe_http_result_reports_http_error_payload(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        ok = False
+        status_code = 401
+        text = '{"detail":"Invalid or missing X-AdaOS-Token"}'
+
+        @staticmethod
+        def json() -> dict:
+            return {"detail": "Invalid or missing X-AdaOS-Token"}
+
+    def _get(url: str, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = dict(headers or {})
+        return _Response()
+
+    monkeypatch.setattr(setup_cmd, "_autostart_admin_headers", lambda token=None: {"X-AdaOS-Token": "dev-local-token"})
+    monkeypatch.setattr(setup_cmd.requests, "get", _get)
+
+    payload = setup_cmd._probe_http_result("http://127.0.0.1:8776", "/api/supervisor/status")
+
+    assert payload["ok"] is False
+    assert payload["status_code"] == 401
+    assert payload["json"] == {"detail": "Invalid or missing X-AdaOS-Token"}
+    assert captured["url"] == "http://127.0.0.1:8776/api/supervisor/status"
+    assert captured["headers"]["X-AdaOS-Token"] == "dev-local-token"
+    assert captured["headers"]["Accept"] == "application/json"
+
+
 def test_autostart_admin_headers_prefer_wrapper_service_token_over_local_cli_token(monkeypatch) -> None:
     monkeypatch.setenv("ADAOS_TOKEN", "shell-token")
     monkeypatch.setattr(

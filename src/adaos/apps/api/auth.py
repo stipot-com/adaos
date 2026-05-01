@@ -1,13 +1,16 @@
 import os
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 from adaos.services.agent_context import get_ctx
 
 
 def _expected_token() -> str:
+    env_token = str(os.getenv("ADAOS_TOKEN") or "").strip()
+    if env_token:
+        return env_token
     try:
-        return (get_ctx().config.token or "dev-local-token")
+        return str(get_ctx().config.token or "dev-local-token").strip() or "dev-local-token"
     except Exception:
         return "dev-local-token"
 
@@ -37,16 +40,21 @@ def ensure_token(token: str | None) -> None:
 
 
 async def require_token(
+    request: Request,
     x_adaos_token: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> None:
     """
     Принимаем либо X-AdaOS-Token, либо Authorization: Bearer <token>.
     """
+    header_token = str(request.headers.get("X-AdaOS-Token") or request.headers.get("x-adaos-token") or "").strip() or None
+    auth_header = str(request.headers.get("Authorization") or request.headers.get("authorization") or "").strip() or None
+    query_token = str(request.query_params.get("token") or "").strip() or None
     ensure_token(
         resolve_presented_token(
-            x_adaos_token=x_adaos_token,
-            authorization=authorization,
+            x_adaos_token=header_token or x_adaos_token,
+            authorization=auth_header or authorization,
+            query_token=query_token,
         )
     )
 

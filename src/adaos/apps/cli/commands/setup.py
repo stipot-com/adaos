@@ -857,6 +857,33 @@ def _probe_http_json(base_url: str, path: str, *, token: Optional[str] = None, t
         return None
 
 
+def _probe_http_result(base_url: str, path: str, *, token: Optional[str] = None, timeout: float = 1.0) -> dict[str, object]:
+    url = base_url.rstrip("/") + path
+    headers = dict(_autostart_admin_headers(token))
+    headers["Accept"] = "application/json"
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        text = str(response.text or "").strip()
+        payload: dict[str, object] = {
+            "url": url,
+            "ok": bool(response.ok),
+            "status_code": int(response.status_code),
+        }
+        with contextlib.suppress(Exception):
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload["json"] = parsed
+        if "json" not in payload and text:
+            payload["text"] = text[:1000]
+        return payload
+    except Exception as exc:
+        return {
+            "url": url,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _proc_snapshot(proc: psutil.Process, *, now: float) -> dict:
     pid = int(getattr(proc, "pid", 0) or 0)
     with proc.oneshot():
@@ -972,8 +999,18 @@ def _collect_autostart_inspect(*, sample_sec: float = 0.2, token: Optional[str] 
     supervisor_payload: dict | None = None
     supervisor_base = str(status.get("supervisor_url") or "").strip()
     if supervisor_base:
-        supervisor_ping = _probe_http_json(supervisor_base, "/api/ping", token=token, timeout=1.0)
-        supervisor_status = _probe_http_json(supervisor_base, "/api/supervisor/status", token=token, timeout=1.5)
+        supervisor_ping_probe = _probe_http_result(supervisor_base, "/api/ping", token=token, timeout=1.0)
+        supervisor_status_probe = _probe_http_result(supervisor_base, "/api/supervisor/status", token=token, timeout=1.5)
+        supervisor_ping = (
+            supervisor_ping_probe.get("json")
+            if isinstance(supervisor_ping_probe.get("json"), dict)
+            else None
+        )
+        supervisor_status = (
+            supervisor_status_probe.get("json")
+            if isinstance(supervisor_status_probe.get("json"), dict)
+            else None
+        )
         supervisor_pid = None
         if isinstance(supervisor_status, dict):
             try:
@@ -994,6 +1031,8 @@ def _collect_autostart_inspect(*, sample_sec: float = 0.2, token: Optional[str] 
         supervisor_payload = {
             "url": supervisor_base,
             "reachable": bool(isinstance(supervisor_ping, dict) and supervisor_ping.get("ok") is True),
+            "ping_probe": supervisor_ping_probe,
+            "status_probe": supervisor_status_probe,
             "status": supervisor_status,
             "process": supervisor_proc,
         }
