@@ -214,10 +214,7 @@ def test_scenario_project_to_doc_keeps_runtime_owned_effective_data_under_rebuil
     assert state["data"]["desktop"]["pageSchema"]["id"] == "live-desktop"
     assert state["data"]["routing"]["routes"]["home"] == "/"
     assert state["ui"]["current_scenario"] == "prompt_engineer_scenario"
-    assert state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "legacy-page"
     assert state["ui"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "legacy-page"
-    assert state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["legacy-modal"]
     assert state["registry"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["modals"] == ["legacy-modal"]
-    assert state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "legacy-app"}]
     assert state["data"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "legacy-app"}]
     assert state["data"]["weather"] == {"city": "Moscow"}

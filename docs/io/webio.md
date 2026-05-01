@@ -16,12 +16,11 @@ For the target architecture and the agreed evolutionary path, see
 2. **Scenario** - declarative JSON (`scenario.json`) defines desktop UI
    building blocks (apps, widgets, registry). During migration the hub may
    still seed compatibility caches in `ui.scenarios.*`, `data.scenarios.*`,
-   and `registry.scenarios.*`. As of 2026-05-01 the preferred compatibility
-   shape is node-scoped first:
+   and `registry.scenarios.*`. As of 2026-05-01 the compatibility cache
+   shape used by the current desktop/subnet migration is node-scoped only:
    `ui.scenarios.<node_id>.<scenario_id>`,
    `registry.scenarios.<node_id>.<scenario_id>`,
-   `data.scenarios.<node_id>.<scenario_id>`,
-   while flat `...<scenario_id>` branches remain as a temporary fallback.
+   `data.scenarios.<node_id>.<scenario_id>`.
    Active scenario switching still primarily updates `ui.current_scenario`
    and lets semantic rebuild repopulate effective runtime branches.
 3. **Skills** - runtime packages can inject additional UI declaratives via
@@ -255,11 +254,12 @@ progress.
   name. Bootstrap scripts install the default `web_desktop` scenario and
   `weather_skill` into the default `desktop` webspace.
 * **Seeding** - `ensure_webspace_seeded_from_scenario` runs for every Yjs room
-  creation and for webspace CRUD actions. It keeps migration-era compatibility
-  caches available (`ui.scenarios.<id>`, `data.scenarios.<id>.catalog`,
-  `registry.scenarios.<id>`) and seeds `ui.current_scenario` if needed, but
-  normal scenario switch no longer depends on copying the full scenario payload
-  into those branches.
+  creation and for webspace CRUD actions. It keeps migration-era
+  node-scoped compatibility caches available
+  (`ui.scenarios.<node_id>.<id>`, `data.scenarios.<node_id>.<id>.catalog`,
+  `registry.scenarios.<node_id>.<id>`) and seeds `ui.current_scenario` if
+  needed, but normal scenario switch no longer depends on copying the full
+  scenario payload into those branches.
 * **Syncing across docs** - the core runtime updates `data.webspaces` in each
   YDoc when a webspace is created, renamed, or deleted. Each entry carries
   `{ id, title, created_at }` so any client can render the available
@@ -360,11 +360,10 @@ contract:
 * `data.installed`
 * `data.desktop`
 
-During migration it may still fall back to legacy scenario caches such as
-`ui/scenarios/<current>.application.desktop.pageSchema`,
-`ui/scenarios/<current>.application.modals`, or
-`ui/scenarios/<current>.pageSchema` when semantic rebuild has not hydrated the
-merged branches yet.
+For the current desktop/subnet migration scope, the browser should treat those
+effective branches as the render contract and should not depend on
+`ui.scenarios.*` fallback reads for desktop schema or modal definitions.
+Scenario compatibility caches remain backend/runtime data only.
 
 The control API (`/api/node/yjs/webspaces/<id>`) and `YDocService` expose a
 shared materialization diagnostic contract:
@@ -516,8 +515,9 @@ branches and the client should surface a stronger recovery hint.
 `compatibility_caches` exposes the migration-era legacy cache surface for
 operators:
 
-* `client_fallback_readable` reports whether current frontend fallback still
-  has `ui.scenarios/<current>.application`
+* `client_fallback_readable` reports whether migration-era scenario caches are
+  still present for diagnostics, even though the current desktop client no
+  longer reads them for schema/modal fallback
 * `present_count` / `required_count` and `missing_branches` show how much of
   the active scenario's legacy cache surface still exists
 * `switch_writes_enabled` is retained for diagnostics compatibility and now

@@ -144,10 +144,9 @@ Current checkpoint as of 2026-05-01:
 - browser/platform surfaces in `web_desktop` now already propagate lightweight
   node ownership metadata for catalog items, pinned widgets, workspace labels,
   and marketplace install targeting
-- compatibility-era Yjs scenario caches are now transitioning to a node-scoped
-  shape first: `...scenarios.<node_id>.<scenario_id>`, with flat
-  `...scenarios.<scenario_id>` branches retained temporarily for mixed-version
-  readers and pointer flows
+- compatibility-era Yjs scenario caches used by the current desktop/subnet
+  migration are now node-scoped only:
+  `...scenarios.<node_id>.<scenario_id>`
 - this is intentionally a compatibility-first client step, not yet the final
   shared Yjs node envelope described by this phase
 - node multiplicity is therefore now visible in the browser contract, but the
@@ -175,6 +174,10 @@ Current checkpoint as of 2026-05-01:
   receiver abstraction
 - `WebIoStreamService` can subscribe in `auto`, `member`, or `hub` mode and
   bridge node-qualified and hub-routed stream topics
+- the desktop client now reads desktop schema and dynamic modal definitions
+  only from effective runtime branches (`ui.application.*`) for the current
+  subnet-migration scope, leaving scenario-specific structure in Yjs/API
+  ownership rather than in client fallback logic
 - this partially advances `phase4.node_multiplicity_visible`, but the general
   subscription registry and projection lifecycle ABI for all consumers are not
   complete yet

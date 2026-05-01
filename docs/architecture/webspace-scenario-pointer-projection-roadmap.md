@@ -31,11 +31,13 @@ phase-aware materialization.
   compatibility-era catalog/runtime branches rather than a finalized
   node-aware projection ABI
 - Compatibility checkpoint as of 2026-05-01:
-  scenario compatibility caches are now being written and read in a preferred
+  scenario compatibility caches are now written and read only in a
   node-scoped form under `ui.scenarios.<node_id>.<scenario_id>`,
   `registry.scenarios.<node_id>.<scenario_id>`, and
-  `data.scenarios.<node_id>.<scenario_id>`, while flat per-scenario branches
-  remain as a transition bridge
+  `data.scenarios.<node_id>.<scenario_id>`.
+  For the current desktop/subnet migration scope, client readers are being
+  moved off direct `ui.scenarios.*` fallback access and onto effective
+  runtime branches plus explicit API/stream contracts.
 
 ## Implementation Anchors
 
@@ -439,8 +441,8 @@ Frontend migration coverage is now also explicit in tests and diagnostics:
 
 - client readers prefer merged runtime branches such as
   `ui.application.desktop.pageSchema` and `ui.application.modals.*`
-- migration-era fallback reads from `ui.scenarios/<current>` remain supported
-  for desktop schema and modal definitions while legacy caches still exist
+- for the current desktop/subnet migration scope, desktop schema and dynamic
+  modal reads no longer fall back to `ui.scenarios/<current>`
 - `/api/node/yjs/webspaces/<id>` now reports `materialization.readiness_state`
   and `materialization.missing_branches`, so the renderer can distinguish
   deferred hydration from truly degraded materialization

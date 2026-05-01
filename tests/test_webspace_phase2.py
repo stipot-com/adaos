@@ -1740,6 +1740,7 @@ def test_phase_pointer_collect_resolver_inputs_prefers_loader_payload_over_legac
 
 def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loader_missing(monkeypatch) -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "node-1")
     monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
     monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
     monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda scenario_id, space="workspace": {})
@@ -1750,8 +1751,10 @@ def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loa
                 {
                     "current_scenario": "prompt_engineer_scenario",
                     "scenarios": {
-                        "prompt_engineer_scenario": {
-                            "application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}
+                        "node-1": {
+                            "prompt_engineer_scenario": {
+                                "application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}
+                            }
                         }
                     },
                 }
@@ -1759,8 +1762,10 @@ def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loa
             "data": _FakeMap(
                 {
                     "scenarios": {
-                        "prompt_engineer_scenario": {
-                            "catalog": {"apps": [{"id": "legacy-app"}]}
+                        "node-1": {
+                            "prompt_engineer_scenario": {
+                                "catalog": {"apps": [{"id": "legacy-app"}]}
+                            }
                         }
                     }
                 }
@@ -1768,7 +1773,9 @@ def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loa
             "registry": _FakeMap(
                 {
                     "scenarios": {
-                        "prompt_engineer_scenario": {"modals": ["legacy-modal"]}
+                        "node-1": {
+                            "prompt_engineer_scenario": {"modals": ["legacy-modal"]}
+                        }
                     }
                 }
             ),
@@ -1787,6 +1794,7 @@ def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loa
 
 def test_phase_pointer_collect_resolver_inputs_reads_node_scoped_legacy_yjs_when_loader_missing(monkeypatch) -> None:
     runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "hub")
     monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
     monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
     monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda scenario_id, space="workspace": {})
@@ -2371,21 +2379,27 @@ def test_phase4_rebuild_status_exposes_legacy_resolver_fallback(monkeypatch) -> 
             {
                 "current_scenario": "prompt_engineer_scenario",
                 "scenarios": {
-                    "prompt_engineer_scenario": {"application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}}
+                    "hub": {
+                        "prompt_engineer_scenario": {"application": {"desktop": {"pageSchema": {"id": "legacy-page"}}}}
+                    }
                 },
             }
         ),
         "registry": _FakeMap(
             {
                 "scenarios": {
-                    "prompt_engineer_scenario": {"modals": ["legacy-modal"], "widgets": []}
+                    "hub": {
+                        "prompt_engineer_scenario": {"modals": ["legacy-modal"], "widgets": []}
+                    }
                 }
             }
         ),
         "data": _FakeMap(
             {
                 "scenarios": {
-                    "prompt_engineer_scenario": {"catalog": {"apps": [{"id": "legacy-app"}], "widgets": []}}
+                    "hub": {
+                        "prompt_engineer_scenario": {"catalog": {"apps": [{"id": "legacy-app"}], "widgets": []}}
+                    }
                 }
             }
         ),
@@ -2407,6 +2421,7 @@ def test_phase4_rebuild_status_exposes_legacy_resolver_fallback(monkeypatch) -> 
         }
 
     monkeypatch.setattr(webspace_runtime_module, "async_get_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "hub")
     monkeypatch.setattr(webspace_runtime_module, "_refresh_projection_rules_for_rebuild", _fake_refresh)
     monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_collect_skill_decls", lambda self, mode="mixed": [])
     monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_list_desktop_scenarios", lambda self, space: [])

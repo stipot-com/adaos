@@ -103,11 +103,8 @@ def test_bootstrap_seed_fallback_projects_compat_seed_without_effective_writes(m
     ui_scenarios = dict(store.encoded_state["ui_scenarios"] or {})
     data_scenarios = dict(store.encoded_state["data_scenarios"] or {})
     registry_scenarios = dict(store.encoded_state["registry_scenarios"] or {})
-    assert ui_scenarios["web_desktop"]["application"]["desktop"]["pageSchema"]["id"] == "desktop"
     assert ui_scenarios["node-1"]["web_desktop"]["application"]["desktop"]["pageSchema"]["id"] == "desktop"
-    assert data_scenarios["web_desktop"]["catalog"]["apps"] == []
     assert data_scenarios["node-1"]["web_desktop"]["catalog"]["apps"] == []
-    assert registry_scenarios["web_desktop"] == {"widgets": [], "modals": []}
     assert registry_scenarios["node-1"]["web_desktop"] == {"widgets": [], "modals": []}
     assert emitted == [
         (
