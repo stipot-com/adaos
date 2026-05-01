@@ -125,6 +125,18 @@ def _is_websocket_accept_race(exc: BaseException) -> bool:
     ) or "close message has been sent" in text
 
 
+def _is_websocket_receive_disconnect_race(exc: BaseException) -> bool:
+    text = str(exc or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "websocket is not connected" in text
+        or "need to call \"accept\" first" in text
+        or "disconnect message has been received" in text
+        or "close message has been sent" in text
+    )
+
+
 async def _stop_ystore_maybe_async(ystore: Any) -> None:
     try:
         result = ystore.stop()
@@ -2500,6 +2512,16 @@ async def events_ws(websocket: WebSocket):
                 raw = await websocket.receive_text()
             except WebSocketDisconnect:
                 break
+            except RuntimeError as exc:
+                if _is_websocket_receive_disconnect_race(exc):
+                    if _ws_trace_enabled():
+                        _log.info(
+                            "ws receive skipped because connection is already closed client=%s reason=%s",
+                            _ws_client_str(websocket),
+                            str(exc),
+                        )
+                    break
+                raise
 
             try:
                 msg = json.loads(raw)

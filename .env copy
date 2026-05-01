@@ -1,0 +1,176 @@
+# === Core runtime settings ===
+ENV_TYPE=dev
+ADAOS_LANG=en
+ADAOS_PROFILE=default
+ADAOS_ROOT_OWNER_TOKEN=dev-root-token
+ROOT_TOKEN=dev-root-token
+BOT_ID=adaos_bot
+
+# === Logging & diagnostics ===
+ADAOS_CLI_DEBUG=1
+ADAOS_SCENARIO_LOG_LEVEL=INFO
+ADAOS_LOG_LEVEL=DEBUG
+ADAOS_LOG_EVENTS=0
+ADAOS_LOG_EVENTS_PAYLOAD=0
+ADAOS_LOG_HIDE=adaos.scenarios.loader,adaos.eventbus:WARNING,adaos.router.voice_chat,adaos.events=ERROR
+ADAOS_TESTING=0
+
+# Log prefixes (quick map):
+# - `[hub-io]`    : hub NATS bridge (controls: HUB_NATS_VERBOSE / HUB_NATS_TRACE / HUB_NATS_QUIET)
+# - `[hub-route]` : Root<->Hub routing over NATS (controls: HUB_ROUTE_VERBOSE / HUB_ROUTE_TX_VERBOSE / HUB_ROUTE_DIAG)
+# - `[diag]`      : internal diagnostics (controls: ADAOS_LOOP_LAG_MONITOR / ADAOS_LOOP_HANG_WATCHDOG; tools/* scripts)
+HUB_ROUTE_VERBOSE=0
+HUB_ROUTE_TX_VERBOSE=0
+HUB_ROUTE_PROBE_RESEND_S=0.25,1.0
+HUB_NATS_VERBOSE=0
+HUB_NATS_QUIET=0
+HUB_NATS_WS_IMPL=auto
+HUB_NATS_WS_PROXY_MODE=auto
+HUB_TRACE=0
+# Selector is a targeted diagnostic mode; Proactor/default is the stability path on Windows.
+ADAOS_WIN_SELECTOR_LOOP=0
+HUB_TG_DEBUG=1
+
+# === Build metadata overrides ===
+ADAOS_BASE_VERSION=0.1.0
+# === Gateway / API integration ===
+ADAOS_BASE=http://127.0.0.1:8777
+ADAOS_TOKEN=dev-local-token
+NATS_WS_DEFAULT_PATH=/nats
+ROUTE_PROXY_VERBOSE=1
+ADAOS_VOSK_AUTO_DOWNLOAD=1
+
+# Prefer NATS WS endpoint:
+# - `0` (default): try `wss://api.inimatic.com/nats` first
+# - `1`: opt in to `wss://nats.inimatic.com/nats` first
+HUB_NATS_PREFER_DEDICATED=0
+# Sidecar does not inherit the hub preference by default; keep it on the auth-compatible root ingress.
+ADAOS_REALTIME_PREFER_DEDICATED=0
+
+# any NATS frames at all when debugging silent stalls.
+WS_NATS_PROXY_WIRETAP=0
+WS_NATS_PROXY_WIRETAP_EVERY_MS=1000
+WS_NATS_PROXY_TRACE_HTTP_ROUTE=0
+
+HUB_NATS_TRACE=0
+HUB_NATS_WS_DIAG_FILE=.adaos/diagnostics/nats_ws_diag.jsonl
+HUB_NATS_WS_DIAG_EVERY_S=2
+HUB_NATS_WS_DIAG_STACK_LIMIT=6
+HUB_NATS_RX_TIMEOUT_S=600
+#
+# Disable nats-py periodic client PING task on WS transports.
+# Workaround for environments where client-initiated NATS PINGs trigger proxy flaps (1006/UnexpectedEOF).
+HUB_NATS_DISABLE_PING_INTERVAL_TASK=1
+HUB_NATS_PING_INTERVAL_S=15
+HUB_NATS_MAX_OUTSTANDING_PINGS=2
+#
+# Disable WS message size cap (0 = unlimited).
+HUB_NATS_WS_MAX_MSG_SIZE=0
+
+# Root-side WS->NATS proxy defaults. These matter on the backend/root process;
+# local `adaos api serve` keeps them here only as documentation of the stable profile.
+# Keep client-facing Root NATS-data keepalive disabled by default: Windows nats-py-style
+# WS clients can one-way-stall after proxy-originated PING frames under route/Yjs load.
+# Upstream NATS socket keepalive remains enabled separately.
+WS_NATS_PROXY_KEEPALIVE_ENABLE=0
+WS_NATS_PROXY_CLIENT_KEEPALIVE_ENABLE=0
+WS_NATS_PROXY_KEEPALIVE_FORCE=0
+WS_NATS_PROXY_KEEPALIVE_MS=20000
+WS_NATS_PROXY_KEEPALIVE_MAX_MISSES=3
+WS_NATS_PROXY_CLOSE_ON_KEEPALIVE_MISS=1
+WS_NATS_PROXY_TERMINATE_ON_KEEPALIVE_MISS=1
+WS_NATS_PROXY_UPSTREAM_NATS_PING_MS=20000
+WS_NATS_PROXY_WS_PING=0
+WS_NATS_PROXY_CLIENT_WS_PING_ENABLE=0
+WS_NATS_PROXY_WS_PING_FORCE=0
+
+# Root-side NATS data keepalive gating. Default requires full handshake (auth + CONNECT rewrite).
+# Set to `0` temporarily to keep sending `PING\\r\\n` even before `handshaked=true` (debug / mitigation).
+WS_NATS_PROXY_KEEPALIVE_REQUIRE_HANDSHAKE=1
+WS_NATS_PROXY_SUPERSEDE_GRACE_MS=15000
+WS_NATS_PROXY_CLOSE_SUPERSEDED_ON_ROUTE_READY=0
+
+# Root-side workaround: terminate standalone client NATS `PING\\r\\n` by replying with `PONG\\r\\n` locally.
+# This mitigates environments where upstream NATS PONG stops arriving after a few client PINGs (breaking flush()).
+WS_NATS_PROXY_TERMINATE_CLIENT_PING=0
+
+# When debugging flaky NATS-over-WS, the hub can optionally fetch snapshots of root logs
+# via `https://<root>/v1/dev/log_tail` and store them under `.adaos/root_log_snapshots/`.
+HUB_ROOT_LOG_SNAPSHOT=1
+HUB_ROOT_LOG_SNAPSHOT_EVERY_S=60
+HUB_ROOT_LOG_SNAPSHOT_LINES=200
+HUB_ROOT_LOG_SNAPSHOT_FILES=reverse-proxy.log,nats.log,backend-b.log
+
+# WebSocket-level heartbeat for NATS-over-WS, seconds.
+# Leave disabled for Windows/websockets runtime. Independent diagnostics showed that
+# force-enabled client-originated WS PINGs can destabilize the root /nats tunnel.
+HUB_NATS_WS_HEARTBEAT_S=
+HUB_NATS_WS_HEARTBEAT_FORCE=0
+# NATS-data heartbeat for NATS-over-WS. On Windows `websockets`, this can interfere with
+# root keepalive accounting by injecting standalone client-side `PONG\r\n` frames.
+# Leave empty unless you are intentionally testing this path.
+HUB_NATS_WS_DATA_HEARTBEAT_S=
+# NATS-data ping for NATS-over-WS. Leave empty; enable only for focused diagnostics.
+HUB_NATS_WS_DATA_PING_S=auto
+# Force-close stale route keys that keep sending frames after reconnect without a fresh `open`.
+HUB_ROUTE_FORCE_CLOSE_NO_UPSTREAM_S=1.5
+HUB_NATS_WS_RECV_TIMEOUT_S=
+
+# Allow YJS replication to the node
+ADAOS_SUBNET_YJS_REPLICATION=1
+# ADAOS_SUBNET_BUS_FORWARD_PREFIXES=io.out.,ui. (or *) — which prefixes to forward member→hub.
+ADAOS_SUBNET_BUS_FORWARD_PREFIXES=*
+
+# Root log snapshots call `https://<root>/v1/dev/log_tail` which is protected by `X-Root-Token`.
+# If empty, AdaOS falls back to `ROOT_TOKEN` / `ADAOS_ROOT_OWNER_TOKEN` (if present).
+HUB_ROOT_LOG_SNAPSHOT_ROOT_TOKEN=
+
+HUB_NATS_CONNECT_TAG_QUERY=1
+HUB_ROOT_LOG_SNAPSHOT_AFTER_ERR_S=0,1,3,10,30
+HUB_NATS_RAW_KEEPALIVE=0
+HUB_NATS_RAW_KEEPALIVE_S=15
+
+ADAOS_LOOP_HANG_WATCHDOG=1
+ADAOS_LOOP_HANG_MS=3000
+ADAOS_LOOP_HANG_EVERY_S=10
+ADAOS_LOOP_HANG_STACK=40
+
+# === Debug: asyncio event loop lag monitor ===
+# Helps detect blocking handlers that can cause WS stalls/timeouts.
+ADAOS_LOOP_LAG_MONITOR=1
+ADAOS_LOOP_LAG_INTERVAL_S=0.5
+ADAOS_LOOP_LAG_WARN_MS=1000
+ADAOS_LOOP_LAG_DUMP_MS=2000
+ADAOS_LOOP_LAG_DUMP_TOP=10
+ADAOS_EVENTBUS_SLOW_ASYNC_WARN_S=0.25
+ADAOS_EVENTBUS_SLOW_SYNC_WARN_S=0.10
+
+HUB_NATS_WS_TRACE=0
+HUB_ROUTE_TRACE=0
+HUB_ROUTE_FRAME_VERBOSE=0
+HUB_WS_TRACE=0
+HUB_NATS_WS_AUTO_FALLBACK=0
+
+HUB_NATS_WIRETAP=0
+HUB_NATS_WIRETAP_EVERY_N=10
+HUB_NATS_WIRETAP_SKIP=PING,PONG,MSG,PUB
+HUB_NATS_WIRETAP_MAX_BYTES=200
+HUB_NATS_TCP_KEEPALIVE=1
+HUB_NATS_TCP_KEEPALIVE_S=30
+HUB_NATS_TCP_KEEPALIVE_INTERVAL_S=10
+
+HUB_ROUTE_HTTP_TRACE=0
+HUB_ROUTE_DISPATCH_TRACE=0
+HUB_ROUTE_TRACE=0
+HUB_ROOT_LOG_SNAPSHOT_EXTRACT_PRINT=0
+HUB_ROOT_LOG_SNAPSHOT_EXTRACT_EXTRA=0
+
+WS_NATS_PROXY_PING_TRACE=0
+
+HUB_NATS_QUARANTINE_S=15
+
+
+HUB_NATS_TRANSPORT=ws
+
+ROUTE_WS_PING_S=25
+ROUTE_WS_PONG_TIMEOUT_S=75

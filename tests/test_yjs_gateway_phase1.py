@@ -712,6 +712,25 @@ def test_accept_websocket_returns_false_when_handshake_already_closed() -> None:
     assert accepted is False
 
 
+def test_events_ws_treats_receive_before_accept_runtimeerror_as_disconnect() -> None:
+    class _FakeClosedWebSocket:
+        query_params: dict[str, str] = {}
+        scope = {"client": ("127.0.0.1", 9347)}
+        accepted = False
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def receive_text(self) -> str:
+            raise RuntimeError('WebSocket is not connected. Need to call "accept" first.')
+
+    websocket = _FakeClosedWebSocket()
+
+    asyncio.run(gateway_module.events_ws(websocket))  # type: ignore[arg-type]
+
+    assert websocket.accepted is True
+
+
 def test_active_browser_session_snapshot_tracks_yws_clients() -> None:
     gateway_module._ACTIVE_YWS_CONNECTIONS.clear()
     gateway_module._ACTIVE_YWS_CLIENTS.clear()
