@@ -1353,6 +1353,21 @@ def test_sync_webspace_listing_skips_unchanged_payload(monkeypatch) -> None:
     assert data_map.set_count == 0
 
 
+def test_webspace_listing_includes_local_node_metadata(monkeypatch) -> None:
+    webspace_id = "phase2-listing-node-meta"
+    ensure_workspace(webspace_id)
+
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "member-01")
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_label", lambda: "Edge Member")
+    monkeypatch.setattr(webspace_runtime_module, "_try_read_live_current_scenario", lambda _webspace_id: "web_desktop")
+
+    listing = webspace_runtime_module._webspace_listing()
+    item = next(entry for entry in listing if entry["id"] == webspace_id)
+
+    assert item["node_id"] == "member-01"
+    assert item["node_label"] == "Edge Member"
+
+
 def test_webspace_service_set_home_scenario_updates_manifest(monkeypatch) -> None:
     webspace_id = "phase2-set-home-service"
     ensure_workspace(webspace_id)

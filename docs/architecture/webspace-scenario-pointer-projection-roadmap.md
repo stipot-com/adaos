@@ -30,6 +30,11 @@ phase-aware materialization.
   widget/workspace chrome, but these browser affordances still sit on top of
   compatibility-era catalog/runtime branches rather than a finalized
   node-aware projection ABI
+- Current ownership checkpoint as of 2026-05-02:
+  backend `data.webspaces` / `/api/node/yjs/webspaces` responses now also
+  carry local `node_id` and `node_label`, and `io.out.stream.publish` can
+  fan out to both hub-routed and node-qualified browser topics when ownership
+  is provided in `_meta.node_id`
 - Compatibility checkpoint as of 2026-05-01:
   scenario compatibility caches are now written and read only in a
   node-scoped form under `ui.scenarios.<node_id>.<scenario_id>`,

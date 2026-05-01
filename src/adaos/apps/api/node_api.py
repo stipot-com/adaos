@@ -101,6 +101,20 @@ def _local_node_id() -> str:
     return "hub"
 
 
+def _local_node_label() -> str:
+    try:
+        conf = load_config()
+        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
+        if isinstance(node_names, list):
+            for item in node_names:
+                label = str(item or "").strip()
+                if label:
+                    return label
+    except Exception:
+        pass
+    return _local_node_id()
+
+
 def _read_node_scoped_scenario_entry(scenarios_root: Any, scenario_id: str, *, node_id: str | None = None) -> dict[str, Any]:
     root = _coerce_dict(scenarios_root or {})
     target_node_id = str(node_id or "").strip() or _local_node_id()
@@ -1556,6 +1570,8 @@ async def node_yjs_webspaces() -> dict[str, Any]:
             "kind": item.kind,
             "home_scenario": item.home_scenario,
             "source_mode": item.source_mode,
+            "node_id": getattr(item, "node_id", None) or _local_node_id(),
+            "node_label": getattr(item, "node_label", None) or _local_node_label(),
             "current_scenario": getattr(item, "current_scenario", None),
             "stored_home_scenario_exists": getattr(item, "stored_home_scenario_exists", None),
             "home_scenario_exists": getattr(item, "home_scenario_exists", True),

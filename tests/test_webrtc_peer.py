@@ -218,6 +218,33 @@ def test_setup_yjs_channel_replaces_previous_adapter_and_channel(monkeypatch) ->
     asyncio.run(_run())
 
 
+def test_request_webio_stream_snapshots_extracts_node_qualified_receiver(monkeypatch) -> None:
+    peer_mod = _load_peer_module(monkeypatch)
+    published: list[tuple[str, dict[str, object], str]] = []
+
+    peer_mod.get_ctx = lambda: SimpleNamespace(bus=object())
+    peer_mod.bus_emit = lambda bus, topic, payload, source: published.append((topic, payload, source))
+
+    peer_mod._request_webio_stream_snapshots(
+        {"webio.stream.default.nodes.member-01.telemetry.feed"},
+        transport="webrtc_data:events",
+    )
+
+    assert published == [
+        (
+            "webio.stream.snapshot.requested",
+            {
+                "topic": "webio.stream.default.nodes.member-01.telemetry.feed",
+                "webspace_id": "default",
+                "receiver": "telemetry.feed",
+                "transport": "webrtc_data:events",
+                "node_id": "member-01",
+            },
+            "webrtc.peer",
+        )
+    ]
+
+
 def test_handle_rtc_offer_replaces_failed_peer(monkeypatch) -> None:
     peer_mod = _load_peer_module(monkeypatch)
 

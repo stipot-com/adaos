@@ -589,14 +589,29 @@ class RouterService:
             receiver_id = str(receiver or "").strip()
             if not receiver_id:
                 return
-            self.bus.publish(
-                Event(
-                    type=f"webio.stream.{ws}.{receiver_id}",
-                    source=source,
-                    ts=ts,
-                    payload=payload,
+            node_id = str(
+                payload.get("node_id")
+                or payload.get("source_node_id")
+                or (
+                    payload.get("_meta", {}).get("node_id")
+                    if isinstance(payload.get("_meta"), dict)
+                    else ""
                 )
-            )
+                or ""
+            ).strip()
+            topics = [f"webio.stream.{ws}.{receiver_id}"]
+            if node_id:
+                topics.append(f"webio.stream.{ws}.nodes.{node_id}.{receiver_id}")
+                topics.append(f"webio.stream.nodes.{node_id}.{receiver_id}")
+            for topic in topics:
+                self.bus.publish(
+                    Event(
+                        type=topic,
+                        source=source,
+                        ts=ts,
+                        payload=payload,
+                    )
+                )
 
         def _coerce_bool(value: Any) -> bool:
             if isinstance(value, bool):
@@ -1187,6 +1202,13 @@ class RouterService:
             event_ts = float(payload.get("ts") or ev.ts or time.time())
             data = payload.get("data")
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            node_id = str(
+                payload.get("node_id")
+                or payload.get("source_node_id")
+                or meta.get("node_id")
+                or meta.get("source_node_id")
+                or ""
+            ).strip()
             targets = await _resolve_webspace_ids(payload)
             for ws in targets:
                 event_payload = {
@@ -1195,8 +1217,15 @@ class RouterService:
                     "data": data,
                     "ts": event_ts,
                 }
+                if node_id:
+                    event_payload["node_id"] = node_id
+                    event_payload["source_node_id"] = node_id
                 if meta:
-                    event_payload["_meta"] = {**meta, "webspace_id": ws}
+                    event_payload["_meta"] = {
+                        **meta,
+                        "webspace_id": ws,
+                        **({"node_id": node_id, "source_node_id": node_id} if node_id else {}),
+                    }
                 _publish_webio_stream_event(
                     ws,
                     receiver,

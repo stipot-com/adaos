@@ -142,8 +142,13 @@ stream_publish(
 ```
 
 The hub router resolves targets from `_meta` and emits semantic browser events
-of the form `webio.stream.<webspace_id>.<receiver>`. The browser runtime then
-reduces those events into the receiver's local state.
+of the form `webio.stream.<webspace_id>.<receiver>`. When `_meta.node_id` is
+present, the router also emits node-qualified topics:
+
+* `webio.stream.<webspace_id>.nodes.<node_id>.<receiver>`
+* `webio.stream.nodes.<node_id>.<receiver>`
+
+The browser runtime then reduces those events into the receiver's local state.
 
 For node-aware member delivery, the browser and router may also use
 node-qualified topics:
@@ -173,6 +178,7 @@ The server emits `webio.stream.snapshot.requested` with:
 
 * `receiver`
 * `webspace_id`
+* `node_id` when the subscription was node-qualified
 * `transport`
 
 Skills that own a stream receiver should answer that request by publishing the
@@ -262,8 +268,9 @@ progress.
   scenario payload into those branches.
 * **Syncing across docs** - the core runtime updates `data.webspaces` in each
   YDoc when a webspace is created, renamed, or deleted. Each entry carries
-  `{ id, title, created_at }` so any client can render the available
-  desktops.
+  `{ id, title, created_at, node_id, node_label }` plus current home/validation
+  metadata so any client can render the available desktops without inventing
+  ownership labels locally.
 * **Switching webspaces** - the frontend remembers a preferred webspace in
   `localStorage`. Switching issues `desktop.webspace.use`, which re-seeds the
   target doc if needed, updates `/ws` routing metadata, and reconnects the

@@ -114,3 +114,29 @@ async def test_io_out_stream_publish_unwraps_stringified_webspace_id() -> None:
     assert len(seen) == 1
     assert getattr(seen[0], "type", "") == "webio.stream.default.telemetry_feed"
 
+
+async def test_io_out_stream_publish_emits_node_qualified_topics_when_node_owned() -> None:
+    bus = LocalEventBus()
+    router = RouterService(eventbus=bus, base_dir=Path("."))
+    await router.start()
+
+    seen: list[str] = []
+    bus.subscribe("webio.stream.default.nodes.member-01.telemetry_feed", lambda ev: seen.append(getattr(ev, "type", "")))
+    bus.subscribe("webio.stream.nodes.member-01.telemetry_feed", lambda ev: seen.append(getattr(ev, "type", "")))
+    bus.publish(
+        Event(
+            type="io.out.stream.publish",
+            source="test",
+            ts=123.0,
+            payload={
+                "receiver": "telemetry_feed",
+                "data": {"value": 42},
+                "_meta": {"webspace_id": "default", "node_id": "member-01"},
+            },
+        )
+    )
+
+    await bus.wait_for_idle(timeout=1.0)
+    assert "webio.stream.default.nodes.member-01.telemetry_feed" in seen
+    assert "webio.stream.nodes.member-01.telemetry_feed" in seen
+

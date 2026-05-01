@@ -198,24 +198,32 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
         if not token.startswith(prefix):
             continue
         suffix = token[len(prefix):]
-        webspace_id, sep, receiver = suffix.partition(".")
-        if not sep:
+        parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
+        if len(parts) < 2:
             continue
-        webspace_id = str(webspace_id or "").strip()
-        receiver = str(receiver or "").strip()
+        webspace_id = parts[0]
+        node_id = None
+        receiver_parts = parts[1:]
+        if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
+            node_id = receiver_parts[1]
+            receiver_parts = receiver_parts[2:]
+        receiver = ".".join(receiver_parts).strip()
         if not webspace_id or not receiver:
             continue
         try:
             ctx = get_ctx()
+            payload = {
+                "topic": token,
+                "webspace_id": webspace_id,
+                "receiver": receiver,
+                "transport": str(transport or "webrtc_data:events"),
+            }
+            if node_id:
+                payload["node_id"] = node_id
             bus_emit(
                 ctx.bus,
                 "webio.stream.snapshot.requested",
-                {
-                    "topic": token,
-                    "webspace_id": webspace_id,
-                    "receiver": receiver,
-                    "transport": str(transport or "webrtc_data:events"),
-                },
+                payload,
                 "webrtc.peer",
             )
         except Exception:
@@ -229,25 +237,33 @@ def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, 
         if not token.startswith(prefix):
             continue
         suffix = token[len(prefix):]
-        webspace_id, sep, receiver = suffix.partition(".")
-        if not sep:
+        parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
+        if len(parts) < 2:
             continue
-        webspace_id = str(webspace_id or "").strip()
-        receiver = str(receiver or "").strip()
+        webspace_id = parts[0]
+        node_id = None
+        receiver_parts = parts[1:]
+        if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
+            node_id = receiver_parts[1]
+            receiver_parts = receiver_parts[2:]
+        receiver = ".".join(receiver_parts).strip()
         if not webspace_id or not receiver:
             continue
         try:
             ctx = get_ctx()
+            payload = {
+                "topic": token,
+                "webspace_id": webspace_id,
+                "receiver": receiver,
+                "transport": str(transport or "webrtc_data:events"),
+                "action": str(action or "").strip() or "subscribed",
+            }
+            if node_id:
+                payload["node_id"] = node_id
             bus_emit(
                 ctx.bus,
                 "webio.stream.subscription.changed",
-                {
-                    "topic": token,
-                    "webspace_id": webspace_id,
-                    "receiver": receiver,
-                    "transport": str(transport or "webrtc_data:events"),
-                    "action": str(action or "").strip() or "subscribed",
-                },
+                payload,
                 "webrtc.peer",
             )
         except Exception:

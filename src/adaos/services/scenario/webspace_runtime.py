@@ -119,6 +119,20 @@ def _local_node_id() -> str:
     return "hub"
 
 
+def _local_node_label() -> str:
+    try:
+        conf = load_config()
+        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
+        if isinstance(node_names, list):
+            for item in node_names:
+                label = str(item or "").strip()
+                if label:
+                    return label
+    except Exception:
+        pass
+    return _local_node_id()
+
+
 @dataclass(slots=True)
 class WebUIRegistryEntry:
     """
@@ -151,6 +165,8 @@ class WebspaceInfo:
     kind: str = "workspace"
     home_scenario: str = "web_desktop"
     source_mode: str = "workspace"
+    node_id: str = "hub"
+    node_label: str = "hub"
     is_dev: bool = False
     current_scenario: str | None = None
     stored_home_scenario_exists: bool | None = None
@@ -2751,6 +2767,8 @@ def _webspace_listing() -> List[Dict[str, Any]]:
                 "kind": row.effective_kind,
                 "home_scenario": row.effective_home_scenario,
                 "source_mode": row.effective_source_mode,
+                "node_id": _local_node_id(),
+                "node_label": _local_node_label(),
             },
         )
         for row in rows
@@ -2772,6 +2790,8 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
         kind=row.effective_kind,
         home_scenario=row.effective_home_scenario,
         source_mode=row.effective_source_mode,
+        node_id=_local_node_id(),
+        node_label=_local_node_label(),
         is_dev=row.is_dev,
         current_scenario=current_scenario,
         stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),

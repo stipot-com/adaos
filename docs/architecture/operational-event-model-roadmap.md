@@ -174,6 +174,9 @@ Current checkpoint as of 2026-05-01:
   receiver abstraction
 - `WebIoStreamService` can subscribe in `auto`, `member`, or `hub` mode and
   bridge node-qualified and hub-routed stream topics
+- backend router/runtime now emits those node-qualified stream topics when
+  `_meta.node_id` is present, and browser transport layers propagate `node_id`
+  through snapshot/subscription control events
 - the desktop client now reads desktop schema and dynamic modal definitions
   only from effective runtime branches (`ui.application.*`) for the current
   subnet-migration scope, leaving scenario-specific structure in Yjs/API
