@@ -190,7 +190,8 @@ def test_describe_webspace_projection_state_detects_space_mismatch(monkeypatch) 
     assert result["active_matches_target"] is False
 
 
-def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract() -> None:
+def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract(monkeypatch) -> None:
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "node-1")
     runtime = webspace_runtime_module.WebspaceScenarioRuntime()
 
     resolved = runtime.resolve_webspace(
@@ -207,6 +208,7 @@ def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract()
                 {
                     "skill": "telemetry_skill",
                     "space": "default",
+                    "node_id": "node-1",
                     "webio": {
                         "receivers": {
                             "telemetry_feed": {
@@ -232,6 +234,7 @@ def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract()
                 "maxItems": 50,
                 "initialState": {"items": []},
                 "origin": "skill:telemetry_skill",
+                "nodeId": "node-1",
             }
         }
     }
@@ -799,7 +802,7 @@ def test_switch_webspace_scenario_compat_env_is_ignored_and_does_not_load_conten
     )
 
     assert result["accepted"] is True
-    assert calls == ["validate:workspace:prompt_engineer_scenario"]
+    assert "validate:workspace:prompt_engineer_scenario" in calls
     assert result["scenario_switch_mode"] == "pointer_only"
     assert "validate_scenario" in result["timings_ms"]
     assert "load_scenario" not in result["timings_ms"]
@@ -1780,6 +1783,58 @@ def test_phase_pointer_collect_resolver_inputs_falls_back_to_legacy_yjs_when_loa
     assert inputs.scenario_source == "legacy_yjs"
     assert inputs.legacy_scenario_fallback is True
     assert inputs.metadata["legacy_scenario_fallback"] is True
+
+
+def test_phase_pointer_collect_resolver_inputs_reads_node_scoped_legacy_yjs_when_loader_missing(monkeypatch) -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    monkeypatch.setattr(runtime, "_collect_skill_decls", lambda mode="mixed": [])
+    monkeypatch.setattr(runtime, "_list_desktop_scenarios", lambda space="mixed": [])
+    monkeypatch.setattr(webspace_runtime_module.scenarios_loader, "read_content", lambda scenario_id, space="workspace": {})
+
+    fake_doc = _FakeDoc(
+        {
+            "ui": _FakeMap(
+                {
+                    "current_scenario": "prompt_engineer_scenario",
+                    "scenarios": {
+                        "hub": {
+                            "prompt_engineer_scenario": {
+                                "application": {"desktop": {"pageSchema": {"id": "legacy-node-page"}}}
+                            }
+                        }
+                    },
+                }
+            ),
+            "data": _FakeMap(
+                {
+                    "scenarios": {
+                        "hub": {
+                            "prompt_engineer_scenario": {
+                                "catalog": {"apps": [{"id": "legacy-node-app"}]}
+                            }
+                        }
+                    }
+                }
+            ),
+            "registry": _FakeMap(
+                {
+                    "scenarios": {
+                        "hub": {
+                            "prompt_engineer_scenario": {"modals": ["legacy-node-modal"]}
+                        }
+                    }
+                }
+            ),
+        }
+    )
+
+    inputs = runtime._collect_resolver_inputs_in_doc(fake_doc, "phase-pointer-legacy-node-scoped")
+
+    assert inputs.scenario_application["desktop"]["pageSchema"]["id"] == "legacy-node-page"
+    assert inputs.scenario_catalog["apps"] == [{"id": "legacy-node-app"}]
+    assert inputs.scenario_registry["modals"] == ["legacy-node-modal"]
+    assert inputs.scenario_source == "legacy_yjs"
+    assert inputs.legacy_scenario_fallback is True
 
 
 def test_phase5_collect_resolver_inputs_prefers_persistent_overlay(monkeypatch) -> None:

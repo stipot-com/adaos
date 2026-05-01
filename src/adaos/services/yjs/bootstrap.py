@@ -12,6 +12,7 @@ from adaos.services.yjs.seed import SEED
 from adaos.adapters.db import SqliteScenarioRegistry
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit
+from adaos.services.node_config import load_config
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.yjs.store import AdaosMemoryYStore, get_ystore_for_webspace, ystore_write_metadata
@@ -34,6 +35,56 @@ def _clone_json_like(value: Any) -> Any:
         return json.loads(json.dumps(value))
     except Exception:
         return value
+
+
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return "hub"
+
+
+def _node_scoped_scenario_entry(scenarios_root: Any, scenario_id: str, *, node_id: str | None = None) -> dict[str, Any]:
+    root = _coerce_dict(scenarios_root or {})
+    local_node_id = str(node_id or "").strip() or _local_node_id()
+
+    direct = _coerce_dict(root.get(scenario_id) or {})
+    if direct:
+        return direct
+
+    preferred_node = _coerce_dict(root.get(local_node_id) or {})
+    preferred_entry = _coerce_dict(preferred_node.get(scenario_id) or {})
+    if preferred_entry:
+        return preferred_entry
+
+    for maybe_node_bucket in root.values():
+        bucket = _coerce_dict(maybe_node_bucket or {})
+        entry = _coerce_dict(bucket.get(scenario_id) or {})
+        if entry:
+            return entry
+    return {}
+
+
+def _store_node_scoped_scenario_entry(
+    scenarios_root: Any,
+    *,
+    node_id: str,
+    scenario_id: str,
+    value: Any,
+) -> dict[str, Any]:
+    root = _coerce_dict(scenarios_root or {})
+    node_bucket = _coerce_dict(root.get(node_id) or {})
+    next_node_bucket = dict(node_bucket)
+    next_node_bucket[scenario_id] = value
+    root[node_id] = next_node_bucket
+    return root
 
 
 def _seed_registry_payload() -> dict[str, Any]:
@@ -61,12 +112,12 @@ def _has_projected_scenario_seed(ui_map: Any, data_map: Any, scenario_id: str) -
     if not str(scenario_id or "").strip():
         return False
     ui_scenarios = _coerce_dict(ui_map.get("scenarios") or {})
-    scenario_ui = _coerce_dict(ui_scenarios.get(scenario_id) or {})
+    scenario_ui = _node_scoped_scenario_entry(ui_scenarios, scenario_id)
     application = _coerce_dict(scenario_ui.get("application") or {})
     if not application:
         return False
     data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
-    scenario_data = _coerce_dict(data_scenarios.get(scenario_id) or {})
+    scenario_data = _node_scoped_scenario_entry(data_scenarios, scenario_id)
     catalog = _coerce_dict(scenario_data.get("catalog") or {})
     return bool(catalog or "catalog" in scenario_data)
 
@@ -88,6 +139,7 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
     application = _clone_json_like(_seed_application_payload())
     registry_payload = _clone_json_like(_seed_registry_payload())
     catalog_payload = _clone_json_like(_seed_catalog_payload())
+    node_id = _local_node_id()
 
     ui_map = ydoc.get_map("ui")
     registry_map = ydoc.get_map("registry")
@@ -95,23 +147,41 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
 
     with ydoc.begin_transaction() as txn:
         ui_scenarios = _coerce_dict(ui_map.get("scenarios") or {})
-        scenario_ui = _coerce_dict(ui_scenarios.get(scenario_id) or {})
+        scenario_ui = _node_scoped_scenario_entry(ui_scenarios, scenario_id, node_id=node_id)
         scenario_ui["application"] = application
         updated_ui = dict(ui_scenarios)
         updated_ui[scenario_id] = scenario_ui
+        updated_ui = _store_node_scoped_scenario_entry(
+            updated_ui,
+            node_id=node_id,
+            scenario_id=scenario_id,
+            value=scenario_ui,
+        )
         ui_map.set(txn, "scenarios", updated_ui)
         ui_map.set(txn, "current_scenario", scenario_id)
 
         registry_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
         updated_registry = dict(registry_scenarios)
         updated_registry[scenario_id] = registry_payload
+        updated_registry = _store_node_scoped_scenario_entry(
+            updated_registry,
+            node_id=node_id,
+            scenario_id=scenario_id,
+            value=registry_payload,
+        )
         registry_map.set(txn, "scenarios", updated_registry)
 
         data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
         updated_data = dict(data_scenarios)
-        scenario_data = _coerce_dict(updated_data.get(scenario_id) or {})
+        scenario_data = _node_scoped_scenario_entry(updated_data, scenario_id, node_id=node_id)
         scenario_data["catalog"] = catalog_payload
         updated_data[scenario_id] = scenario_data
+        updated_data = _store_node_scoped_scenario_entry(
+            updated_data,
+            node_id=node_id,
+            scenario_id=scenario_id,
+            value=scenario_data,
+        )
         data_map.set(txn, "scenarios", updated_data)
 
 

@@ -71,6 +71,7 @@ def test_bootstrap_seed_fallback_projects_compat_seed_without_effective_writes(m
     emitted: list[tuple[str, dict[str, object], str]] = []
     store = _FakeStore()
 
+    monkeypatch.setattr(bootstrap_module, "_local_node_id", lambda: "node-1")
     monkeypatch.setattr(bootstrap_module, "_scenario_manager", lambda: _FailingManager())
     monkeypatch.setattr(bootstrap_module, "get_ctx", lambda: SimpleNamespace(bus=object()))
     monkeypatch.setattr(
@@ -103,8 +104,11 @@ def test_bootstrap_seed_fallback_projects_compat_seed_without_effective_writes(m
     data_scenarios = dict(store.encoded_state["data_scenarios"] or {})
     registry_scenarios = dict(store.encoded_state["registry_scenarios"] or {})
     assert ui_scenarios["web_desktop"]["application"]["desktop"]["pageSchema"]["id"] == "desktop"
+    assert ui_scenarios["node-1"]["web_desktop"]["application"]["desktop"]["pageSchema"]["id"] == "desktop"
     assert data_scenarios["web_desktop"]["catalog"]["apps"] == []
+    assert data_scenarios["node-1"]["web_desktop"]["catalog"]["apps"] == []
     assert registry_scenarios["web_desktop"] == {"widgets": [], "modals": []}
+    assert registry_scenarios["node-1"]["web_desktop"] == {"widgets": [], "modals": []}
     assert emitted == [
         (
             "scenarios.synced",
@@ -115,6 +119,8 @@ def test_bootstrap_seed_fallback_projects_compat_seed_without_effective_writes(m
 
 
 def test_bootstrap_reuses_projected_seed_and_only_nudges_rebuild(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap_module, "_local_node_id", lambda: "node-1")
+
     def _apply_state(ydoc: Y.YDoc) -> None:
         with ydoc.begin_transaction() as txn:
             ui_map = ydoc.get_map("ui")
@@ -125,20 +131,26 @@ def test_bootstrap_reuses_projected_seed_and_only_nudges_rebuild(monkeypatch) ->
                 txn,
                 "scenarios",
                 {
-                    "prompt_engineer_scenario": {
-                        "application": {"desktop": {"pageSchema": {"id": "prompt-page"}}}
+                    "node-1": {
+                        "prompt_engineer_scenario": {
+                            "application": {"desktop": {"pageSchema": {"id": "prompt-page"}}}
+                        }
                     }
                 },
             )
             data_map.set(
                 txn,
                 "scenarios",
-                {"prompt_engineer_scenario": {"catalog": {"apps": [{"id": "prompt-app"}], "widgets": []}}},
+                {
+                    "node-1": {
+                        "prompt_engineer_scenario": {"catalog": {"apps": [{"id": "prompt-app"}], "widgets": []}}
+                    }
+                },
             )
             registry_map.set(
                 txn,
                 "scenarios",
-                {"prompt_engineer_scenario": {"modals": ["prompt-modal"], "widgets": []}},
+                {"node-1": {"prompt_engineer_scenario": {"modals": ["prompt-modal"], "widgets": []}}},
             )
 
     class _UnexpectedManager:
@@ -196,6 +208,7 @@ def test_bootstrap_prefers_current_pointer_when_projecting_missing_effective_ui(
             captured.append((scenario_id, str(webspace_id or ""), space, emit_event))
 
     store = _FakeStore(apply_state=_apply_state)
+    monkeypatch.setattr(bootstrap_module, "_local_node_id", lambda: "node-1")
     monkeypatch.setattr(bootstrap_module, "_scenario_manager", lambda: _Manager())
 
     asyncio.run(
@@ -215,6 +228,7 @@ def test_bootstrap_prefers_current_pointer_when_projecting_missing_effective_ui(
 
 def test_bootstrap_projects_into_provided_ydoc_in_single_pass(monkeypatch) -> None:
     projected: list[tuple[str, str]] = []
+    monkeypatch.setattr(bootstrap_module, "_local_node_id", lambda: "node-1")
 
     class _ProjectingManager:
         def project_scenario_to_doc(self, ydoc: Y.YDoc, scenario_id: str, *, space: str = "workspace") -> None:
@@ -224,9 +238,21 @@ def test_bootstrap_projects_into_provided_ydoc_in_single_pass(monkeypatch) -> No
                 data_map = ydoc.get_map("data")
                 registry_map = ydoc.get_map("registry")
                 ui_map.set(txn, "current_scenario", scenario_id)
-                ui_map.set(txn, "scenarios", {scenario_id: {"application": {"desktop": {"pageSchema": {"id": "prompt"}}}}})
-                data_map.set(txn, "scenarios", {scenario_id: {"catalog": {"apps": [{"id": "prompt"}], "widgets": []}}})
-                registry_map.set(txn, "scenarios", {scenario_id: {"widgets": [], "modals": ["prompt-modal"]}})
+                ui_map.set(
+                    txn,
+                    "scenarios",
+                    {"node-1": {scenario_id: {"application": {"desktop": {"pageSchema": {"id": "prompt"}}}}}},
+                )
+                data_map.set(
+                    txn,
+                    "scenarios",
+                    {"node-1": {scenario_id: {"catalog": {"apps": [{"id": "prompt"}], "widgets": []}}}},
+                )
+                registry_map.set(
+                    txn,
+                    "scenarios",
+                    {"node-1": {scenario_id: {"widgets": [], "modals": ["prompt-modal"]}}},
+                )
 
     emitted: list[tuple[str, dict[str, object], str]] = []
     store = _FakeStore()
@@ -276,6 +302,7 @@ def test_bootstrap_seed_fallback_uses_snapshot_when_incremental_write_fails(monk
     emitted: list[tuple[str, dict[str, object], str]] = []
     store = _FakeStore(incremental_write_ok=False)
 
+    monkeypatch.setattr(bootstrap_module, "_local_node_id", lambda: "node-1")
     monkeypatch.setattr(bootstrap_module, "_scenario_manager", lambda: _FailingManager())
     monkeypatch.setattr(bootstrap_module, "get_ctx", lambda: SimpleNamespace(bus=object()))
     monkeypatch.setattr(

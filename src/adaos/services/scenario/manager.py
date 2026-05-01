@@ -37,6 +37,37 @@ _log = logging.getLogger("adaos.scenario.manager")
 _RUNTIME_OWNED_DATA_KEYS = {"catalog", "installed", "desktop", "routing"}
 
 
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return "hub"
+
+
+def _store_node_scoped_scenario_entry(
+    scenarios_root: object,
+    *,
+    node_id: str,
+    scenario_id: str,
+    value: object,
+) -> dict:
+    root = dict(scenarios_root) if isinstance(scenarios_root, dict) else {}
+    node_bucket = root.get(node_id)
+    if not isinstance(node_bucket, dict):
+        node_bucket = {}
+    next_node_bucket = dict(node_bucket)
+    next_node_bucket[scenario_id] = value
+    root[node_id] = next_node_bucket
+    return root
+
+
 def _scenario_manager_async_write_meta():
     return ystore_write_metadata(
         root_names=["ui", "registry", "data"],
@@ -242,6 +273,7 @@ class ScenarioManager:
         catalog_section: dict,
         data_section: dict,
     ) -> None:
+        node_id = _local_node_id()
         with ydoc.begin_transaction() as txn:
             ui_map = ydoc.get_map("ui")
             registry_map = ydoc.get_map("registry")
@@ -252,6 +284,12 @@ class ScenarioManager:
                 scenarios_ui = {}
             updated_ui = dict(scenarios_ui)
             updated_ui[scenario_id] = {"application": ui_section}
+            updated_ui = _store_node_scoped_scenario_entry(
+                updated_ui,
+                node_id=node_id,
+                scenario_id=scenario_id,
+                value={"application": ui_section},
+            )
             ui_map.set(txn, "scenarios", updated_ui)
             if not ui_map.get("current_scenario"):
                 ui_map.set(txn, "current_scenario", scenario_id)
@@ -261,6 +299,12 @@ class ScenarioManager:
                 reg_scenarios = {}
             reg_updated = dict(reg_scenarios)
             reg_updated[scenario_id] = registry_section
+            reg_updated = _store_node_scoped_scenario_entry(
+                reg_updated,
+                node_id=node_id,
+                scenario_id=scenario_id,
+                value=registry_section,
+            )
             registry_map.set(txn, "scenarios", reg_updated)
 
             data_scenarios = data_map.get("scenarios")
@@ -270,6 +314,12 @@ class ScenarioManager:
             entry = dict(data_updated.get(scenario_id) or {})
             entry["catalog"] = catalog_section
             data_updated[scenario_id] = entry
+            data_updated = _store_node_scoped_scenario_entry(
+                data_updated,
+                node_id=node_id,
+                scenario_id=scenario_id,
+                value={"catalog": catalog_section},
+            )
             data_map.set(txn, "scenarios", data_updated)
 
             # Optional root data overrides from scenario.json:

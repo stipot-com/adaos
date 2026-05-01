@@ -30,6 +30,12 @@ phase-aware materialization.
   widget/workspace chrome, but these browser affordances still sit on top of
   compatibility-era catalog/runtime branches rather than a finalized
   node-aware projection ABI
+- Compatibility checkpoint as of 2026-05-01:
+  scenario compatibility caches are now being written and read in a preferred
+  node-scoped form under `ui.scenarios.<node_id>.<scenario_id>`,
+  `registry.scenarios.<node_id>.<scenario_id>`, and
+  `data.scenarios.<node_id>.<scenario_id>`, while flat per-scenario branches
+  remain as a transition bridge
 
 ## Implementation Anchors
 

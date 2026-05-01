@@ -144,6 +144,10 @@ Current checkpoint as of 2026-05-01:
 - browser/platform surfaces in `web_desktop` now already propagate lightweight
   node ownership metadata for catalog items, pinned widgets, workspace labels,
   and marketplace install targeting
+- compatibility-era Yjs scenario caches are now transitioning to a node-scoped
+  shape first: `...scenarios.<node_id>.<scenario_id>`, with flat
+  `...scenarios.<scenario_id>` branches retained temporarily for mixed-version
+  readers and pointer flows
 - this is intentionally a compatibility-first client step, not yet the final
   shared Yjs node envelope described by this phase
 - node multiplicity is therefore now visible in the browser contract, but the

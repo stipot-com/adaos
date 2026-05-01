@@ -18,6 +18,7 @@ import y_py as Y
 
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.capacity import get_local_capacity
+from adaos.services.node_config import load_config
 from adaos.services.yjs.doc import (
     get_ydoc,
     async_get_ydoc,
@@ -102,6 +103,20 @@ def _normalize_optional_token(value: Any) -> str | None:
         return None
     token = str(value).strip()
     return token or None
+
+
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return "hub"
 
 
 @dataclass(slots=True)
@@ -580,6 +595,12 @@ def _normalize_webio_receiver(node: Any) -> Dict[str, Any]:
             out["maxItems"] = int(max_items)
     except Exception:
         pass
+    node_id = str(item.get("nodeId") or item.get("node_id") or "").strip()
+    if node_id:
+        out["nodeId"] = node_id
+    transport = str(item.get("transport") or "").strip().lower()
+    if transport in {"auto", "member", "hub"}:
+        out["transport"] = transport
     if "initialState" in item:
         out["initialState"] = _clone_json_like(item.get("initialState"))
     return out
@@ -589,6 +610,7 @@ def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
     receivers: Dict[str, Any] = {}
     for decl in skill_decls:
         skill_name = str(decl.get("skill") or "").strip()
+        node_id = str(decl.get("node_id") or "").strip()
         webio = decl.get("webio") if isinstance(decl.get("webio"), Mapping) else {}
         raw_receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
         for key, value in raw_receivers.items():
@@ -601,8 +623,36 @@ def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
             normalized["id"] = receiver_id
             if skill_name:
                 normalized["origin"] = f"skill:{skill_name}"
+            if node_id and "nodeId" not in normalized:
+                normalized["nodeId"] = node_id
             receivers[receiver_id] = normalized
     return {"receivers": receivers}
+
+
+def _read_node_scoped_scenario_entry(
+    scenarios_root: Any,
+    scenario_id: str,
+    *,
+    node_id: str | None = None,
+) -> Dict[str, Any]:
+    root = _coerce_dict(scenarios_root or {})
+    target_node_id = str(node_id or "").strip() or _local_node_id()
+
+    direct = _coerce_dict(root.get(scenario_id) or {})
+    if direct:
+        return direct
+
+    local_bucket = _coerce_dict(root.get(target_node_id) or {})
+    local_entry = _coerce_dict(local_bucket.get(scenario_id) or {})
+    if local_entry:
+        return local_entry
+
+    for maybe_bucket in root.values():
+        bucket = _coerce_dict(maybe_bucket or {})
+        entry = _coerce_dict(bucket.get(scenario_id) or {})
+        if entry:
+            return entry
+    return {}
 
 
 def _read_effective_branch_fingerprints(registry_map: Any) -> Dict[str, str]:
@@ -989,15 +1039,15 @@ def _read_legacy_materialized_scenario_sections(
     scenario_id: str,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
-    scenario_ui_entry = _coerce_dict(scenarios_ui.get(scenario_id) or {})
+    scenario_ui_entry = _read_node_scoped_scenario_entry(scenarios_ui, scenario_id)
     scenario_app_ui = _coerce_dict(scenario_ui_entry.get("application") or {})
 
     scenarios_data = _coerce_dict(data_map.get("scenarios") or {})
-    scenario_entry = _coerce_dict(scenarios_data.get(scenario_id) or {})
+    scenario_entry = _read_node_scoped_scenario_entry(scenarios_data, scenario_id)
     base_catalog = _coerce_dict(scenario_entry.get("catalog") or {})
 
     scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
-    registry_entry = _coerce_dict(scenario_registry_map.get(scenario_id) or {})
+    registry_entry = _read_node_scoped_scenario_entry(scenario_registry_map, scenario_id)
     return scenario_app_ui, base_catalog, registry_entry
 
 
@@ -1137,9 +1187,13 @@ def _collect_compatibility_cache_required_branches(current_scenario: str | None)
     scenario_id = str(current_scenario or "").strip()
     if not scenario_id:
         return []
+    node_id = _local_node_id()
     return [
+        f"ui.scenarios.{node_id}.{scenario_id}.application",
         f"ui.scenarios.{scenario_id}.application",
+        f"registry.scenarios.{node_id}.{scenario_id}",
         f"registry.scenarios.{scenario_id}",
+        f"data.scenarios.{node_id}.{scenario_id}.catalog",
         f"data.scenarios.{scenario_id}.catalog",
     ]
 
@@ -1679,6 +1733,7 @@ class WebspaceScenarioRuntime:
         payload = {
             "skill": skill_name,
             "space": space,
+            "node_id": _local_node_id(),
             "apps": [_apply_webui_load_hint(it) for it in apps if isinstance(it, dict)],
             "widgets": [_apply_webui_load_hint(it) for it in widgets if isinstance(it, dict)],
             "registry": {
@@ -1903,14 +1958,21 @@ class WebspaceScenarioRuntime:
         for decl in skill_decls:
             skill_name = decl.get("skill") or ""
             space = decl.get("space") or "default"
+            node_id = str(decl.get("node_id") or "").strip()
             source = f"skill:{skill_name}"
             dev_flag = space == "dev"
             for app in decl.get("apps") or []:
                 if isinstance(app, dict):
-                    skill_apps.append(_mark_entry(app, source=source, dev=dev_flag))
+                    entry = _mark_entry(app, source=source, dev=dev_flag)
+                    if node_id and not str(entry.get("node_id") or "").strip():
+                        entry["node_id"] = node_id
+                    skill_apps.append(entry)
             for widget in decl.get("widgets") or []:
                 if isinstance(widget, dict):
-                    skill_widgets.append(_mark_entry(widget, source=source, dev=dev_flag))
+                    entry = _mark_entry(widget, source=source, dev=dev_flag)
+                    if node_id and not str(entry.get("node_id") or "").strip():
+                        entry["node_id"] = node_id
+                    skill_widgets.append(entry)
             reg = decl.get("registry") or {}
             mod_spec = reg.get("modals") or {}
             if isinstance(mod_spec, dict):

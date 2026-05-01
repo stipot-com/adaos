@@ -166,9 +166,10 @@ def test_scenario_push_updates_registry_and_commits_it(monkeypatch, tmp_path: Pa
     assert git.push_calls == [str(workspace)]
 
 
-def test_scenario_project_to_doc_keeps_runtime_owned_effective_data_under_rebuild_ownership() -> None:
+def test_scenario_project_to_doc_keeps_runtime_owned_effective_data_under_rebuild_ownership(monkeypatch) -> None:
     manager = object.__new__(ScenarioManager)
     manager.caps = _FakeCaps()
+    monkeypatch.setattr("adaos.services.scenario.manager._local_node_id", lambda: "node-1")
 
     state = {
         "ui": _FakeMap(
@@ -214,6 +215,9 @@ def test_scenario_project_to_doc_keeps_runtime_owned_effective_data_under_rebuil
     assert state["data"]["routing"]["routes"]["home"] == "/"
     assert state["ui"]["current_scenario"] == "prompt_engineer_scenario"
     assert state["ui"]["scenarios"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "legacy-page"
+    assert state["ui"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["application"]["desktop"]["pageSchema"]["id"] == "legacy-page"
     assert state["registry"]["scenarios"]["prompt_engineer_scenario"]["modals"] == ["legacy-modal"]
+    assert state["registry"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["modals"] == ["legacy-modal"]
     assert state["data"]["scenarios"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "legacy-app"}]
+    assert state["data"]["scenarios"]["node-1"]["prompt_engineer_scenario"]["catalog"]["apps"] == [{"id": "legacy-app"}]
     assert state["data"]["weather"] == {"city": "Moscow"}

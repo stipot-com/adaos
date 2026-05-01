@@ -115,7 +115,7 @@ def test_scenario_loader_cache_refreshes_when_repo_workspace_files_change(monkey
     assert second_content["ui"]["application"]["desktop"]["pageSchema"]["id"] == "prompt-b"
 
 
-def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path) -> None:
+def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path, monkeypatch) -> None:
     runtime_base = tmp_path / "runtime"
     repo_root = tmp_path / "repo"
     repo_skill = repo_root / ".adaos" / "workspace" / "skills" / "prompt_engineer_skill"
@@ -138,10 +138,12 @@ def test_webspace_runtime_load_webui_falls_back_to_repo_workspace(tmp_path: Path
 
     fake_ctx = SimpleNamespace(paths=_PathsStub(base_dir=runtime_base, repo_root=repo_root))
     runtime = WebspaceScenarioRuntime(fake_ctx)
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "node-1")
 
     payload = runtime._load_webui("prompt_engineer_skill", "default")
 
     assert payload["apps"][0]["scenario_id"] == "prompt_engineer_scenario"
+    assert payload["node_id"] == "node-1"
     assert "prompt_ide_modal" in payload["registry"]["modals"]
 
 

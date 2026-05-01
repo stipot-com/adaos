@@ -16,15 +16,22 @@ For the target architecture and the agreed evolutionary path, see
 2. **Scenario** - declarative JSON (`scenario.json`) defines desktop UI
    building blocks (apps, widgets, registry). During migration the hub may
    still seed compatibility caches in `ui.scenarios.*`, `data.scenarios.*`,
-   and `registry.scenarios.*`, but active scenario switching now primarily
-   updates `ui.current_scenario` and lets semantic rebuild repopulate
-   effective runtime branches.
+   and `registry.scenarios.*`. As of 2026-05-01 the preferred compatibility
+   shape is node-scoped first:
+   `ui.scenarios.<node_id>.<scenario_id>`,
+   `registry.scenarios.<node_id>.<scenario_id>`,
+   `data.scenarios.<node_id>.<scenario_id>`,
+   while flat `...<scenario_id>` branches remain as a temporary fallback.
+   Active scenario switching still primarily updates `ui.current_scenario`
+   and lets semantic rebuild repopulate effective runtime branches.
 3. **Skills** - runtime packages can inject additional UI declaratives via
    `webui.json`. A core runtime (`WebspaceScenarioRuntime`) resolves
    scenario + skills into ready-to-render runtime branches such as
    `ui.application`, `data.catalog`, and `data.installed`. In this model
    `web_desktop_skill` is just another skill that contributes core desktop
-   widgets and modals.
+   widgets and modals. Skill-owned runtime declarations now also carry local
+   `node_id` metadata so webio receivers and catalog entries can preserve
+   ownership through the Yjs/runtime bridge.
 4. **Event mesh** - UI commands travel over `/ws` (`events_ws`). Each command
    becomes a domain event (`desktop.*`) with metadata containing the current
    `webspace_id`. Skills subscribe to these events and mutate the associated
