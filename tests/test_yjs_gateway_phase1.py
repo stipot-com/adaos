@@ -161,6 +161,19 @@ def test_diagnostic_room_persists_unmarked_browser_update() -> None:
     assert ystore.writes == [b"browser-update"]
 
 
+def test_diagnostic_room_skips_empty_y_update() -> None:
+    reset_backend_room_update_markers()
+    ystore = _FakeWriteYStore()
+    room = gateway_module.DiagnosticYRoom(ystore=ystore, log=_fake_log())
+    room._webspace_id = "desktop"
+
+    asyncio.run(room._tracked_ystore_write(b"\x00\x00"))
+
+    assert ystore.writes == []
+    assert room._diag_empty_update_skip_total == 1
+    assert room._diag_empty_update_skip_bytes == 2
+
+
 def test_ensure_webspace_ready_uses_manifest_defaults(monkeypatch) -> None:
     webspace_id = "gateway-home"
     ensure_workspace(webspace_id)

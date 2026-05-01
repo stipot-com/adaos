@@ -113,6 +113,11 @@ _YROOM_DIAG_BUFFER_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_BUFFER_WARN", 32, minimu
 _YROOM_DIAG_PENDING_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_PENDING_WARN", 32, minimum=1)
 _YROOM_DIAG_UPDATE_WARN_BYTES = _env_int("ADAOS_YJS_ROOM_DIAG_UPDATE_WARN_BYTES", 256 * 1024, minimum=1)
 _YROOM_DIAG_INCLUDE_YSTORE = _env_flag("ADAOS_YJS_ROOM_DIAG_INCLUDE_YSTORE", False)
+_EMPTY_Y_UPDATE = b"\x00\x00"
+
+
+def _is_empty_y_update(update: bytes | bytearray | memoryview | None) -> bool:
+    return bytes(update or b"") == _EMPTY_Y_UPDATE
 
 
 def _is_websocket_accept_race(exc: BaseException) -> bool:
@@ -193,6 +198,8 @@ class DiagnosticYRoom(YRoom):
         self._diag_peak_pending_store_tasks = 0
         self._diag_update_total = 0
         self._diag_update_bytes_total = 0
+        self._diag_empty_update_skip_total = 0
+        self._diag_empty_update_skip_bytes = 0
         self._diag_backend_persist_skip_total = 0
         self._diag_backend_persist_skip_bytes = 0
         self._diag_last_log_mono = 0.0
@@ -229,6 +236,8 @@ class DiagnosticYRoom(YRoom):
             "pending_store_tasks": int(self._diag_pending_store_tasks),
             "update_total": int(self._diag_update_total),
             "update_bytes_total": int(self._diag_update_bytes_total),
+            "empty_update_skip_total": int(self._diag_empty_update_skip_total),
+            "empty_update_skip_bytes": int(self._diag_empty_update_skip_bytes),
             "backend_persist_skip_total": int(self._diag_backend_persist_skip_total),
             "backend_persist_skip_bytes": int(self._diag_backend_persist_skip_bytes),
             "ystore": self._diag_ystore_snapshot() if include_ystore else {},
@@ -317,6 +326,10 @@ class DiagnosticYRoom(YRoom):
         ystore = getattr(self, "ystore", None)
         if ystore is None:
             return
+        if _is_empty_y_update(update):
+            self._diag_empty_update_skip_total += 1
+            self._diag_empty_update_skip_bytes += len(update or b"")
+            return
         self._diag_pending_store_tasks += 1
         try:
             persisted = consume_backend_room_update(self._diag_room_id(), update)
@@ -353,6 +366,10 @@ class DiagnosticYRoom(YRoom):
                 update_len = len(update or b"")
                 self._diag_update_total += 1
                 self._diag_update_bytes_total += update_len
+                if _is_empty_y_update(update):
+                    self._diag_empty_update_skip_total += 1
+                    self._diag_empty_update_skip_bytes += update_len
+                    continue
                 self._diag_log_pressure("broadcast.update.received", update_bytes=update_len)
                 for client in self.clients:
                     self.log.debug("Sending Y update to client with endpoint: %s", client.path)
