@@ -638,10 +638,6 @@ def _read_node_scoped_scenario_entry(
     root = _coerce_dict(scenarios_root or {})
     target_node_id = str(node_id or "").strip() or _local_node_id()
 
-    direct = _coerce_dict(root.get(scenario_id) or {})
-    if direct:
-        return direct
-
     local_bucket = _coerce_dict(root.get(target_node_id) or {})
     local_entry = _coerce_dict(local_bucket.get(scenario_id) or {})
     if local_entry:
@@ -1190,11 +1186,8 @@ def _collect_compatibility_cache_required_branches(current_scenario: str | None)
     node_id = _local_node_id()
     return [
         f"ui.scenarios.{node_id}.{scenario_id}.application",
-        f"ui.scenarios.{scenario_id}.application",
         f"registry.scenarios.{node_id}.{scenario_id}",
-        f"registry.scenarios.{scenario_id}",
         f"data.scenarios.{node_id}.{scenario_id}.catalog",
-        f"data.scenarios.{scenario_id}.catalog",
     ]
 
 

@@ -282,10 +282,8 @@ class ScenarioManager:
             scenarios_ui = ui_map.get("scenarios")
             if not isinstance(scenarios_ui, dict):
                 scenarios_ui = {}
-            updated_ui = dict(scenarios_ui)
-            updated_ui[scenario_id] = {"application": ui_section}
             updated_ui = _store_node_scoped_scenario_entry(
-                updated_ui,
+                dict(scenarios_ui),
                 node_id=node_id,
                 scenario_id=scenario_id,
                 value={"application": ui_section},
@@ -297,10 +295,8 @@ class ScenarioManager:
             reg_scenarios = registry_map.get("scenarios")
             if not isinstance(reg_scenarios, dict):
                 reg_scenarios = {}
-            reg_updated = dict(reg_scenarios)
-            reg_updated[scenario_id] = registry_section
             reg_updated = _store_node_scoped_scenario_entry(
-                reg_updated,
+                dict(reg_scenarios),
                 node_id=node_id,
                 scenario_id=scenario_id,
                 value=registry_section,
@@ -310,12 +306,8 @@ class ScenarioManager:
             data_scenarios = data_map.get("scenarios")
             if not isinstance(data_scenarios, dict):
                 data_scenarios = {}
-            data_updated = dict(data_scenarios)
-            entry = dict(data_updated.get(scenario_id) or {})
-            entry["catalog"] = catalog_section
-            data_updated[scenario_id] = entry
             data_updated = _store_node_scoped_scenario_entry(
-                data_updated,
+                dict(data_scenarios),
                 node_id=node_id,
                 scenario_id=scenario_id,
                 value={"catalog": catalog_section},

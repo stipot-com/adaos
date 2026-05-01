@@ -87,6 +87,35 @@ def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
 
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return "hub"
+
+
+def _read_node_scoped_scenario_entry(scenarios_root: Any, scenario_id: str, *, node_id: str | None = None) -> dict[str, Any]:
+    root = _coerce_dict(scenarios_root or {})
+    target_node_id = str(node_id or "").strip() or _local_node_id()
+    local_bucket = _coerce_dict(root.get(target_node_id) or {})
+    local_entry = _coerce_dict(local_bucket.get(scenario_id) or {})
+    if local_entry:
+        return local_entry
+    for maybe_bucket in root.values():
+        bucket = _coerce_dict(maybe_bucket or {})
+        entry = _coerce_dict(bucket.get(scenario_id) or {})
+        if entry:
+            return entry
+    return {}
+
+
 async def _current_reliability_payload_async(*, webspace_id: str | None = None) -> dict[str, Any]:
     if webspace_id is None:
         return await anyio.to_thread.run_sync(current_reliability_payload)
@@ -538,10 +567,11 @@ def _collect_compatibility_cache_required_branches(current_scenario: str | None)
     scenario_id = str(current_scenario or "").strip()
     if not scenario_id:
         return []
+    node_id = _local_node_id()
     return [
-        f"ui.scenarios.{scenario_id}.application",
-        f"registry.scenarios.{scenario_id}",
-        f"data.scenarios.{scenario_id}.catalog",
+        f"ui.scenarios.{node_id}.{scenario_id}.application",
+        f"registry.scenarios.{node_id}.{scenario_id}",
+        f"data.scenarios.{node_id}.{scenario_id}.catalog",
     ]
 
 
@@ -640,12 +670,12 @@ async def _describe_yjs_materialization(
             topbar = _coerce_list(desktop.get("topbar"))
             current_scenario = str(ui_map.get("current_scenario") or "").strip() or None
             scenarios_ui = _coerce_dict(ui_map.get("scenarios") or {})
-            scenario_ui_entry = _coerce_dict(scenarios_ui.get(current_scenario) or {}) if current_scenario else {}
+            scenario_ui_entry = _read_node_scoped_scenario_entry(scenarios_ui, current_scenario) if current_scenario else {}
             scenario_ui_application = _coerce_dict(scenario_ui_entry.get("application") or {})
             scenario_registry_map = _coerce_dict(registry_map.get("scenarios") or {})
-            scenario_registry_entry = _coerce_dict(scenario_registry_map.get(current_scenario) or {}) if current_scenario else {}
+            scenario_registry_entry = _read_node_scoped_scenario_entry(scenario_registry_map, current_scenario) if current_scenario else {}
             scenario_data_map = _coerce_dict(data_map.get("scenarios") or {})
-            scenario_data_entry = _coerce_dict(scenario_data_map.get(current_scenario) or {}) if current_scenario else {}
+            scenario_data_entry = _read_node_scoped_scenario_entry(scenario_data_map, current_scenario) if current_scenario else {}
             scenario_catalog = _coerce_dict(scenario_data_entry.get("catalog") or {})
 
             has_ui_application = bool(application)

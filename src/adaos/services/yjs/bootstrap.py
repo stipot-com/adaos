@@ -55,10 +55,6 @@ def _node_scoped_scenario_entry(scenarios_root: Any, scenario_id: str, *, node_i
     root = _coerce_dict(scenarios_root or {})
     local_node_id = str(node_id or "").strip() or _local_node_id()
 
-    direct = _coerce_dict(root.get(scenario_id) or {})
-    if direct:
-        return direct
-
     preferred_node = _coerce_dict(root.get(local_node_id) or {})
     preferred_entry = _coerce_dict(preferred_node.get(scenario_id) or {})
     if preferred_entry:
@@ -149,10 +145,8 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
         ui_scenarios = _coerce_dict(ui_map.get("scenarios") or {})
         scenario_ui = _node_scoped_scenario_entry(ui_scenarios, scenario_id, node_id=node_id)
         scenario_ui["application"] = application
-        updated_ui = dict(ui_scenarios)
-        updated_ui[scenario_id] = scenario_ui
         updated_ui = _store_node_scoped_scenario_entry(
-            updated_ui,
+            dict(ui_scenarios),
             node_id=node_id,
             scenario_id=scenario_id,
             value=scenario_ui,
@@ -161,10 +155,8 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
         ui_map.set(txn, "current_scenario", scenario_id)
 
         registry_scenarios = _coerce_dict(registry_map.get("scenarios") or {})
-        updated_registry = dict(registry_scenarios)
-        updated_registry[scenario_id] = registry_payload
         updated_registry = _store_node_scoped_scenario_entry(
-            updated_registry,
+            dict(registry_scenarios),
             node_id=node_id,
             scenario_id=scenario_id,
             value=registry_payload,
@@ -172,12 +164,10 @@ def _project_seed_payload_to_compat_branches(ydoc: Y.YDoc, *, scenario_id: str) 
         registry_map.set(txn, "scenarios", updated_registry)
 
         data_scenarios = _coerce_dict(data_map.get("scenarios") or {})
-        updated_data = dict(data_scenarios)
-        scenario_data = _node_scoped_scenario_entry(updated_data, scenario_id, node_id=node_id)
+        scenario_data = _node_scoped_scenario_entry(data_scenarios, scenario_id, node_id=node_id)
         scenario_data["catalog"] = catalog_payload
-        updated_data[scenario_id] = scenario_data
         updated_data = _store_node_scoped_scenario_entry(
-            updated_data,
+            dict(data_scenarios),
             node_id=node_id,
             scenario_id=scenario_id,
             value=scenario_data,
