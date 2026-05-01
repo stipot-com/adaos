@@ -232,9 +232,15 @@ def _dev_without_supervisor() -> bool:
 
 
 def _dev_api_serve_core_update_sync_disabled() -> bool:
-    env_type = str(os.getenv("ENV_TYPE") or "").strip().lower()
     launch_mode = str(os.getenv("ADAOS_RUNTIME_LAUNCH_MODE") or "").strip().lower()
-    return env_type == "dev" and launch_mode == "api_serve"
+    if launch_mode != "api_serve":
+        return False
+    return str(os.getenv("ADAOS_API_SERVE_ALLOW_CORE_UPDATE") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _supervisor_local_bases() -> list[str]:

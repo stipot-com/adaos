@@ -90,3 +90,23 @@ def test_core_update_report_surfaces_runtime_identity(monkeypatch) -> None:
     assert stream_id == "hub-integration:github-core-update:sn-test:rt-b-a-abcdef12"
     assert "role:active" in authority_epoch
     assert "instance:rt-b-a-abcdef12" in authority_epoch
+
+
+def test_core_update_reconcile_skips_dev_api_serve(monkeypatch) -> None:
+    monkeypatch.setenv("ADAOS_RUNTIME_LAUNCH_MODE", "api_serve")
+    monkeypatch.delenv("ADAOS_API_SERVE_ALLOW_CORE_UPDATE", raising=False)
+    monkeypatch.setattr(
+        core_update_sync,
+        "_root_client",
+        lambda _conf: (_ for _ in ()).throw(AssertionError("root client must not be used")),
+    )
+
+    conf = SimpleNamespace(subnet_id="sn-test", node_id="node-1", role="hub")
+
+    result = core_update_sync.reconcile_hub_core_update(conf)
+
+    assert result == {
+        "ok": True,
+        "skipped": True,
+        "reason": "dev_api_serve_core_update_sync_disabled",
+    }

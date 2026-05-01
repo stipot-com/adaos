@@ -17,6 +17,18 @@ from adaos.services.runtime_identity import runtime_identity_snapshot, runtime_i
 _CORE_UPDATE_STREAM_FLOW_ID = "hub_root.integration.github_core_update"
 
 
+def _dev_api_serve_core_update_sync_disabled() -> bool:
+    launch_mode = str(os.getenv("ADAOS_RUNTIME_LAUNCH_MODE") or "").strip().lower()
+    if launch_mode != "api_serve":
+        return False
+    return str(os.getenv("ADAOS_API_SERVE_ALLOW_CORE_UPDATE") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _core_update_stream_id(conf) -> str:
     subnet_id = str(getattr(conf, "subnet_id", "") or "").strip() or "unknown_hub"
     return f"hub-integration:github-core-update:{subnet_id}:{runtime_instance_id()}"
@@ -106,6 +118,12 @@ def report_hub_core_update_state(conf) -> dict[str, Any] | None:
 
 
 def reconcile_hub_core_update(conf, *, countdown_sec: float = 60.0) -> dict[str, Any] | None:
+    if _dev_api_serve_core_update_sync_disabled():
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "dev_api_serve_core_update_sync_disabled",
+        }
     client = _root_client(conf)
     if client is None:
         return None
