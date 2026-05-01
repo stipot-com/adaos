@@ -24,6 +24,12 @@ phase-aware materialization.
   this track is materially aligned on webspace rebuild/materialization
   ownership; the remaining blockers sit in Realtime Reliability rather than in
   pointer/projection ownership
+- Browser/platform checkpoint as of 2026-05-01:
+  the current desktop client already consumes node-owned apps/widgets,
+  carries `node_id` through install flows, and surfaces node identity in
+  widget/workspace chrome, but these browser affordances still sit on top of
+  compatibility-era catalog/runtime branches rather than a finalized
+  node-aware projection ABI
 
 ## Implementation Anchors
 

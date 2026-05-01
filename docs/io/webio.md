@@ -100,7 +100,9 @@ Widgets bind them through `dataSource.kind = "stream"`:
   "type": "ui.list",
   "dataSource": {
     "kind": "stream",
-    "receiver": "infrastate.operations.active"
+    "receiver": "infrastate.operations.active",
+    "nodeId": "member-01",
+    "transport": "member"
   }
 }
 ```
@@ -112,6 +114,12 @@ Current client behavior:
   `dedupeBy` and `maxItems`
 * the receiver state is local to the current browser session and is not stored
   back into Yjs
+* `nodeId` scopes the receiver to one node-owned producer when the same
+  receiver family may be emitted by more than one node
+* `transport` controls routing preference:
+  `auto` subscribes to both node-aware and hub-routed topics,
+  `member` prefers member-originated delivery only,
+  `hub` listens only to the hub-routed aggregate topic
 
 ## Publishing Stream Data
 
@@ -130,6 +138,17 @@ stream_publish(
 The hub router resolves targets from `_meta` and emits semantic browser events
 of the form `webio.stream.<webspace_id>.<receiver>`. The browser runtime then
 reduces those events into the receiver's local state.
+
+For node-aware member delivery, the browser and router may also use
+node-qualified topics:
+
+* `webio.stream.<webspace_id>.nodes.<node_id>.<receiver>`
+* `webio.stream.nodes.<node_id>.<receiver>`
+
+The browser runtime may subscribe to both the node-qualified and the hub-routed
+topic at the same time and accept whichever path is currently available.
+This is the current compatibility bridge for "P2P/member if possible, hub if
+not" behavior.
 
 Targeting rules:
 
@@ -177,8 +196,9 @@ member skill
   -> subnet member link
   -> hub local bus
   -> RouterService
-  -> webio.stream.<webspace>.<receiver>
-  -> browser event channel (ws / webrtc events)
+  -> webio.stream.<webspace>.nodes.<node>.<receiver>
+     or webio.stream.<webspace>.<receiver>
+  -> browser event channel (ws / webrtc events / member-direct when admitted)
 ```
 
 Important implications:
@@ -199,6 +219,27 @@ Recommended skill-authoring rules:
 * keep stream payloads bounded; publish fragments, not unbounded logs
 * if the UI needs both "latest summary" and "recent tail", put the summary in
   Yjs and the tail in a stream receiver
+
+## Current Desktop Ownership Rules
+
+The current `web_desktop` client now treats ownership explicitly even before
+the final shared Yjs node envelope is complete.
+
+Current browser-facing rules:
+
+* hub and member nodes may both contribute browser `apps` and `widgets`
+* member `widgets` are allowed in the shared desktop/widget space
+* member `apps` are shown in desktop catalogs, but dev-only and
+  scenario/skill-authoring surfaces remain hub-only for now
+* widget and catalog cards may display the producing `node_id`
+* install actions may carry `node_id` so marketplace/runtime install flows can
+  target one concrete node
+* desktop drag ordering is currently browser-local per webspace; it is not yet
+  a shared Yjs contract
+
+This means the UI is already node-aware at the catalog/widget surface even
+though the broader projection ABI and node-reserved Yjs envelope are still in
+progress.
 
 ## Webspaces in Detail
 

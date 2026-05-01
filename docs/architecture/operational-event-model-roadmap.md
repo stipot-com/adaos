@@ -139,6 +139,17 @@ Primary sources:
 - [ ] `phase3.node_top_level_reserved`: add a reserved node-aware top-level envelope in shared Yjs state
 - [ ] `phase3.compat_layer_defined`: define compatibility rules for legacy skill/scenario JSON branches
 
+Current checkpoint as of 2026-05-01:
+
+- browser/platform surfaces in `web_desktop` now already propagate lightweight
+  node ownership metadata for catalog items, pinned widgets, workspace labels,
+  and marketplace install targeting
+- this is intentionally a compatibility-first client step, not yet the final
+  shared Yjs node envelope described by this phase
+- node multiplicity is therefore now visible in the browser contract, but the
+  backend projection record shape and reserved top-level Yjs ownership branches
+  are still open work
+
 Primary sources:
 
 - [Operational Event Model](operational-event-model.md)
@@ -152,6 +163,17 @@ Primary sources:
 - [ ] `phase4.node_multiplicity_visible`: prepare the client to consume node multiplicity from shared Yjs
 - [ ] `phase4.lifecycle_consumption`: consume `pending/refreshing/ready/stale/error` as first-class projection state
 - [ ] `phase4.cache_by_projection_key`: cache projection payloads by `projection_key`
+
+Current checkpoint as of 2026-05-01:
+
+- browser page runtime now supports node-aware stream receiver hints
+  (`nodeId`, `transport`) in addition to the existing transport-independent
+  receiver abstraction
+- `WebIoStreamService` can subscribe in `auto`, `member`, or `hub` mode and
+  bridge node-qualified and hub-routed stream topics
+- this partially advances `phase4.node_multiplicity_visible`, but the general
+  subscription registry and projection lifecycle ABI for all consumers are not
+  complete yet
 
 Primary source:
 
@@ -175,6 +197,20 @@ Primary sources:
 - [ ] `phase6.diagnostics_pilot`: migrate diagnostics and operator-visible failures through the shared projection contract
 - [ ] `phase6.workspace_manager_pilot`: migrate shared workspace-manager and similar platform surfaces
 - [ ] `phase6.emitter_validation`: validate that platform emitters exercise the architecture before one heavy skill is migrated
+
+Current checkpoint as of 2026-05-01:
+
+- `web_desktop` now acts as an early node-aware platform pilot:
+  workspace manager surfaces show node ownership,
+  home-scenario choices can surface scenarios seen across node-owned webspaces,
+  desktop catalogs/widgets show node identity,
+  and install requests may target a concrete node
+- browser-local drag ordering for desktop apps/widgets is now in place as a UI
+  pilot, but it is still a local UX affordance rather than a shared projection
+  contract
+- this means the pilot has started, but the roadmap item should remain open
+  until the same semantics are emitted through the shared dispatcher/projection
+  ABI instead of compatibility-era catalog/runtime branches
 
 Why this comes first:
 
