@@ -35,6 +35,10 @@ phase-aware materialization.
   carry local `node_id` and `node_label`, and `io.out.stream.publish` can
   fan out to both hub-routed and node-qualified browser topics when ownership
   is provided in `_meta.node_id`
+- Desktop state checkpoint as of 2026-05-02:
+  desktop app/widget order is now part of shared webspace desktop state
+  through `data.desktop.iconOrder` and `data.desktop.widgetOrder`, so drag
+  reorder is no longer browser-local for the current subnet migration scope
 - Compatibility checkpoint as of 2026-05-01:
   scenario compatibility caches are now written and read only in a
   node-scoped form under `ui.scenarios.<node_id>.<scenario_id>`,

@@ -953,6 +953,8 @@ class WebspaceDesktopUpdateRequest(BaseModel):
     pinnedWidgets: list[dict[str, Any]] | None = None
     topbar: list[Any] | None = None
     pageSchema: dict[str, Any] | None = None
+    iconOrder: list[str] | None = None
+    widgetOrder: list[str] | None = None
 
 
 class InfrastateActionRequest(BaseModel):
@@ -1962,6 +1964,8 @@ async def node_yjs_update_desktop(
         pinned_widgets=current.pinned_widgets,
         topbar=current.topbar,
         page_schema=current.page_schema,
+        icon_order=current.icon_order,
+        widget_order=current.widget_order,
     )
     if payload.installed is not None:
         installed = payload.installed if isinstance(payload.installed, dict) else {}
@@ -1975,6 +1979,10 @@ async def node_yjs_update_desktop(
         next_snapshot.topbar = list(payload.topbar or [])
     if payload.pageSchema is not None:
         next_snapshot.page_schema = dict(payload.pageSchema or {})
+    if payload.iconOrder is not None:
+        next_snapshot.icon_order = [str(item or "").strip() for item in payload.iconOrder if str(item or "").strip()]
+    if payload.widgetOrder is not None:
+        next_snapshot.widget_order = [str(item or "").strip() for item in payload.widgetOrder if str(item or "").strip()]
     svc.set_snapshot_with_live_room(next_snapshot, target_webspace_id)
     desktop = await svc.get_snapshot_async(target_webspace_id)
     return {

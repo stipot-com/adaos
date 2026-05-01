@@ -118,6 +118,20 @@ def _clone_overlay_json_list(value: Any) -> list[Any]:
     return payload if isinstance(payload, list) else []
 
 
+def _clone_overlay_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
 def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -137,12 +151,24 @@ def _normalize_ui_overlay_payload(value: Any) -> dict[str, Any]:
     }
     pinned_widgets_source = desktop_raw.get("pinnedWidgets") if "pinnedWidgets" in desktop_raw else legacy_pinned_raw
     pinned_widgets = _normalize_overlay_widget_list(pinned_widgets_source)
+    legacy_icon_order_raw = value.get("iconOrder")
+    legacy_widget_order_raw = value.get("widgetOrder")
+    icon_order_source = desktop_raw.get("iconOrder") if "iconOrder" in desktop_raw else legacy_icon_order_raw
+    widget_order_source = desktop_raw.get("widgetOrder") if "widgetOrder" in desktop_raw else legacy_widget_order_raw
+    has_icon_order = "iconOrder" in desktop_raw or "iconOrder" in value
+    has_widget_order = "widgetOrder" in desktop_raw or "widgetOrder" in value
+    icon_order = _clone_overlay_text_list(icon_order_source)
+    widget_order = _clone_overlay_text_list(widget_order_source)
     overlay: dict[str, Any] = {}
     desktop: dict[str, Any] = {}
     if has_installed or installed["apps"] or installed["widgets"]:
         desktop["installed"] = installed
     if has_pinned_widgets or pinned_widgets:
         desktop["pinnedWidgets"] = pinned_widgets
+    if has_icon_order or icon_order:
+        desktop["iconOrder"] = icon_order
+    if has_widget_order or widget_order:
+        desktop["widgetOrder"] = widget_order
     if desktop:
         overlay["desktop"] = desktop
     return overlay
@@ -278,6 +304,10 @@ class WebspaceManifest:
             out["topbar"] = _clone_overlay_json_list(desktop.get("topbar"))
         if "pageSchema" in desktop:
             out["pageSchema"] = _clone_overlay_json_dict(desktop.get("pageSchema"))
+        if "iconOrder" in desktop:
+            out["iconOrder"] = _clone_overlay_text_list(desktop.get("iconOrder"))
+        if "widgetOrder" in desktop:
+            out["widgetOrder"] = _clone_overlay_text_list(desktop.get("widgetOrder"))
         return out
 
     @property
@@ -301,6 +331,14 @@ class WebspaceManifest:
         return _clone_overlay_json_dict(self.desktop_overlay.get("pageSchema"))
 
     @property
+    def icon_order_overlay(self) -> list[str]:
+        return _clone_overlay_text_list(self.desktop_overlay.get("iconOrder"))
+
+    @property
+    def widget_order_overlay(self) -> list[str]:
+        return _clone_overlay_text_list(self.desktop_overlay.get("widgetOrder"))
+
+    @property
     def has_installed_overlay(self) -> bool:
         return "installed" in self.desktop_overlay
 
@@ -315,6 +353,14 @@ class WebspaceManifest:
     @property
     def has_page_schema_overlay(self) -> bool:
         return "pageSchema" in self.desktop_overlay
+
+    @property
+    def has_icon_order_overlay(self) -> bool:
+        return "iconOrder" in self.desktop_overlay
+
+    @property
+    def has_widget_order_overlay(self) -> bool:
+        return "widgetOrder" in self.desktop_overlay
 
     @property
     def has_ui_overlay(self) -> bool:
@@ -712,6 +758,20 @@ def get_workspace_page_schema_overlay(workspace_id: str) -> dict[str, Any]:
     return row.page_schema_overlay
 
 
+def get_workspace_icon_order_overlay(workspace_id: str) -> list[str]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return []
+    return row.icon_order_overlay
+
+
+def get_workspace_widget_order_overlay(workspace_id: str) -> list[str]:
+    row = get_workspace(workspace_id)
+    if row is None:
+        return []
+    return row.widget_order_overlay
+
+
 def set_workspace_overlay(workspace_id: str, overlay: Any) -> WebspaceManifest:
     return set_workspace_manifest(workspace_id, ui_overlay_json=overlay)
 
@@ -751,4 +811,18 @@ def set_workspace_page_schema_overlay(workspace_id: str, page_schema: Any) -> We
     current = get_workspace_desktop_overlay(workspace_id)
     desktop = dict(current) if isinstance(current, dict) else {}
     desktop["pageSchema"] = _clone_overlay_json_dict(page_schema)
+    return set_workspace_desktop_overlay(workspace_id, desktop)
+
+
+def set_workspace_icon_order_overlay(workspace_id: str, icon_order: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["iconOrder"] = _clone_overlay_text_list(icon_order)
+    return set_workspace_desktop_overlay(workspace_id, desktop)
+
+
+def set_workspace_widget_order_overlay(workspace_id: str, widget_order: Any) -> WebspaceManifest:
+    current = get_workspace_desktop_overlay(workspace_id)
+    desktop = dict(current) if isinstance(current, dict) else {}
+    desktop["widgetOrder"] = _clone_overlay_text_list(widget_order)
     return set_workspace_desktop_overlay(workspace_id, desktop)

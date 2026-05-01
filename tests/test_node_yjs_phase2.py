@@ -1510,6 +1510,8 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
                 pinned_widgets=[{"id": "infra-status", "type": "visual.metricTile"}],
                 topbar=[{"id": "home", "label": "Home"}],
                 page_schema={"id": "desktop", "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]}, "widgets": []},
+                icon_order=["scenario:web_desktop"],
+                widget_order=["weather"],
             )
 
         def set_snapshot_with_live_room(self, snapshot, webspace_id: str | None = None) -> None:
@@ -1520,6 +1522,8 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
                     "pinnedWidgets": list(snapshot.pinned_widgets),
                     "topbar": list(snapshot.topbar),
                     "pageSchema": dict(snapshot.page_schema),
+                    "iconOrder": list(snapshot.icon_order),
+                    "widgetOrder": list(snapshot.widget_order),
                 }
             )
 
@@ -1537,6 +1541,8 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
                     "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
                     "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}],
                 },
+                iconOrder=["scenario:web_desktop"],
+                widgetOrder=["infra-status"],
             ),
         )
     )
@@ -1552,6 +1558,8 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
                 "layout": {"type": "single", "areas": [{"id": "main", "role": "main"}]},
                 "widgets": [{"id": "desktop-widgets", "type": "desktop.widgets", "area": "main"}],
             },
+            "iconOrder": ["scenario:web_desktop"],
+            "widgetOrder": ["infra-status"],
         }
     ]
     assert result["ok"] is True

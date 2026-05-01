@@ -246,8 +246,8 @@ Current browser-facing rules:
 * widget and catalog cards may display the producing `node_id`
 * install actions may carry `node_id` so marketplace/runtime install flows can
   target one concrete node
-* desktop drag ordering is currently browser-local per webspace; it is not yet
-  a shared Yjs contract
+* desktop drag ordering is now shared per webspace through
+  `data.desktop.iconOrder` and `data.desktop.widgetOrder`
 * desktop app and widget cards now expose explicit drag handles instead of
   making the whole card a drag target, so text inside the card remains
   selectable
@@ -369,6 +369,12 @@ contract:
 * `data.catalog.*`
 * `data.installed`
 * `data.desktop`
+
+For the current desktop/subnet scope, `data.desktop` now also carries shared
+desktop ordering through:
+
+* `iconOrder` for desktop app/icon order
+* `widgetOrder` for desktop widget order
 
 For the current desktop/subnet migration scope, the browser should treat those
 effective branches as the render contract and should not depend on

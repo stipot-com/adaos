@@ -215,9 +215,9 @@ Current checkpoint as of 2026-05-01:
   home-scenario choices can surface scenarios seen across node-owned webspaces,
   desktop catalogs/widgets show node identity,
   and install requests may target a concrete node
-- browser-local drag ordering for desktop apps/widgets is now in place as a UI
-  pilot, but it is still a local UX affordance rather than a shared projection
-  contract
+- desktop apps/widgets ordering is now emitted through shared desktop state
+  (`data.desktop.iconOrder`, `data.desktop.widgetOrder`) instead of staying in
+  browser-local storage only
 - this means the pilot has started, but the roadmap item should remain open
   until the same semantics are emitted through the shared dispatcher/projection
   ABI instead of compatibility-era catalog/runtime branches

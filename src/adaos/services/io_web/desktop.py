@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
@@ -91,6 +91,8 @@ class WebDesktopSnapshot:
     pinned_widgets: List[Dict[str, Any]]
     topbar: List[Any]
     page_schema: Dict[str, Any]
+    icon_order: List[str] = field(default_factory=list)
+    widget_order: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -98,6 +100,8 @@ class WebDesktopSnapshot:
             "pinnedWidgets": _clone_pinned_widgets(self.pinned_widgets),
             "topbar": _clone_json_list(self.topbar),
             "pageSchema": _clone_json_dict(self.page_schema),
+            "iconOrder": _clone_text_list(self.icon_order),
+            "widgetOrder": _clone_text_list(self.widget_order),
         }
 
 
@@ -140,6 +144,20 @@ def _clone_json_list(value: Any) -> List[Any]:
     except Exception:
         payload = list(value)
     return payload if isinstance(payload, list) else []
+
+
+def _clone_text_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in value:
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 class WebDesktopService:
@@ -247,6 +265,28 @@ class WebDesktopService:
         workspace_index.set_workspace_page_schema_overlay(webspace_id, _clone_json_dict(page_schema))
 
     @staticmethod
+    def _read_overlay_icon_order(webspace_id: str) -> tuple[List[str], bool]:
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_icon_order_overlay", False):
+            return [], False
+        return _clone_text_list(getattr(row, "icon_order_overlay", []) or []), True
+
+    @staticmethod
+    def _persist_overlay_icon_order(webspace_id: str, icon_order: List[str]) -> None:
+        workspace_index.set_workspace_icon_order_overlay(webspace_id, _clone_text_list(icon_order))
+
+    @staticmethod
+    def _read_overlay_widget_order(webspace_id: str) -> tuple[List[str], bool]:
+        row = workspace_index.get_workspace(webspace_id)
+        if row is None or not getattr(row, "has_widget_order_overlay", False):
+            return [], False
+        return _clone_text_list(getattr(row, "widget_order_overlay", []) or []), True
+
+    @staticmethod
+    def _persist_overlay_widget_order(webspace_id: str, widget_order: List[str]) -> None:
+        workspace_index.set_workspace_widget_order_overlay(webspace_id, _clone_text_list(widget_order))
+
+    @staticmethod
     def _apply_pinned_widgets_state(ydoc: Any, txn: Any, pinned_widgets: List[Dict[str, Any]]) -> None:
         next_pinned = _clone_pinned_widgets(pinned_widgets)
         ui_map = ydoc.get_map("ui")
@@ -301,11 +341,31 @@ class WebDesktopService:
         data_map.set(txn, "desktop", desktop_next)
 
     @staticmethod
+    def _apply_icon_order_state(ydoc: Any, txn: Any, icon_order: List[str]) -> None:
+        next_order = _clone_text_list(icon_order)
+        data_map = ydoc.get_map("data")
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_next["iconOrder"] = next_order
+        data_map.set(txn, "desktop", desktop_next)
+
+    @staticmethod
+    def _apply_widget_order_state(ydoc: Any, txn: Any, widget_order: List[str]) -> None:
+        next_order = _clone_text_list(widget_order)
+        data_map = ydoc.get_map("data")
+        desktop_raw = data_map.get("desktop") or {}
+        desktop_next = _coerce_dict(desktop_raw)
+        desktop_next["widgetOrder"] = next_order
+        data_map.set(txn, "desktop", desktop_next)
+
+    @staticmethod
     def _apply_snapshot_state(ydoc: Any, txn: Any, snapshot: WebDesktopSnapshot) -> None:
         WebDesktopService._apply_installed_state(ydoc, txn, snapshot.installed)
         WebDesktopService._apply_pinned_widgets_state(ydoc, txn, snapshot.pinned_widgets)
         WebDesktopService._apply_topbar_state(ydoc, txn, snapshot.topbar)
         WebDesktopService._apply_page_schema_state(ydoc, txn, snapshot.page_schema)
+        WebDesktopService._apply_icon_order_state(ydoc, txn, snapshot.icon_order)
+        WebDesktopService._apply_widget_order_state(ydoc, txn, snapshot.widget_order)
 
     @staticmethod
     def _read_materialized_snapshot_from_doc(
@@ -315,6 +375,8 @@ class WebDesktopService:
         pinned_widgets: List[Dict[str, Any]],
         topbar: List[Any],
         page_schema: Dict[str, Any],
+        icon_order: List[str],
+        widget_order: List[str],
     ) -> WebDesktopSnapshot:
         data_map = ydoc.get_map("data")
         ui_map = ydoc.get_map("ui")
@@ -344,11 +406,21 @@ class WebDesktopService:
         if not page_schema_next:
             page_schema_next = _clone_json_dict(page_schema)
 
+        icon_order_next = _clone_text_list(desktop_raw.get("iconOrder"))
+        if not icon_order_next:
+            icon_order_next = _clone_text_list(icon_order)
+
+        widget_order_next = _clone_text_list(desktop_raw.get("widgetOrder"))
+        if not widget_order_next:
+            widget_order_next = _clone_text_list(widget_order)
+
         return WebDesktopSnapshot(
             installed=installed_next,
             pinned_widgets=pinned_next,
             topbar=topbar_next,
             page_schema=page_schema_next,
+            icon_order=icon_order_next,
+            widget_order=widget_order_next,
         )
 
     def get_installed(self, webspace_id: Optional[str] = None) -> WebDesktopInstalled:
@@ -416,12 +488,42 @@ class WebDesktopService:
             return {}
         return page_schema
 
+    def get_icon_order(self, webspace_id: Optional[str] = None) -> List[str]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_icon_order(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    async def get_icon_order_async(self, webspace_id: Optional[str] = None) -> List[str]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_icon_order(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    def get_widget_order(self, webspace_id: Optional[str] = None) -> List[str]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_widget_order(webspace)
+        if not has_overlay:
+            return []
+        return items
+
+    async def get_widget_order_async(self, webspace_id: Optional[str] = None) -> List[str]:
+        webspace = self._resolve_webspace(webspace_id)
+        items, has_overlay = self._read_overlay_widget_order(webspace)
+        if not has_overlay:
+            return []
+        return items
+
     def get_snapshot(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
         webspace = self._resolve_webspace(webspace_id)
         installed = self.get_installed(webspace)
         pinned_widgets = self.get_pinned_widgets(webspace)
         topbar = self.get_topbar(webspace)
         page_schema = self.get_page_schema(webspace)
+        icon_order = self.get_icon_order(webspace)
+        widget_order = self.get_widget_order(webspace)
         try:
             with get_ydoc(webspace) as ydoc:
                 return self._read_materialized_snapshot_from_doc(
@@ -430,6 +532,8 @@ class WebDesktopService:
                     pinned_widgets=pinned_widgets,
                     topbar=topbar,
                     page_schema=page_schema,
+                    icon_order=icon_order,
+                    widget_order=widget_order,
                 )
         except Exception:
             return WebDesktopSnapshot(
@@ -437,6 +541,8 @@ class WebDesktopService:
                 pinned_widgets=pinned_widgets,
                 topbar=topbar,
                 page_schema=page_schema,
+                icon_order=icon_order,
+                widget_order=widget_order,
             )
 
     async def get_snapshot_async(self, webspace_id: Optional[str] = None) -> WebDesktopSnapshot:
@@ -445,6 +551,8 @@ class WebDesktopService:
         pinned_widgets = await self.get_pinned_widgets_async(webspace)
         topbar = await self.get_topbar_async(webspace)
         page_schema = await self.get_page_schema_async(webspace)
+        icon_order = await self.get_icon_order_async(webspace)
+        widget_order = await self.get_widget_order_async(webspace)
         try:
             async with async_get_ydoc(webspace) as ydoc:
                 return self._read_materialized_snapshot_from_doc(
@@ -453,6 +561,8 @@ class WebDesktopService:
                     pinned_widgets=pinned_widgets,
                     topbar=topbar,
                     page_schema=page_schema,
+                    icon_order=icon_order,
+                    widget_order=widget_order,
                 )
         except Exception:
             return WebDesktopSnapshot(
@@ -460,6 +570,8 @@ class WebDesktopService:
                 pinned_widgets=pinned_widgets,
                 topbar=topbar,
                 page_schema=page_schema,
+                icon_order=icon_order,
+                widget_order=widget_order,
             )
 
     def set_installed(self, installed: WebDesktopInstalled, webspace_id: Optional[str] = None) -> None:
@@ -580,12 +692,54 @@ class WebDesktopService:
             len(_clone_json_list(next_page_schema.get("widgets"))),
         )
 
+    def set_icon_order(self, icon_order: List[str], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_icon_order = _clone_text_list(icon_order)
+        self._persist_overlay_icon_order(webspace, next_icon_order)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_icon_order_state(ydoc, txn, next_icon_order)
+        _log.debug("set icon order webspace=%s count=%s", webspace, len(next_icon_order))
+
+    async def set_icon_order_async(self, icon_order: List[str], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_icon_order = _clone_text_list(icon_order)
+        self._persist_overlay_icon_order(webspace, next_icon_order)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_icon_order_state(ydoc, txn, next_icon_order)
+        _log.debug("set icon order (async) webspace=%s count=%s", webspace, len(next_icon_order))
+
+    def set_widget_order(self, widget_order: List[str], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_widget_order = _clone_text_list(widget_order)
+        self._persist_overlay_widget_order(webspace, next_widget_order)
+        with _desktop_sync_write_meta():
+            with get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_widget_order_state(ydoc, txn, next_widget_order)
+        _log.debug("set widget order webspace=%s count=%s", webspace, len(next_widget_order))
+
+    async def set_widget_order_async(self, widget_order: List[str], webspace_id: Optional[str] = None) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_widget_order = _clone_text_list(widget_order)
+        self._persist_overlay_widget_order(webspace, next_widget_order)
+        async with _desktop_async_write_meta():
+            async with async_get_ydoc(webspace) as ydoc:
+                with ydoc.begin_transaction() as txn:
+                    self._apply_widget_order_state(ydoc, txn, next_widget_order)
+        _log.debug("set widget order (async) webspace=%s count=%s", webspace, len(next_widget_order))
+
     def set_snapshot(self, snapshot: WebDesktopSnapshot, webspace_id: Optional[str] = None) -> None:
         webspace = self._resolve_webspace(webspace_id)
         self._persist_overlay_installed(webspace, snapshot.installed)
         self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
         self._persist_overlay_topbar(webspace, snapshot.topbar)
         self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+        self._persist_overlay_icon_order(webspace, snapshot.icon_order)
+        self._persist_overlay_widget_order(webspace, snapshot.widget_order)
         with _desktop_sync_write_meta():
             with get_ydoc(webspace) as ydoc:
                 with ydoc.begin_transaction() as txn:
@@ -598,6 +752,8 @@ class WebDesktopService:
         self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
         self._persist_overlay_topbar(webspace, snapshot.topbar)
         self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+        self._persist_overlay_icon_order(webspace, snapshot.icon_order)
+        self._persist_overlay_widget_order(webspace, snapshot.widget_order)
         async with _desktop_async_write_meta():
             async with async_get_ydoc(webspace) as ydoc:
                 with ydoc.begin_transaction() as txn:
@@ -814,6 +970,72 @@ class WebDesktopService:
                 name=f"web-desktop-set-page-schema-{webspace}",
             )
 
+    def set_icon_order_with_live_room(
+        self,
+        icon_order: List[str],
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_icon_order = _clone_text_list(icon_order)
+        self._persist_overlay_icon_order(webspace, next_icon_order)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_icon_order_state(doc, txn, next_icon_order)
+
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_icon_order webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_icon_order_async(next_icon_order, webspace))
+        else:
+            loop.create_task(
+                self.set_icon_order_async(next_icon_order, webspace),
+                name=f"web-desktop-set-icon-order-{webspace}",
+            )
+
+    def set_widget_order_with_live_room(
+        self,
+        widget_order: List[str],
+        webspace_id: Optional[str] = None,
+    ) -> None:
+        webspace = self._resolve_webspace(webspace_id)
+        next_widget_order = _clone_text_list(widget_order)
+        self._persist_overlay_widget_order(webspace, next_widget_order)
+
+        def _mutator(doc: Any, txn: Any) -> None:
+            self._apply_widget_order_state(doc, txn, next_widget_order)
+
+        live_applied = mutate_live_room(
+            webspace,
+            _mutator,
+            root_names=["data", "ui"],
+            source="io_web.desktop",
+            owner="core:desktop",
+            channel="core.desktop.live_room",
+        )
+        if not live_applied:
+            _log.debug("mutate_live_room skipped for set_widget_order webspace=%s", webspace)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.set_widget_order_async(next_widget_order, webspace))
+        else:
+            loop.create_task(
+                self.set_widget_order_async(next_widget_order, webspace),
+                name=f"web-desktop-set-widget-order-{webspace}",
+            )
+
     def set_snapshot_with_live_room(
         self,
         snapshot: WebDesktopSnapshot,
@@ -824,6 +1046,8 @@ class WebDesktopService:
         self._persist_overlay_pinned_widgets(webspace, snapshot.pinned_widgets)
         self._persist_overlay_topbar(webspace, snapshot.topbar)
         self._persist_overlay_page_schema(webspace, snapshot.page_schema)
+        self._persist_overlay_icon_order(webspace, snapshot.icon_order)
+        self._persist_overlay_widget_order(webspace, snapshot.widget_order)
 
         def _mutator(doc: Any, txn: Any) -> None:
             self._apply_snapshot_state(doc, txn, snapshot)

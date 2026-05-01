@@ -1888,6 +1888,8 @@ class WebspaceScenarioRuntime:
                         ),
                         "topbar": list(getattr(row, "topbar_overlay", []) or []),
                         "pageSchema": _coerce_dict(getattr(row, "page_schema_overlay", {}) or {}),
+                        "iconOrder": list(getattr(row, "icon_order_overlay", []) or []),
+                        "widgetOrder": list(getattr(row, "widget_order_overlay", []) or []),
                         "source": "workspace_manifest_overlay",
                     }
         except Exception:
@@ -2045,6 +2047,8 @@ class WebspaceScenarioRuntime:
         installed_current = _coerce_dict((inputs.overlay_snapshot or {}).get("installed") or {})
         overlay_has_pinned_widgets = "pinnedWidgets" in (inputs.overlay_snapshot or {})
         overlay_pinned_widgets = _normalize_overlay_widget_entries((inputs.overlay_snapshot or {}).get("pinnedWidgets"))
+        overlay_icon_order = _dedupe_str_list((inputs.overlay_snapshot or {}).get("iconOrder"))
+        overlay_widget_order = _dedupe_str_list((inputs.overlay_snapshot or {}).get("widgetOrder"))
         scenario_pinned_widgets = _normalize_overlay_widget_entries(scenario_desktop.get("pinnedWidgets"))
         scenario_topbar = list(scenario_desktop.get("topbar") or []) if isinstance(scenario_desktop.get("topbar"), list) else []
         scenario_page_schema = _coerce_dict(scenario_desktop.get("pageSchema") or {})
@@ -2152,6 +2156,8 @@ class WebspaceScenarioRuntime:
         desktop_config["pinnedWidgets"] = (
             overlay_pinned_widgets if overlay_has_pinned_widgets else scenario_pinned_widgets
         )
+        desktop_config["iconOrder"] = list(overlay_icon_order)
+        desktop_config["widgetOrder"] = list(overlay_widget_order)
         app_with_modals["desktop"] = desktop_config
 
         desktop_next = _coerce_dict((inputs.live_state or {}).get("desktop") or {})
@@ -2162,6 +2168,8 @@ class WebspaceScenarioRuntime:
         desktop_next["topbar"] = list(desktop_config.get("topbar") or [])
         desktop_next["pageSchema"] = _coerce_dict(desktop_config.get("pageSchema") or {})
         desktop_next["pinnedWidgets"] = list(desktop_config.get("pinnedWidgets") or [])
+        desktop_next["iconOrder"] = list(desktop_config.get("iconOrder") or [])
+        desktop_next["widgetOrder"] = list(desktop_config.get("widgetOrder") or [])
 
         webio_dict = _merge_webio_receivers(skill_decls)
 
@@ -2901,11 +2909,15 @@ def describe_webspace_overlay_state(webspace_id: str) -> dict[str, Any]:
         "has_pinned_widgets": bool(getattr(row, "has_pinned_widgets_overlay", False)),
         "has_topbar": bool(getattr(row, "has_topbar_overlay", False)),
         "has_page_schema": bool(getattr(row, "has_page_schema_overlay", False)),
+        "has_icon_order": bool(getattr(row, "has_icon_order_overlay", False)),
+        "has_widget_order": bool(getattr(row, "has_widget_order_overlay", False)),
         "desktop": dict(getattr(row, "desktop_overlay", {}) or {}),
         "installed": _coerce_dict(getattr(row, "installed_overlay", {}) or {}),
         "pinned_widgets": _normalize_overlay_widget_entries(getattr(row, "pinned_widgets_overlay", []) or []),
         "topbar": list(getattr(row, "topbar_overlay", []) or []),
         "page_schema": _coerce_dict(getattr(row, "page_schema_overlay", {}) or {}),
+        "icon_order": list(getattr(row, "icon_order_overlay", []) or []),
+        "widget_order": list(getattr(row, "widget_order_overlay", []) or []),
     }
 
 
