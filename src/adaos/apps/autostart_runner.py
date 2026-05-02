@@ -425,6 +425,66 @@ def _run_post_commit_skill_checks() -> dict[str, Any]:
     return payload
 
 
+def _slot_python_executable(slot: str | None) -> Path:
+    slot_name = str(slot or "").strip().upper()
+    base = Path(slot_dir(slot_name))
+    candidates = [
+        base / "venv" / "bin" / "python",
+        base / "venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path(sys.executable)
+
+
+def _run_slot_cli_smoke_check(
+    slot: str | None,
+    *,
+    manifest: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    slot_name = str(slot or "").strip().upper()
+    manifest_payload = manifest if isinstance(manifest, dict) else {}
+    effective_env = dict(env or os.environ)
+    effective_cwd = cwd
+    if effective_cwd is None:
+        cwd_raw = str(manifest_payload.get("cwd") or "").strip()
+        if cwd_raw:
+            effective_cwd = Path(cwd_raw).expanduser().resolve()
+        else:
+            effective_cwd = (Path(slot_dir(slot_name)) / "repo").resolve()
+    python_executable = _slot_python_executable(slot_name)
+    command = [
+        str(python_executable),
+        "-c",
+        "from adaos.apps.cli.app import app as _app; print('cli_import_ok')",
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        env=effective_env,
+        cwd=str(effective_cwd) if effective_cwd else None,
+    )
+    result = {
+        "ok": completed.returncode == 0,
+        "slot": slot_name,
+        "python": str(python_executable),
+        "cwd": str(effective_cwd) if effective_cwd else "",
+        "returncode": int(completed.returncode),
+        "stdout": (completed.stdout or "").strip()[-1000:],
+        "stderr": (completed.stderr or "").strip()[-4000:],
+    }
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"slot {slot_name} CLI smoke check failed rc={completed.returncode}: "
+            f"{result['stderr'] or result['stdout'] or 'no output'}"
+        )
+    return result
+
+
 def _run_prepared_restart_skill_migration(slot: str, manifest: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     slot_name = str(slot or "").strip().upper()
     if not slot_name:
@@ -760,6 +820,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             )
             if ok:
                 post_commit_skill_checks: dict[str, Any] = {}
+                cli_smoke_check: dict[str, Any] = {}
                 post_commit_note = ""
                 post_commit_webspace_refresh: dict[str, Any] = {}
                 try:
@@ -785,11 +846,30 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                         if quarantine_summary:
                             post_commit_note += f" quarantine={quarantine_summary}"
                 try:
-                    post_commit_webspace_refresh = rebuild_webspace_projection_sync(
-                        webspace_id=_update_validation_webspace_id(),
-                        action="core_update_post_boot_sync",
-                        source_of_truth="scenario_projection",
+                    cli_smoke_check = _run_slot_cli_smoke_check(
+                        slot,
+                        manifest=manifest,
+                        env=env,
+                        cwd=cwd,
                     )
+                except Exception as exc:
+                    ok = False
+                    details = {
+                        "ok": False,
+                        "summary": f"post-core-update CLI smoke check failed: {exc}",
+                        "cli_smoke_check": {
+                            "ok": False,
+                            "error": str(exc),
+                            "slot": slot,
+                        },
+                    }
+                try:
+                    if ok:
+                        post_commit_webspace_refresh = rebuild_webspace_projection_sync(
+                            webspace_id=_update_validation_webspace_id(),
+                            action="core_update_post_boot_sync",
+                            source_of_truth="scenario_projection",
+                        )
                 except Exception as exc:
                     ok = False
                     details = {
@@ -819,6 +899,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                             "manifest": manifest,
                             "validated_at": time.time(),
                             "skill_post_commit_checks": post_commit_skill_checks,
+                            "cli_smoke_check": cli_smoke_check,
                             "post_commit_webspace_refresh": post_commit_webspace_refresh,
                             "root_promotion_required": root_promotion_required,
                             "bootstrap_update": bootstrap_update,

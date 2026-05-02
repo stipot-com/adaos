@@ -332,6 +332,16 @@ def test_launch_active_slot_validates_required_endpoints(monkeypatch) -> None:
             ],
         },
     )
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
     captured: list[dict] = []
     clear_calls: list[str] = []
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: clear_calls.append("clear"))
@@ -381,6 +391,11 @@ def test_launch_active_slot_rolls_back_on_failed_validation(monkeypatch) -> None
     proc = _Proc()
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (False, "http://127.0.0.1:8777/api/admin/update/status returned 500"))
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
     monkeypatch.setattr(autostart_runner, "rollback_to_previous_slot", lambda: "A")
     monkeypatch.setattr(
         autostart_runner,
@@ -602,6 +617,16 @@ def test_launch_active_slot_marks_child_to_skip_pending_update(monkeypatch) -> N
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", _popen)
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
     monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
     monkeypatch.setattr(autostart_runner, "write_status", lambda payload: payload)
 
@@ -645,6 +670,16 @@ def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: _Proc())
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
     monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
     captured: list[dict] = []
     monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
@@ -690,6 +725,11 @@ def test_launch_active_slot_runs_post_commit_webspace_refresh(monkeypatch) -> No
     monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
     monkeypatch.setattr(
         autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
         "rebuild_webspace_projection_sync",
         lambda **kwargs: refresh_calls.append(dict(kwargs)) or {"ok": True, "webspace_id": kwargs.get("webspace_id")},
     )
@@ -712,6 +752,89 @@ def test_launch_active_slot_runs_post_commit_webspace_refresh(monkeypatch) -> No
         }
     ]
     assert captured[-1]["post_commit_webspace_refresh"]["ok"] is True
+
+
+def test_run_slot_cli_smoke_check_uses_slot_python_and_repo_cwd(monkeypatch, tmp_path: Path) -> None:
+    slot_root = tmp_path / "slotB"
+    python_bin = slot_root / "venv" / "bin" / "python"
+    repo_dir = slot_root / "repo"
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    class _Completed:
+        returncode = 0
+        stdout = "cli_import_ok\n"
+        stderr = ""
+
+    def _run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return _Completed()
+
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: slot_root)
+    monkeypatch.setattr(autostart_runner.subprocess, "run", _run)
+
+    result = autostart_runner._run_slot_cli_smoke_check("B", manifest={"cwd": ""}, env={"ADAOS_ACTIVE_CORE_SLOT": "B"})
+
+    assert result["ok"] is True
+    assert captured["cmd"] == [str(python_bin), "-c", "from adaos.apps.cli.app import app as _app; print('cli_import_ok')"]
+    assert captured["cwd"] == str(repo_dir.resolve())
+
+
+def test_launch_active_slot_fails_when_cli_smoke_check_fails(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"], "env": {}, "cwd": ""},
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            return None
+
+    proc = _Proc()
+    captured: list[dict] = []
+
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
+    monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("missing module")),
+    )
+    monkeypatch.setattr(autostart_runner, "rollback_to_previous_slot", lambda: "A")
+    monkeypatch.setattr(autostart_runner, "rollback_installed_skill_runtimes", lambda: {"ok": True, "rollback_total": 0, "failed_total": 0, "skills": []})
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert proc.terminated is True
+    assert captured[-1]["phase"] == "validate"
+    assert "CLI smoke check failed" in str(captured[-1]["validation_error_summary"] or "")
 
 
 def test_launch_active_slot_clears_plan_only_after_validation_status_is_written(monkeypatch) -> None:
@@ -745,6 +868,16 @@ def test_launch_active_slot_clears_plan_only_after_validation_status_is_written(
     monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: _Proc())
     monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
     monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "_run_slot_cli_smoke_check",
+        lambda *args, **kwargs: {"ok": True, "slot": "B", "stdout": "cli_import_ok"},
+    )
+    monkeypatch.setattr(
+        autostart_runner,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
     monkeypatch.setattr(autostart_runner, "clear_plan", lambda: events.append("clear_plan"))
     monkeypatch.setattr(
         autostart_runner,
