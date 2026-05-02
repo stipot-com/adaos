@@ -14,7 +14,7 @@ from adaos.services.skill.manager import SkillManager
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.eventbus import emit as bus_emit
 from adaos.services.operations import submit_install_operation
-from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
+from adaos.services.runtime_refresh import rebuild_webspace_projection, refresh_skill_runtime
 from adaos.services.workspace_registry import build_registry_entry, find_workspace_registry_entry, list_workspace_registry_entries
 from adaos.services.yjs.webspace import default_webspace_id
 
@@ -63,6 +63,7 @@ class UpdateReq(BaseModel):
     name: str
     dry_run: bool = False
     webspace_id: str | None = None
+    defer_webspace_rebuild: bool = False
 
 
 def _safe_version(v: Any) -> Version | None:
@@ -184,6 +185,11 @@ class RuntimeActivateReq(BaseModel):
 class RuntimeNotifyActivatedReq(BaseModel):
     name: str
     space: str | None = "default"
+    webspace_id: str | None = None
+    defer_webspace_rebuild: bool = False
+
+
+class RuntimeRebuildWebspaceReq(BaseModel):
     webspace_id: str | None = None
 
 
@@ -370,8 +376,8 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
         "webspace_id": webspace_id,
     }
     try:
-        await rebuild_webspace_from_sources(
-            webspace_id,
+        await rebuild_webspace_projection(
+            webspace_id=webspace_id,
             action="skill_install_sync",
             source_of_truth="skill_runtime",
         )
@@ -392,8 +398,8 @@ async def uninstall(body: InstallReq, mgr: SkillManager = Depends(_get_manager))
         body.name,
     )
     try:
-        await rebuild_webspace_from_sources(
-            webspace_id,
+        await rebuild_webspace_projection(
+            webspace_id=webspace_id,
             action="skill_uninstall_sync",
             source_of_truth="skill_runtime",
         )
@@ -414,8 +420,8 @@ async def get_skill(name: str, mgr: SkillManager = Depends(_get_manager)):
 async def remove(name: str, mgr: SkillManager = Depends(_get_manager)):
     mgr.uninstall(name)
     try:
-        await rebuild_webspace_from_sources(
-            default_webspace_id(),
+        await rebuild_webspace_projection(
+            webspace_id=default_webspace_id(),
             action="skill_uninstall_sync",
             source_of_truth="skill_runtime",
         )
@@ -479,9 +485,25 @@ async def runtime_notify_activated(body: RuntimeNotifyActivatedReq):
         return {"ok": False, "reason": "bus-unavailable"}
     space = (body.space or "default").strip() or "default"
     webspace_id = body.webspace_id or default_webspace_id()
-    payload: Dict[str, Any] = {"skill_name": body.name, "space": space, "webspace_id": webspace_id}
+    payload: Dict[str, Any] = {
+        "skill_name": body.name,
+        "space": space,
+        "webspace_id": webspace_id,
+        "defer_webspace_rebuild": bool(body.defer_webspace_rebuild),
+    }
     bus_emit(bus, "skills.activated", payload, "api.skills")
     return {"ok": True}
+
+
+@router.post("/runtime/rebuild-webspace")
+async def runtime_rebuild_webspace(body: RuntimeRebuildWebspaceReq):
+    webspace_id = body.webspace_id or default_webspace_id()
+    await rebuild_webspace_projection(
+        webspace_id=webspace_id,
+        action="skill_batch_runtime_sync",
+        source_of_truth="skill_runtime",
+    )
+    return {"ok": True, "accepted": True, "webspace_id": webspace_id}
 
 
 @router.get("/runtime/status/{name}")
@@ -523,48 +545,48 @@ async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
     webspace_id = body.webspace_id or default_webspace_id()
     if not body.dry_run:
         mgr = _get_manager(ctx)
-        runtime_status_before = {}
-        try:
-            runtime_status_before = mgr.runtime_status(body.name)
-        except Exception:
-            runtime_status_before = {}
-        runtime_version_before = str(runtime_status_before.get("version") or "").strip()
         source_version = str(result.version or "").strip()
-        runtime_result: Dict[str, Any] | None = None
         try:
-            runtime_result = mgr.runtime_update(body.name, space="workspace")
+            refresh_skill_runtime(
+                mgr,
+                body.name,
+                webspace_id=webspace_id,
+                source_version=source_version,
+                migrate_runtime=True,
+                ensure_installed=False,
+            )
         except Exception:
-            log.exception("runtime_update failed after skill source update: %s", body.name)
-        should_prepare = bool(source_version and source_version != runtime_version_before)
-        if isinstance(runtime_result, dict) and not bool(runtime_result.get("ok", True)):
-            should_prepare = True
-        if should_prepare:
-            try:
-                prep = mgr.prepare_runtime(body.name, run_tests=False)
-                mgr.activate_for_space(
-                    body.name,
-                    version=getattr(prep, "version", None),
-                    slot=getattr(prep, "slot", None),
-                    space="default",
-                    webspace_id=webspace_id,
-                )
-            except Exception:
-                log.exception("prepare/activate failed after skill update: %s", body.name)
+            log.exception("runtime refresh failed after skill update: %s", body.name)
         bus = getattr(ctx, "bus", None)
         if bus is not None:
-            bus_emit(bus, "skills.updated", {"name": body.name, "webspace_id": webspace_id}, "api.skills")
+            bus_emit(
+                bus,
+                "skills.updated",
+                {
+                    "name": body.name,
+                    "webspace_id": webspace_id,
+                    "defer_webspace_rebuild": bool(body.defer_webspace_rebuild),
+                },
+                "api.skills",
+            )
             bus_emit(
                 bus,
                 "skills.activated",
-                {"skill_name": body.name, "space": "default", "webspace_id": webspace_id},
+                {
+                    "skill_name": body.name,
+                    "space": "default",
+                    "webspace_id": webspace_id,
+                    "defer_webspace_rebuild": bool(body.defer_webspace_rebuild),
+                },
                 "api.skills",
             )
-        try:
-            await rebuild_webspace_from_sources(
-                webspace_id,
-                action="skill_update_sync",
-                source_of_truth="skill_runtime",
-            )
-        except Exception:
-            log.exception("webspace rebuild failed after skill update: %s", body.name)
+        if not body.defer_webspace_rebuild:
+            try:
+                await rebuild_webspace_projection(
+                    webspace_id=webspace_id,
+                    action="skill_update_sync",
+                    source_of_truth="skill_runtime",
+                )
+            except Exception:
+                log.exception("webspace rebuild failed after skill update: %s", body.name)
     return {"ok": True, "updated": result.updated, "version": result.version}

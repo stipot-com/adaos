@@ -49,6 +49,7 @@ def save_node_runtime_state(
     hub_url: str | None | object = _UNSET,
     token: str | None | object = _UNSET,
     nats: dict[str, Any] | None | object = _UNSET,
+    node_display: dict[str, Any] | None | object = _UNSET,
 ) -> dict[str, Any]:
     payload = load_node_runtime_state()
     if hub_url is not _UNSET:
@@ -68,11 +69,22 @@ def save_node_runtime_state(
             payload["nats"] = dict(nats)
         else:
             payload.pop("nats", None)
+    if node_display is not _UNSET:
+        if isinstance(node_display, dict) and node_display:
+            payload["node_display"] = dict(node_display)
+        else:
+            payload.pop("node_display", None)
     payload["updated_at"] = time.time()
     path = _state_path()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _clear_node_config_cache()
     return dict(payload)
+
+
+def load_node_display_runtime_state() -> dict[str, Any]:
+    payload = load_node_runtime_state()
+    node_display = payload.get("node_display")
+    return dict(node_display) if isinstance(node_display, dict) else {}
 
 
 def load_nats_runtime_config() -> dict[str, Any]:

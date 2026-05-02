@@ -50,6 +50,7 @@ from adaos.services.core_slots import (
     write_slot_manifest,
 )
 from adaos.services.node_config import load_config, save_config
+from adaos.services.runtime_refresh import rebuild_webspace_projection_sync
 from adaos.services.runtime_memory_profile import (
     RuntimeMemoryProfileSession,
     finish_active_runtime_memory_profile,
@@ -760,6 +761,7 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
             if ok:
                 post_commit_skill_checks: dict[str, Any] = {}
                 post_commit_note = ""
+                post_commit_webspace_refresh: dict[str, Any] = {}
                 try:
                     post_commit_skill_checks = _run_post_commit_skill_checks()
                 except Exception as exc:
@@ -782,33 +784,52 @@ def _launch_active_slot_if_needed(args: argparse.Namespace, *, host: str, port: 
                         )
                         if quarantine_summary:
                             post_commit_note += f" quarantine={quarantine_summary}"
-                root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
-                status_state = "validated" if root_promotion_required else "succeeded"
-                status_phase = "root_promotion_pending" if root_promotion_required else "validate"
-                status_message = (
-                    f"slot {slot} passed post-switch validation; root promotion pending{post_commit_note}"
-                    if root_promotion_required
-                    else f"slot {slot} passed post-switch validation{post_commit_note}"
-                )
-                write_status(
-                    {
-                        "state": status_state,
-                        "phase": status_phase,
-                        "message": status_message,
-                        "target_slot": slot,
-                        "manifest": manifest,
-                        "validated_at": time.time(),
-                        "skill_post_commit_checks": post_commit_skill_checks,
-                        "root_promotion_required": root_promotion_required,
-                        "bootstrap_update": bootstrap_update,
-                        "validation_logs": {
-                            "stdout_path": str(stdout_path),
-                            "stderr_path": str(stderr_path),
+                try:
+                    post_commit_webspace_refresh = rebuild_webspace_projection_sync(
+                        webspace_id=_update_validation_webspace_id(),
+                        action="core_update_post_boot_sync",
+                        source_of_truth="scenario_projection",
+                    )
+                except Exception as exc:
+                    ok = False
+                    details = {
+                        "ok": False,
+                        "summary": f"post-core-update webspace refresh failed: {exc}",
+                        "post_commit_webspace_refresh": {
+                            "ok": False,
+                            "error": str(exc),
+                            "webspace_id": _update_validation_webspace_id(),
                         },
                     }
-                )
-                clear_plan()
-                raise SystemExit(int(proc.wait()))
+                if ok:
+                    root_promotion_required, bootstrap_update = manifest_requires_root_promotion(manifest)
+                    status_state = "validated" if root_promotion_required else "succeeded"
+                    status_phase = "root_promotion_pending" if root_promotion_required else "validate"
+                    status_message = (
+                        f"slot {slot} passed post-switch validation; root promotion pending{post_commit_note}"
+                        if root_promotion_required
+                        else f"slot {slot} passed post-switch validation{post_commit_note}"
+                    )
+                    write_status(
+                        {
+                            "state": status_state,
+                            "phase": status_phase,
+                            "message": status_message,
+                            "target_slot": slot,
+                            "manifest": manifest,
+                            "validated_at": time.time(),
+                            "skill_post_commit_checks": post_commit_skill_checks,
+                            "post_commit_webspace_refresh": post_commit_webspace_refresh,
+                            "root_promotion_required": root_promotion_required,
+                            "bootstrap_update": bootstrap_update,
+                            "validation_logs": {
+                                "stdout_path": str(stdout_path),
+                                "stderr_path": str(stderr_path),
+                            },
+                        }
+                    )
+                    clear_plan()
+                    raise SystemExit(int(proc.wait()))
             proc.terminate()
             try:
                 proc.wait(timeout=5.0)

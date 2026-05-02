@@ -20,6 +20,7 @@ from adaos.services.core_slots import active_slot_manifest, slot_status
 from adaos.services.core_update import read_last_result as read_core_update_last_result
 from adaos.services.core_update import read_status as read_core_update_status
 from adaos.services.node_config import normalize_node_names, set_node_names as persist_node_names
+from adaos.services.node_runtime_state import save_node_runtime_state
 from adaos.services.capacity import get_local_capacity
 from adaos.services.runtime_lifecycle import runtime_lifecycle_snapshot
 from adaos.services.skill.manager import SkillManager
@@ -71,6 +72,7 @@ class MemberLinkClient:
         self._last_control_error = ""
         self._last_control_requested_at = 0.0
         self._last_control_completed_at = 0.0
+        self._last_forced_snapshot_at = 0.0
 
     @staticmethod
     def _pong_stale_after_s() -> float:
@@ -134,6 +136,12 @@ class MemberLinkClient:
         node_names = normalize_node_names(getattr(getattr(conf, "node_settings", None), "node_names", []))
         now = time.time()
         node_state = str(lifecycle.get("node_state") or "ready")
+        try:
+            from adaos.services.scenario.webspace_runtime import build_local_desktop_catalog_snapshot
+
+            desktop_catalog = build_local_desktop_catalog_snapshot(mode="workspace")
+        except Exception:
+            desktop_catalog = {"apps": [], "widgets": []}
         return {
             "captured_at": now,
             "node_id": str(getattr(conf, "node_id", "") or ""),
@@ -148,6 +156,7 @@ class MemberLinkClient:
             "route_mode": "ws" if self.is_connected() else "none",
             "connected_to_hub": bool(self.is_connected()),
             "capacity": get_local_capacity(),
+            "desktop_catalog": desktop_catalog,
             "build": {
                 "version": str(BUILD_INFO.version or ""),
                 "build_date": str(BUILD_INFO.build_date or ""),
@@ -202,6 +211,7 @@ class MemberLinkClient:
 
     def _queue_node_snapshot(self) -> None:
         try:
+            self._last_forced_snapshot_at = time.time()
             self._out_q.put_nowait(
                 {
                     "t": "node.snapshot",
@@ -211,6 +221,35 @@ class MemberLinkClient:
             )
         except Exception:
             return
+
+    @staticmethod
+    def _forced_snapshot_min_interval_s() -> float:
+        raw = str(os.getenv("ADAOS_SUBNET_FORCED_SNAPSHOT_MIN_INTERVAL_S") or "").strip()
+        try:
+            value = float(raw or 5.0)
+        except Exception:
+            value = 5.0
+        return max(1.0, min(60.0, value))
+
+    def _request_local_snapshot_sync(self, *, webspace_id: str | None = None, reason: str = "subnet_sync") -> None:
+        now = time.time()
+        if self._last_forced_snapshot_at and (now - self._last_forced_snapshot_at) < self._forced_snapshot_min_interval_s():
+            return
+        try:
+            get_ctx().bus.publish(
+                DomainEvent(
+                    type="infrastate.refresh",
+                    payload={
+                        "webspace_id": str(webspace_id or "").strip() or None,
+                        "reason": str(reason or "subnet_sync"),
+                    },
+                    source="subnet.link_client",
+                    ts=now,
+                )
+            )
+        except Exception:
+            pass
+        self._queue_node_snapshot()
 
     async def start(self) -> None:
         if self._task is not None:
@@ -425,7 +464,10 @@ class MemberLinkClient:
                                 await self._on_hub_event(msg)
                                 continue
                             if t == "node.snapshot.request":
-                                self._queue_node_snapshot()
+                                self._request_local_snapshot_sync(reason=str(msg.get("reason") or "node.snapshot.request"))
+                                continue
+                            if t == "node.display.assignment":
+                                await self._on_node_display_assignment(msg)
                                 continue
                             if t == "core.update.request":
                                 await self._on_core_update_request(ws, msg)
@@ -481,12 +523,16 @@ class MemberLinkClient:
         while True:
             await asyncio.sleep(10.0)
             now = time.time()
-            last_pong_at = float(self._last_pong_at or self._connected_at or 0.0)
-            if last_pong_at > 0.0 and (now - last_pong_at) > pong_stale_after_s:
+            last_activity_at = max(
+                float(self._last_pong_at or 0.0),
+                float(self._last_message_at or 0.0),
+                float(self._connected_at or 0.0),
+            )
+            if last_activity_at > 0.0 and (now - last_activity_at) > pong_stale_after_s:
                 _log.warning(
-                    "subnet link pong watchdog expired ws=%s age_s=%.3f threshold_s=%.3f",
+                    "subnet link activity watchdog expired ws=%s age_s=%.3f threshold_s=%.3f",
                     self._ws_url,
-                    now - last_pong_at,
+                    now - last_activity_at,
                     pong_stale_after_s,
                 )
                 return
@@ -594,6 +640,28 @@ class MemberLinkClient:
         if event_type == "core.update.status":
             self._last_hub_core_update = dict(payload)
             await self._follow_hub_core_update(payload)
+        if event_type in {"desktop.webspace.reload", "desktop.webspace.reloaded", "desktop.webspace.reset"}:
+            self._request_local_snapshot_sync(
+                webspace_id=str(payload.get("webspace_id") or "").strip() or None,
+                reason=event_type,
+            )
+
+    async def _on_node_display_assignment(self, msg: dict[str, Any]) -> None:
+        payload = msg.get("node_display")
+        if not isinstance(payload, dict):
+            return
+        try:
+            save_node_runtime_state(
+                node_display={
+                    "display_index": payload.get("node_index"),
+                    "accent_index": payload.get("node_color_index"),
+                    "node_label": str(payload.get("node_label") or "").strip(),
+                    "node_compact_label": str(payload.get("node_compact_label") or "").strip(),
+                    "node_color": str(payload.get("node_color") or "").strip(),
+                }
+            )
+        except Exception:
+            _log.debug("failed to persist node display assignment", exc_info=True)
 
     async def _follow_hub_core_update(self, payload: dict[str, Any]) -> None:
         if str(os.getenv("ADAOS_MEMBER_FOLLOW_HUB_UPDATE", "1")).strip().lower() in {"0", "false", "no", "off"}:

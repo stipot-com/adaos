@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional, TypedDict
 
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_display import node_display_from_directory_node
 from .subnet_repo import SubnetRepo
 
 
@@ -132,6 +133,7 @@ class SubnetDirectory:
             "scenarios": self.repo.scenarios_for_node(node_id),
         }
         item["runtime_projection"] = self.repo.runtime_projection_for_node(node_id)
+        item.update(node_display_from_directory_node(item))
         return item
 
     def list_known_nodes(self) -> List[Dict[str, Any]]:
@@ -145,6 +147,7 @@ class SubnetDirectory:
                 "scenarios": self.repo.scenarios_for_node(n["node_id"]),
             }
             node["runtime_projection"] = self.repo.runtime_projection_for_node(n["node_id"])
+            node.update(node_display_from_directory_node(node))
             items.append(node)
         return items
 
@@ -175,6 +178,10 @@ class SubnetDirectory:
             st["online"] = bool(item.get("online", False))
             st["last_seen"] = node["last_seen"]
             self.live[node["node_id"]] = st
+
+    def clear_all(self) -> None:
+        self.repo.clear_all()
+        self.live.clear()
 
 
 _DIR: SubnetDirectory | None = None

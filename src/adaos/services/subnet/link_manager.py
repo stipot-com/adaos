@@ -13,6 +13,7 @@ from fastapi import WebSocket
 
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx
+from adaos.services.node_display import node_display_from_directory_node
 from adaos.services.yjs.doc import apply_update_to_live_room
 from adaos.services.yjs.store import get_ystore_for_webspace, suppress_ystore_write_notifications
 
@@ -129,6 +130,21 @@ class HubLinkManager:
         self._hub_event_total = 0
         self._hub_core_update_broadcast_total = 0
 
+    async def _push_node_display_assignment(self, node_id: str) -> None:
+        link = await self._get_link(node_id)
+        if not link:
+            return
+        try:
+            from adaos.services.registry.subnet_directory import get_directory
+
+            node = get_directory().get_node(node_id)
+        except Exception:
+            node = None
+        payload = node_display_from_directory_node(node if isinstance(node, dict) else {"node_id": node_id, "roles": ["member"]})
+        if not payload:
+            return
+        await link.send_json({"t": "node.display.assignment", "node_display": payload, "ts": time.time()})
+
     async def register(
         self,
         node_id: str,
@@ -172,6 +188,10 @@ class HubLinkManager:
             )
         except Exception:
             pass
+        try:
+            await self._push_node_display_assignment(node_id)
+        except Exception:
+            _log.debug("failed to push node display assignment on register node_id=%s", node_id, exc_info=True)
         return link
 
     async def unregister(self, node_id: str) -> None:
@@ -284,6 +304,10 @@ class HubLinkManager:
                 )
         except Exception:
             pass
+        try:
+            await self._push_node_display_assignment(node_id)
+        except Exception:
+            _log.debug("failed to push node display assignment after snapshot node_id=%s", node_id, exc_info=True)
         if changed:
             try:
                 get_ctx().bus.publish(

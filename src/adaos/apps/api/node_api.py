@@ -23,6 +23,7 @@ from adaos.services.bootstrap import (
     request_hub_root_route_reset,
     switch_role,
 )
+from adaos.services.node_display import node_display_from_config
 from adaos.services.io_web.desktop import WebDesktopInstalled, WebDesktopService, WebDesktopSnapshot
 from adaos.services.media_library import (
     ROOT_MEDIA_RELAY_MAX_UPLOAD_BYTES,
@@ -108,15 +109,22 @@ def _local_node_id() -> str:
 def _local_node_label() -> str:
     try:
         conf = load_config()
-        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
-        if isinstance(node_names, list):
-            for item in node_names:
-                label = str(item or "").strip()
-                if label:
-                    return label
+        return str(node_display_from_config(conf).get("node_label") or "").strip() or _local_node_id()
     except Exception:
-        pass
-    return _local_node_id()
+        return _local_node_id()
+
+
+def _local_node_display() -> dict[str, Any]:
+    try:
+        return node_display_from_config(load_config())
+    except Exception:
+        return {
+            "node_label": _local_node_label(),
+            "node_compact_label": "N0",
+            "node_index": 0,
+            "node_color": "",
+            "node_color_index": 0,
+        }
 
 
 
@@ -875,6 +883,10 @@ class NodeStatus(BaseModel):
     role: str
     node_names: list[str] = Field(default_factory=list)
     primary_node_name: str = ""
+    node_label: str = ""
+    node_compact_label: str = ""
+    node_index: int | None = None
+    node_color: str | None = None
     ready: bool
     node_state: str = "ready"
     draining: bool = False
@@ -1180,6 +1192,7 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
 
     conf = await switch_role(req.app, new_role, hub_url=None, subnet_id=sub_id)
     route_mode, connected = route_info(conf.role)
+    display = _local_node_display()
 
     diags = {
         "requested_role": new_role,
@@ -1198,6 +1211,10 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
             role=conf.role,
             node_names=list(getattr(conf, "node_names", []) or []),
             primary_node_name=str(getattr(conf, "primary_node_name", "") or ""),
+            node_label=str(display.get("node_label") or ""),
+            node_compact_label=str(display.get("node_compact_label") or ""),
+            node_index=display.get("node_index"),
+            node_color=display.get("node_color"),
             ready=is_ready(),
             node_state=str(runtime_lifecycle_snapshot().get("node_state") or "ready"),
             draining=bool(runtime_lifecycle_snapshot().get("draining")),
@@ -1211,12 +1228,17 @@ async def node_change_role(req: Request, payload: RoleChangeRequest):
 @router.get("/names", dependencies=[Depends(require_token)])
 async def node_names() -> dict[str, Any]:
     conf = load_config()
+    display = _local_node_display()
     return {
         "ok": True,
         "node_id": conf.node_id,
         "role": conf.role,
         "node_names": list(getattr(conf, "node_names", []) or []),
         "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+        "node_label": display.get("node_label"),
+        "node_compact_label": display.get("node_compact_label"),
+        "node_index": display.get("node_index"),
+        "node_color": display.get("node_color"),
     }
 
 
@@ -1224,12 +1246,17 @@ async def node_names() -> dict[str, Any]:
 async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
     source = payload.node_names if payload.node_names is not None else payload.value
     conf = save_node_names_config(source)
+    display = _local_node_display()
     return {
         "ok": True,
         "node_id": conf.node_id,
         "role": conf.role,
         "node_names": list(getattr(conf, "node_names", []) or []),
         "primary_node_name": str(getattr(conf, "primary_node_name", "") or ""),
+        "node_label": display.get("node_label"),
+        "node_compact_label": display.get("node_compact_label"),
+        "node_index": display.get("node_index"),
+        "node_color": display.get("node_color"),
     }
 
 
@@ -1584,6 +1611,9 @@ async def node_yjs_webspaces() -> dict[str, Any]:
             "source_mode": item.source_mode,
             "node_id": getattr(item, "node_id", None) or _local_node_id(),
             "node_label": getattr(item, "node_label", None) or _local_node_label(),
+            "node_compact_label": getattr(item, "node_compact_label", None),
+            "node_index": getattr(item, "node_index", None),
+            "node_color": getattr(item, "node_color", None),
             "current_scenario": getattr(item, "current_scenario", None),
             "stored_home_scenario_exists": getattr(item, "stored_home_scenario_exists", None),
             "home_scenario_exists": getattr(item, "home_scenario_exists", True),

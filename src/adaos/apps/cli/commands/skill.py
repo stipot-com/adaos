@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import traceback
-import asyncio
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -36,10 +35,10 @@ from adaos.services.skill.runtime import (
 from adaos.services.skill.update import SkillUpdateService
 from adaos.services.skill.validation import SkillValidationService
 from adaos.services.skill.scaffold import create as scaffold_create
+from adaos.services.runtime_refresh import rebuild_webspace_projection_sync, refresh_skill_runtime
 from adaos.services.workspace_registry import build_registry_entry, list_workspace_registry_entries
 from adaos.adapters.db import SqliteSkillRegistry
 from adaos.services.eventbus import emit as bus_emit
-from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.yjs.webspace import default_webspace_id
 
 app = typer.Typer(help=_("cli.help_skill"))
@@ -278,9 +277,9 @@ def _hub_get(path: str, *, params: dict | None = None) -> dict:
     return resp.json()
 
 
-def _hub_post(path: str, *, body: dict | None = None) -> dict:
+def _hub_post(path: str, *, body: dict | None = None, timeout_s: float = 30) -> dict:
     url = _hub_base_url() + path
-    resp = requests.post(url, headers=_hub_headers(), json=body or {}, timeout=30)
+    resp = requests.post(url, headers=_hub_headers(), json=body or {}, timeout=timeout_s)
     try:
         resp.raise_for_status()
     except requests.HTTPError as exc:
@@ -297,7 +296,13 @@ def _hub_post(path: str, *, body: dict | None = None) -> dict:
     return resp.json()
 
 
-def _notify_hub_skill_activated(name: str, *, space: str = "default", webspace_id: str | None = None) -> None:
+def _notify_hub_skill_activated(
+    name: str,
+    *,
+    space: str = "default",
+    webspace_id: str | None = None,
+    defer_webspace_rebuild: bool = False,
+) -> None:
     try:
         _hub_post(
             "/api/skills/runtime/notify-activated",
@@ -305,6 +310,7 @@ def _notify_hub_skill_activated(name: str, *, space: str = "default", webspace_i
                 "name": name,
                 "space": space,
                 "webspace_id": webspace_id or default_webspace_id(),
+                "defer_webspace_rebuild": bool(defer_webspace_rebuild),
             },
         )
     except Exception:
@@ -332,15 +338,21 @@ def _emit_local_skill_updated(name: str, *, webspace_id: str | None = None) -> N
 
 def _rebuild_local_webspace(*, webspace_id: str | None = None) -> None:
     try:
-        asyncio.run(
-            rebuild_webspace_from_sources(
-                webspace_id or default_webspace_id(),
-                action="cli_skill_runtime_sync",
-                source_of_truth="skill_runtime",
-            )
+        rebuild_webspace_projection_sync(
+            webspace_id=webspace_id or default_webspace_id(),
+            action="cli_skill_runtime_sync",
+            source_of_truth="skill_runtime",
         )
     except Exception:
         pass
+
+
+def _rebuild_hub_webspace(*, webspace_id: str | None = None) -> None:
+    _hub_post(
+        "/api/skills/runtime/rebuild-webspace",
+        body={"webspace_id": webspace_id or default_webspace_id()},
+        timeout_s=120,
+    )
 
 
 def _refresh_runtime_side_effects(
@@ -349,13 +361,20 @@ def _refresh_runtime_side_effects(
     webspace_id: str | None = None,
     notify_activation: bool = False,
     emit_updated: bool = False,
+    defer_hub_rebuild: bool = False,
+    rebuild_local: bool = True,
 ) -> None:
     target_webspace = webspace_id or default_webspace_id()
     if emit_updated:
         _emit_local_skill_updated(name, webspace_id=target_webspace)
     if notify_activation:
-        _notify_hub_skill_activated(name, webspace_id=target_webspace)
-    _rebuild_local_webspace(webspace_id=target_webspace)
+        _notify_hub_skill_activated(
+            name,
+            webspace_id=target_webspace,
+            defer_webspace_rebuild=defer_hub_rebuild,
+        )
+    if rebuild_local:
+        _rebuild_local_webspace(webspace_id=target_webspace)
 
 
 @_run_safe
@@ -1557,6 +1576,7 @@ def migrate(
                     "dry_run": False,
                     "webspace_id": default_webspace_id(),
                 },
+                timeout_s=120,
             )
             typer.echo(
                 f"{name}: {'updated' if result.get('updated') else 'up-to-date'}"
@@ -1568,24 +1588,42 @@ def migrate(
         items = listing.get("items") if isinstance(listing, dict) else []
         if not isinstance(items, list):
             items = []
+        updated_any = False
+        failed = False
         for item in items:
             if not isinstance(item, dict):
                 continue
             skill_name = str(item.get("name") or item.get("id") or "").strip()
             if not skill_name:
                 continue
-            result = _hub_post(
-                "/api/skills/update",
-                body={
-                    "name": skill_name,
-                    "dry_run": False,
-                    "webspace_id": default_webspace_id(),
-                },
-            )
+            try:
+                result = _hub_post(
+                    "/api/skills/update",
+                    body={
+                        "name": skill_name,
+                        "dry_run": False,
+                        "webspace_id": default_webspace_id(),
+                        "defer_webspace_rebuild": True,
+                    },
+                    timeout_s=120,
+                )
+            except Exception as exc:
+                failed = True
+                typer.secho(f"{skill_name}: {exc}", fg=typer.colors.RED)
+                continue
+            updated_any = True
             typer.echo(
                 f"{skill_name}: {'updated' if result.get('updated') else 'up-to-date'}"
                 + (f" (version {result.get('version')})" if result.get("version") else "")
             )
+        if updated_any:
+            try:
+                _rebuild_hub_webspace(webspace_id=default_webspace_id())
+            except Exception as exc:
+                failed = True
+                typer.secho(f"webspace rebuild failed: {exc}", fg=typer.colors.RED)
+        if failed:
+            raise typer.Exit(1)
         return
     service = SkillUpdateService(get_ctx())
     names: list[str]
@@ -1602,6 +1640,8 @@ def migrate(
             return
 
     failed = False
+    updated_any = False
+    mgr = _mgr()
     for skill_name in names:
         try:
             result = service.request_update(skill_name, dry_run=dry_run)
@@ -1614,11 +1654,29 @@ def migrate(
             + (f" (version {result.version})" if result.version else "")
         )
         if not dry_run:
+            updated_any = True
+            try:
+                refresh_skill_runtime(
+                    mgr,
+                    skill_name,
+                    webspace_id=default_webspace_id(),
+                    source_version=result.version,
+                    migrate_runtime=True,
+                    ensure_installed=True,
+                )
+            except Exception as exc:
+                failed = True
+                typer.secho(f"{skill_name}: runtime refresh failed: {exc}", fg=typer.colors.RED)
+                continue
             _refresh_runtime_side_effects(
                 skill_name,
                 webspace_id=default_webspace_id(),
                 notify_activation=True,
                 emit_updated=True,
+                defer_hub_rebuild=True,
+                rebuild_local=False,
             )
+    if updated_any:
+        _rebuild_local_webspace(webspace_id=default_webspace_id())
     if failed:
         raise typer.Exit(1)

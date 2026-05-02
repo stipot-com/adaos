@@ -19,6 +19,7 @@ import y_py as Y
 from adaos.services.agent_context import AgentContext, get_ctx
 from adaos.services.capacity import get_local_capacity
 from adaos.services.node_config import load_config
+from adaos.services.node_display import node_display_from_config, node_display_from_directory_node
 from adaos.services.yjs.doc import (
     get_ydoc,
     async_get_ydoc,
@@ -122,15 +123,21 @@ def _local_node_id() -> str:
 def _local_node_label() -> str:
     try:
         conf = load_config()
-        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
-        if isinstance(node_names, list):
-            for item in node_names:
-                label = str(item or "").strip()
-                if label:
-                    return label
+        return str(node_display_from_config(conf).get("node_label") or "").strip() or _local_node_id()
     except Exception:
-        pass
-    return _local_node_id()
+        return _local_node_id()
+
+
+def _local_node_display() -> dict[str, Any]:
+    try:
+        return node_display_from_config(load_config())
+    except Exception:
+        return {
+            "node_label": _local_node_label(),
+            "node_compact_label": "N0",
+            "node_index": 0,
+            "node_color": "",
+        }
 
 
 _HOME_SCENARIO_REF_UNSET = object()
@@ -171,6 +178,9 @@ class WebspaceInfo:
     source_mode: str = "workspace"
     node_id: str = "hub"
     node_label: str = "hub"
+    node_compact_label: str | None = None
+    node_index: int | None = None
+    node_color: str | None = None
     is_dev: bool = False
     current_scenario: str | None = None
     stored_home_scenario_exists: bool | None = None
@@ -302,6 +312,68 @@ def _mark_entry(entry: Dict[str, Any], *, source: str, dev: bool) -> Dict[str, A
     data["origin"] = source
     data["dev"] = dev
     return data
+
+
+def _apply_node_display_to_entry(entry: Dict[str, Any], display: Mapping[str, Any] | None, *, node_id: str | None = None) -> Dict[str, Any]:
+    data = dict(entry)
+    resolved_node_id = str(node_id or data.get("node_id") or "").strip()
+    if resolved_node_id and not str(data.get("node_id") or "").strip():
+        data["node_id"] = resolved_node_id
+    if not isinstance(display, Mapping):
+        return data
+    node_label = str(display.get("node_label") or "").strip()
+    if node_label and not str(data.get("node_label") or "").strip():
+        data["node_label"] = node_label
+    compact_label = str(display.get("node_compact_label") or "").strip()
+    if compact_label and not str(data.get("node_compact_label") or "").strip():
+        data["node_compact_label"] = compact_label
+    node_color = str(display.get("node_color") or "").strip()
+    if node_color and not str(data.get("node_color") or "").strip():
+        data["node_color"] = node_color
+    node_index = display.get("node_index")
+    if node_index is not None and data.get("node_index") is None:
+        data["node_index"] = node_index
+    return data
+
+
+def _local_catalog_decl_entries(decls: List[Dict[str, Any]]) -> dict[str, Any]:
+    try:
+        conf = load_config()
+        display = node_display_from_config(conf)
+    except Exception:
+        display = {
+            "node_label": _local_node_label(),
+            "node_compact_label": "N0",
+            "node_color": "",
+            "node_index": 0,
+        }
+    node_id = _local_node_id()
+    apps: List[Dict[str, Any]] = []
+    widgets: List[Dict[str, Any]] = []
+    for decl in decls:
+        skill_name = str(decl.get("skill") or "").strip()
+        source = f"skill:{skill_name}" if skill_name else "skill:unknown"
+        dev_flag = str(decl.get("space") or "default").strip().lower() == "dev"
+        for app in decl.get("apps") or []:
+            if not isinstance(app, dict):
+                continue
+            entry = _mark_entry(app, source=source, dev=dev_flag)
+            apps.append(_apply_node_display_to_entry(entry, display, node_id=node_id))
+        for widget in decl.get("widgets") or []:
+            if not isinstance(widget, dict):
+                continue
+            entry = _mark_entry(widget, source=source, dev=dev_flag)
+            widgets.append(_apply_node_display_to_entry(entry, display, node_id=node_id))
+    return {
+        "captured_at": time.time(),
+        "apps": _merge_by_id(apps),
+        "widgets": _merge_by_id(widgets),
+    }
+
+
+def build_local_desktop_catalog_snapshot(*, mode: str = "workspace") -> dict[str, Any]:
+    svc = WebspaceService()
+    return _local_catalog_decl_entries(svc._collect_skill_decls(mode=mode))
 
 
 def _merge_by_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1829,6 +1901,69 @@ class WebspaceScenarioRuntime:
         if isinstance(desktop_decl, dict) and desktop_decl:
             decls.append(desktop_decl)
 
+        if mode != "dev":
+            decls.extend(self._collect_remote_skill_decls())
+
+        return decls
+
+    def _collect_remote_skill_decls(self) -> List[Dict[str, Any]]:
+        try:
+            conf = load_config()
+        except Exception:
+            conf = None
+        if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
+            return []
+        try:
+            from adaos.services.registry.subnet_directory import get_directory
+
+            nodes = get_directory().list_known_nodes()
+        except Exception:
+            nodes = []
+        local_node_id = _local_node_id()
+        decls: List[Dict[str, Any]] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            node_id = str(node.get("node_id") or "").strip()
+            if not node_id or node_id == local_node_id:
+                continue
+            runtime_projection = (
+                node.get("runtime_projection")
+                if isinstance(node.get("runtime_projection"), Mapping)
+                else {}
+            )
+            snapshot = (
+                runtime_projection.get("snapshot")
+                if isinstance(runtime_projection.get("snapshot"), Mapping)
+                else {}
+            )
+            catalog = (
+                snapshot.get("desktop_catalog")
+                if isinstance(snapshot.get("desktop_catalog"), Mapping)
+                else {}
+            )
+            apps = catalog.get("apps") if isinstance(catalog.get("apps"), list) else []
+            widgets = catalog.get("widgets") if isinstance(catalog.get("widgets"), list) else []
+            if not apps and not widgets:
+                continue
+            display = node_display_from_directory_node(node)
+            decl: Dict[str, Any] = {
+                "skill": f"subnet.member.{node_id}",
+                "space": "default",
+                "node_id": node_id,
+                "apps": [],
+                "widgets": [],
+                "registry": {},
+            }
+            for item in apps:
+                if not isinstance(item, dict):
+                    continue
+                decl["apps"].append(_apply_node_display_to_entry(item, display, node_id=node_id))
+            for item in widgets:
+                if not isinstance(item, dict):
+                    continue
+                decl["widgets"].append(_apply_node_display_to_entry(item, display, node_id=node_id))
+            decls.append(decl)
         return decls
 
     def _apply_ydoc_defaults_in_txn(self, ydoc: Y.YDoc, txn: Any, decls: List[Dict[str, Any]]) -> None:  # type: ignore[override]
@@ -1971,25 +2106,30 @@ class WebspaceScenarioRuntime:
         skill_registry_widgets: List[List[str]] = []
         auto_widget_ids: set[str] = set()
         auto_app_ids: set[str] = set()
+        local_display = node_display_from_config(load_config())
 
         for decl in skill_decls:
             skill_name = decl.get("skill") or ""
             space = decl.get("space") or "default"
             node_id = str(decl.get("node_id") or "").strip()
+            decl_display = {
+                "node_label": str(decl.get("node_label") or "").strip(),
+                "node_compact_label": str(decl.get("node_compact_label") or "").strip(),
+                "node_color": str(decl.get("node_color") or "").strip(),
+                "node_index": decl.get("node_index"),
+            }
+            if not any(decl_display.values()):
+                decl_display = local_display
             source = f"skill:{skill_name}"
             dev_flag = space == "dev"
             for app in decl.get("apps") or []:
                 if isinstance(app, dict):
                     entry = _mark_entry(app, source=source, dev=dev_flag)
-                    if node_id and not str(entry.get("node_id") or "").strip():
-                        entry["node_id"] = node_id
-                    skill_apps.append(entry)
+                    skill_apps.append(_apply_node_display_to_entry(entry, decl_display, node_id=node_id))
             for widget in decl.get("widgets") or []:
                 if isinstance(widget, dict):
                     entry = _mark_entry(widget, source=source, dev=dev_flag)
-                    if node_id and not str(entry.get("node_id") or "").strip():
-                        entry["node_id"] = node_id
-                    skill_widgets.append(entry)
+                    skill_widgets.append(_apply_node_display_to_entry(entry, decl_display, node_id=node_id))
             reg = decl.get("registry") or {}
             mod_spec = reg.get("modals") or {}
             if isinstance(mod_spec, dict):
@@ -2768,6 +2908,7 @@ def _display_name_for_kind(title: Optional[str], *, webspace_id: str, kind: str)
 
 def _webspace_listing() -> List[Dict[str, Any]]:
     rows = workspace_index.list_workspaces()
+    local_display = _local_node_display()
     return [
         _with_webspace_validation(
             source_mode=row.effective_source_mode,
@@ -2783,7 +2924,10 @@ def _webspace_listing() -> List[Dict[str, Any]]:
                 "home_scenario_ref": getattr(row, "home_scenario_ref_overlay", {}) or None,
                 "source_mode": row.effective_source_mode,
                 "node_id": _local_node_id(),
-                "node_label": _local_node_label(),
+                "node_label": local_display.get("node_label"),
+                "node_compact_label": local_display.get("node_compact_label"),
+                "node_index": local_display.get("node_index"),
+                "node_color": local_display.get("node_color"),
             },
         )
         for row in rows
@@ -2791,6 +2935,7 @@ def _webspace_listing() -> List[Dict[str, Any]]:
 
 
 def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceInfo:
+    local_display = _local_node_display()
     current_scenario = _try_read_live_current_scenario(row.workspace_id)
     validation = _build_webspace_validation(
         source_mode=row.effective_source_mode,
@@ -2807,7 +2952,10 @@ def _webspace_info_from_row(row: workspace_index.WebspaceManifest) -> WebspaceIn
         home_scenario_ref=getattr(row, "home_scenario_ref_overlay", {}) or None,
         source_mode=row.effective_source_mode,
         node_id=_local_node_id(),
-        node_label=_local_node_label(),
+        node_label=str(local_display.get("node_label") or _local_node_label()),
+        node_compact_label=str(local_display.get("node_compact_label") or "") or None,
+        node_index=local_display.get("node_index"),
+        node_color=str(local_display.get("node_color") or "") or None,
         is_dev=row.is_dev,
         current_scenario=current_scenario,
         stored_home_scenario_exists=validation.get("stored_home_scenario_exists"),
@@ -3410,6 +3558,8 @@ async def _on_skill_activated(evt: Dict[str, Any]) -> None:
     For MVP we only rebuild the webspace explicitly referenced in the event
     (or the default webspace), not all workspaces.
     """
+    if bool(evt.get("defer_webspace_rebuild")):
+        return
     webspace_id = str(evt.get("webspace_id") or default_webspace_id())
     await rebuild_webspace_from_sources(
         webspace_id,

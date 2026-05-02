@@ -30,6 +30,11 @@ phase-aware materialization.
   widget/workspace chrome, but these browser affordances still sit on top of
   compatibility-era catalog/runtime branches rather than a finalized
   node-aware projection ABI
+- Desktop catalog checkpoint as of 2026-05-02:
+  member-owned skill apps are now treated as first-class shared catalog
+  entries in the current desktop/subnet scope. The client still filters
+  node-owned scenario shortcuts and dev-only surfaces, but no longer hides
+  regular skill apps just because they originate from a member node.
 - Current ownership checkpoint as of 2026-05-02:
   backend `data.webspaces` / `/api/node/yjs/webspaces` responses now also
   carry local `node_id` and `node_label`, and `io.out.stream.publish` can
@@ -45,6 +50,33 @@ phase-aware materialization.
   desktop app/widget order is now part of shared webspace desktop state
   through `data.desktop.iconOrder` and `data.desktop.widgetOrder`, so drag
   reorder is no longer browser-local for the current subnet migration scope
+- Soft reload checkpoint as of 2026-05-02:
+  browser-triggered semantic Yjs soft reload for the active webspace now
+  performs an explicit provider resync even when the sync transport is still
+  marked `connected`. This keeps the browser aligned with rebuilt effective
+  branches after backend recovery or reload flows.
+- Skill migration checkpoint as of 2026-05-02:
+  batch `skill migrate` flows may now mark `skills.activated` events with a
+  rebuild deferral hint and perform one explicit webspace rebuild at the end,
+  instead of paying one semantic rebuild per migrated skill.
+- Runtime refresh checkpoint as of 2026-05-02:
+  `setup update` and `skill migrate` now share runtime-refresh/rebuild helpers,
+  and core-update boot validation performs one required
+  `core_update_post_boot_sync` refresh after the new runtime comes up.
+- Node display checkpoint as of 2026-05-02:
+  browser-facing desktop/workspace/scenario contracts now carry
+  `node_label`, `node_compact_label`, `node_index`, and `node_color`.
+  When explicit node names are missing, the hub persists stable fallback
+  numbering so the UI no longer has to expose raw `node_id` values.
+- Member self-sync checkpoint as of 2026-05-02:
+  member nodes now keep a local `desktop_catalog` snapshot in their subnet
+  heartbeat/runtime projection, and hub-mirrored desktop reload/reset events
+  trigger member-side self-refresh with throttling instead of relying only on
+  synchronous hub-side pull behavior.
+- Infrastate subnet checkpoint as of 2026-05-02:
+  `Infrastructure State` now provides a local `forget_subnet` action that
+  clears remembered subnet-directory members and asks live members to
+  republish their snapshot contribution.
 - Compatibility checkpoint as of 2026-05-01:
   scenario compatibility caches are now written and read only in a
   node-scoped form under `ui.scenarios.<node_id>.<scenario_id>`,

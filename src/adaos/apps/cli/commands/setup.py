@@ -43,8 +43,8 @@ from adaos.services.core_update import restore_root_from_backup as restore_root_
 from adaos.services.core_update import status_path as core_update_status_path
 from adaos.services.settings import _parse_env_file
 from adaos.services.supervisor_memory import read_memory_runtime_state, read_memory_session_summary
+from adaos.services.runtime_refresh import rebuild_webspace_projection_sync, refresh_skill_runtime
 from adaos.services.scenario.manager import ScenarioManager
-from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
 from adaos.services.setup.presets import get_preset
 from adaos.services.skill.manager import SkillManager
 from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
@@ -169,12 +169,10 @@ def install(
     # CLI does not necessarily have runtime event subscribers loaded; rebuild
     # effective UI explicitly so ui.application/data.catalog are populated.
     try:
-        asyncio.run(
-            rebuild_webspace_from_sources(
-                target_webspace,
-                action="cli_setup_install_sync",
-                source_of_truth="scenario_projection",
-            )
+        rebuild_webspace_projection_sync(
+            webspace_id=target_webspace,
+            action="cli_setup_install_sync",
+            source_of_truth="scenario_projection",
         )
     except Exception as exc:
         installed["warnings"].append(f"webspace rebuild: {exc}")
@@ -255,45 +253,23 @@ def update(
         if not name or not bool(getattr(row, "installed", True)):
             continue
         try:
-            runtime_status_before = {}
-            try:
-                runtime_status_before = skill_mgr.runtime_status(str(name))
-            except Exception:
-                runtime_status_before = {}
-            runtime_version_before = str(runtime_status_before.get("version") or "").strip()
-            res = skill_mgr.runtime_update(str(name), space="workspace")
-            entry = {"skill": str(name), "ok": True, "result": res}
             try:
                 source_meta = ctx.skills_repo.get(str(name))
             except Exception:
                 source_meta = None
             source_version = str(getattr(source_meta, "version", None) or "").strip()
-            should_prepare = bool(source_version and source_version != runtime_version_before)
-            if isinstance(res, dict) and not bool(res.get("ok", True)):
-                should_prepare = True
-
-            # If runtime is missing/unprepared, optionally rebuild it using the
-            # full prepare+activate flow (also refreshes local capacity projection).
-            if migrate_runtime and should_prepare:
-                try:
-                    skill_mgr.install(str(name), validate=False)
-                    runtime = skill_mgr.prepare_runtime(str(name), run_tests=False)
-                    version = getattr(runtime, "version", None)
-                    slot = getattr(runtime, "slot", None)
-                    skill_mgr.activate_for_space(
-                        str(name),
-                        version=version,
-                        slot=slot,
-                        space="default",
-                        webspace_id=target_webspace,
-                    )
-                    entry["runtime_migrated"] = True
-                    entry["migrated_version"] = version
-                    entry["migrated_slot"] = slot
-                except Exception as exc:
-                    entry["runtime_migrated"] = False
-                    entry["migration_error"] = str(exc)
-
+            entry = {
+                "skill": str(name),
+                "ok": True,
+                **refresh_skill_runtime(
+                    skill_mgr,
+                    str(name),
+                    webspace_id=target_webspace,
+                    source_version=source_version,
+                    migrate_runtime=migrate_runtime,
+                    ensure_installed=migrate_runtime,
+                ),
+            }
             out["runtime_updated"].append(entry)
         except Exception as exc:
             entry = {"skill": str(name), "ok": False, "error": str(exc)}
@@ -340,12 +316,10 @@ def update(
                 out["yjs_synced"].append({"scenario": str(name), "ok": False, "error": str(exc)})
         # Same as install(): do not rely on event bus subscriptions in CLI.
         try:
-            asyncio.run(
-                rebuild_webspace_from_sources(
-                    target_webspace,
-                    action="cli_setup_update_sync",
-                    source_of_truth="scenario_projection",
-                )
+            rebuild_webspace_projection_sync(
+                webspace_id=target_webspace,
+                action="cli_setup_update_sync",
+                source_of_truth="scenario_projection",
             )
         except Exception as exc:
             out["warnings"].append(f"webspace rebuild: {exc}")

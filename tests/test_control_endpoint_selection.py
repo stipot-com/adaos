@@ -284,6 +284,80 @@ def test_member_link_client_does_not_reemit_hub_mirrored_events(monkeypatch) -> 
     assert client._out_q.empty()
 
 
+@pytest.mark.parametrize(
+    ("event_type", "reason"),
+    [
+        ("desktop.webspace.reload", "desktop.webspace.reload"),
+        ("desktop.webspace.reloaded", "desktop.webspace.reloaded"),
+        ("desktop.webspace.reset", "desktop.webspace.reset"),
+    ],
+)
+def test_member_link_client_requests_local_snapshot_sync_on_desktop_rebuild_events(
+    monkeypatch,
+    event_type: str,
+    reason: str,
+) -> None:
+    client = MemberLinkClient()
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        client,
+        "_request_local_snapshot_sync",
+        lambda **kwargs: calls.append(dict(kwargs)),
+    )
+
+    asyncio.run(
+        client._on_hub_event(
+            {
+                "event": {
+                    "type": event_type,
+                    "payload": {"webspace_id": "default"},
+                    "source": "hub",
+                    "ts": 123.0,
+                }
+            }
+        )
+    )
+
+    assert calls == [{"webspace_id": "default", "reason": reason}]
+
+
+def test_member_link_client_persists_node_display_assignment(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "adaos.services.subnet.link_client.save_node_runtime_state",
+        lambda **kwargs: calls.append(dict(kwargs)),
+    )
+
+    client = MemberLinkClient()
+
+    asyncio.run(
+        client._on_node_display_assignment(
+            {
+                "node_display": {
+                    "node_index": 4,
+                    "node_color_index": 6,
+                    "node_label": "Edge One",
+                    "node_compact_label": "N4",
+                    "node_color": "#B07AA1",
+                }
+            }
+        )
+    )
+
+    assert calls == [
+        {
+            "node_display": {
+                "display_index": 4,
+                "accent_index": 6,
+                "node_label": "Edge One",
+                "node_compact_label": "N4",
+                "node_color": "#B07AA1",
+            }
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_member_link_ping_loop_exits_when_pong_goes_stale(monkeypatch) -> None:
     class _FakeWs:

@@ -107,6 +107,144 @@ def test_infrastate_node_tabs_keep_offline_member_selected():
     assert selected["connected"] is False
 
 
+def test_infrastate_update_actions_use_member_label():
+    mod = _load_infrastate_module()
+
+    class _Conf:
+        role = "hub"
+        node_id = "hub-1"
+
+    reliability = {
+        "runtime": {
+            "hub_member_connection_state": {
+                "known_members": [
+                    {
+                        "node_id": "member-1",
+                        "node_label": "Edge One",
+                    }
+                ]
+            }
+        }
+    }
+
+    items = mod._update_actions(_Conf(), {"selected_node_id": "member-1"}, reliability)
+
+    assert items
+    assert items[0]["title"] == "Update skills & scenarios (Edge One)"
+
+
+def test_infrastate_adaos_update_local_uses_shared_webspace_refresh(monkeypatch):
+    mod = _load_infrastate_module()
+
+    class _Repo:
+        def get(self, name: str):
+            return SimpleNamespace(version="1.2.3")
+
+    class _Ctx:
+        sql = object()
+        git = object()
+        paths = object()
+        bus = None
+        caps = object()
+        settings = object()
+        skills_repo = _Repo()
+
+    class _SkillManager:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    refresh_calls: list[tuple[str, str]] = []
+    rebuild_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(mod, "get_ctx", lambda: _Ctx())
+    monkeypatch.setattr(mod, "SkillManager", _SkillManager)
+    monkeypatch.setattr(mod, "SqliteSkillRegistry", lambda sql: object())
+    monkeypatch.setattr(
+        mod,
+        "sync_workspace_sparse_to_registry",
+        lambda ctx: {"ok": True, "skills": ["weather_skill"], "scenarios": ["web_desktop"]},
+    )
+    monkeypatch.setattr(
+        mod,
+        "refresh_skill_runtime",
+        lambda mgr, name, **kwargs: refresh_calls.append((name, str(kwargs.get("webspace_id") or ""))) or {
+            "runtime_updated": True,
+            "runtime_migrated": False,
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: rebuild_calls.append(dict(kwargs)) or {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
+
+    result = mod._adaos_update_local(dry_run=False)
+
+    assert result["ok"] is True
+    assert result["runtime_updated"] == ["weather_skill"]
+    expected_webspace_id = mod.default_webspace_id()
+    assert refresh_calls == [("weather_skill", expected_webspace_id)]
+    assert rebuild_calls == [
+        {
+            "webspace_id": expected_webspace_id,
+            "action": "infrastate_adaos_update_sync",
+            "source_of_truth": "scenario_projection",
+        }
+    ]
+    assert result["webspace_refresh"]["ok"] is True
+
+
+def test_infrastate_forget_subnet_clears_directory_and_requests_member_refresh(monkeypatch):
+    mod = _load_infrastate_module()
+
+    class _Directory:
+        def __init__(self) -> None:
+            self.cleared = False
+
+        def list_known_nodes(self) -> list[dict[str, str]]:
+            return [
+                {"node_id": "member-1"},
+                {"node_id": "member-2"},
+            ]
+
+        def clear_all(self) -> None:
+            self.cleared = True
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, str]] = []
+
+        def snapshot(self) -> dict[str, object]:
+            return {"members": [{"node_id": "member-1"}]}
+
+        async def request_member_snapshot(self, node_id: str, reason: str) -> None:
+            self.requests.append((node_id, reason))
+
+    directory = _Directory()
+    manager = _Manager()
+
+    monkeypatch.setattr(mod, "load_config", lambda: SimpleNamespace(role="hub", subnet_id="sn-test"))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.registry.subnet_directory",
+        types.SimpleNamespace(get_directory=lambda: directory),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.subnet.link_manager",
+        types.SimpleNamespace(get_hub_link_manager=lambda: manager),
+    )
+
+    result = mod._forget_subnet_local()
+
+    assert directory.cleared is True
+    assert result["ok"] is True
+    assert result["forgotten_total"] == 2
+    assert result["forgotten_node_ids"] == ["member-1", "member-2"]
+    assert result["refresh_requested"] == 1
+    assert manager.requests == [("member-1", "infrastate.forget_subnet")]
+
+
 def test_infrastate_get_snapshot_projects_fallback_when_snapshot_crashes(monkeypatch):
     mod = _load_infrastate_module()
     projected: dict[str, object] = {}

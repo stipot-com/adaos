@@ -40,7 +40,10 @@ For the target architecture and the agreed evolutionary path, see
 5. **Frontend** - the Angular/Ionic runtime consumes shared state through
    `YDocService` and transport-independent stream receivers through
    `WebIoStreamService`. It renders apps/widgets from the merged runtime state
-   and exposes CRUD for switching or managing webspaces.
+   and exposes CRUD for switching or managing webspaces. For the current
+   desktop/subnet scope, node-owned skill apps stay visible in shared desktop
+   catalogs the same way node-owned widgets do; only scenario shortcuts and
+   dev-only surfaces remain filtered by policy.
 
 ```text
 Browser <--y-websocket--> Hub y_gateway <--YDoc--> SQLiteYStore
@@ -161,6 +164,12 @@ topic at the same time and accept whichever path is currently available.
 This is the current compatibility bridge for "P2P/member if possible, hub if
 not" behavior.
 
+When a user requests a semantic Yjs soft reload for the currently open
+webspace, the browser now also performs an explicit provider resync even if
+the transport still reports `connected`. This keeps the browser aligned with
+the backend-owned effective branches after rebuild instead of trusting an
+already-open provider session to notice the semantic reset on its own.
+
 Targeting rules:
 
 * `_meta.webspace_id` targets one webspace
@@ -221,6 +230,13 @@ Important implications:
   inherit `_meta` automatically
 * background tasks and observers should pass `_meta` explicitly unless they are
   sure the current execution context already carries it
+* member nodes now also keep a lightweight self-projected desktop catalog in
+  their local snapshot; the hub aggregates that snapshot into the shared
+  desktop/runtime contract instead of inventing member-owned apps/widgets on
+  its own
+* semantic reload/reset events are now mirrored to members so they can refresh
+  their own subnet snapshot contribution with local throttling, instead of
+  waiting for the hub to pull every detail synchronously
 
 Recommended skill-authoring rules:
 
@@ -253,6 +269,11 @@ Current browser-facing rules:
   selectable
 * modal titles, widget headers, and catalog badges now prefer node labels
   (first node name) over generic `hub` / `member` labels
+* if a node has no explicit human-friendly name, the hub assigns and persists a
+  stable display index so the UI can fall back to `Node N` / `Nn`
+* the shared browser contract may now also carry `node_compact_label`,
+  `node_index`, and `node_color` for lightweight node differentiation without
+  exposing raw `node_id` in normal UI chrome
 * webspaces themselves remain shared Yjs documents; node binding currently
   belongs to node-owned apps/widgets/streams and to the selected
   `home_scenario_ref`, not to the webspace container itself
@@ -276,10 +297,10 @@ progress.
   scenario payload into those branches.
 * **Syncing across docs** - the core runtime updates `data.webspaces` in each
   YDoc when a webspace is created, renamed, or deleted. Each entry carries
-  `{ id, title, created_at, node_id, node_label }` plus current
-  `home_scenario`, optional node-bound `home_scenario_ref`, and validation
-  metadata so any client can render the available desktops without inventing
-  ownership labels locally.
+  `{ id, title, created_at, node_id, node_label, node_compact_label,
+  node_index, node_color }` plus current `home_scenario`, optional
+  node-bound `home_scenario_ref`, and validation metadata so any client can
+  render the available desktops without inventing ownership labels locally.
 * **Switching webspaces** - the frontend remembers a preferred webspace in
   `localStorage`. Switching issues `desktop.webspace.use`, which re-seeds the
   target doc if needed, updates `/ws` routing metadata, and reconnects the

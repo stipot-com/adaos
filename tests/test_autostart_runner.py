@@ -662,6 +662,58 @@ def test_launch_active_slot_marks_root_promotion_pending_when_manifest_requires_
     assert captured[-1]["root_promotion_required"] is True
 
 
+def test_launch_active_slot_runs_post_commit_webspace_refresh(monkeypatch) -> None:
+    monkeypatch.setattr(autostart_runner, "active_slot", lambda: "B")
+    monkeypatch.setattr(
+        autostart_runner,
+        "active_slot_manifest",
+        lambda: {"slot": "B", "argv": ["python", "-m", "adaos.apps.autostart_runner"], "env": {}, "cwd": ""},
+    )
+    monkeypatch.setattr(autostart_runner, "_slot_launch_spec", lambda manifest, host, port, token=None: (["python"], None))
+    monkeypatch.setattr(autostart_runner, "slot_dir", lambda slot: f"/slots/{slot}")
+
+    class _Proc:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("terminate should not be called on validation success")
+
+        def kill(self):
+            raise AssertionError("kill should not be called on validation success")
+
+    refresh_calls: list[dict[str, object]] = []
+    captured: list[dict] = []
+
+    monkeypatch.setattr(autostart_runner.subprocess, "Popen", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(autostart_runner, "_probe_update_runtime", lambda **kwargs: (True, {"ok": True}))
+    monkeypatch.setattr(autostart_runner, "_run_post_commit_skill_checks", lambda: {"ok": True, "failed_total": 0, "deactivated_total": 0})
+    monkeypatch.setattr(
+        autostart_runner,
+        "rebuild_webspace_projection_sync",
+        lambda **kwargs: refresh_calls.append(dict(kwargs)) or {"ok": True, "webspace_id": kwargs.get("webspace_id")},
+    )
+    monkeypatch.setattr(autostart_runner, "clear_plan", lambda: None)
+    monkeypatch.setattr(autostart_runner, "write_status", lambda payload: captured.append(dict(payload)))
+
+    args = types.SimpleNamespace(token="dev-local-token")
+    try:
+        autostart_runner._launch_active_slot_if_needed(args, host="127.0.0.1", port=8777, validate=True)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert refresh_calls == [
+        {
+            "webspace_id": "default",
+            "action": "core_update_post_boot_sync",
+            "source_of_truth": "scenario_projection",
+        }
+    ]
+    assert captured[-1]["post_commit_webspace_refresh"]["ok"] is True
+
+
 def test_launch_active_slot_clears_plan_only_after_validation_status_is_written(monkeypatch) -> None:
     events: list[object] = []
 

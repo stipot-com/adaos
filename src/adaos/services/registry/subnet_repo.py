@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from adaos.adapters.db.sqlite_store import SQLite
+from adaos.services.node_display import node_color_palette
 
 
 def _now() -> float:
@@ -145,6 +146,14 @@ class SubnetRepo:
                 con.execute("ALTER TABLE subnet_nodes ADD COLUMN node_state TEXT NOT NULL DEFAULT 'ready'")
             except Exception:
                 pass
+            try:
+                con.execute("ALTER TABLE subnet_nodes ADD COLUMN display_index INTEGER")
+            except Exception:
+                pass
+            try:
+                con.execute("ALTER TABLE subnet_nodes ADD COLUMN accent_index INTEGER")
+            except Exception:
+                pass
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS subnet_capacity_io (
@@ -211,21 +220,58 @@ class SubnetRepo:
             )
             con.commit()
 
+    def _next_display_index(self, con) -> int:
+        cur = con.execute("SELECT MAX(display_index) FROM subnet_nodes WHERE display_index IS NOT NULL AND display_index >= 1")
+        row = cur.fetchone()
+        try:
+            current = int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            current = 0
+        return max(1, current + 1)
+
+    def _assigned_display_fields(self, con, *, node_id: str, roles: list[str]) -> tuple[int, int]:
+        cur = con.execute("SELECT display_index, accent_index FROM subnet_nodes WHERE node_id=?", (node_id,))
+        row = cur.fetchone()
+        existing_index = None
+        existing_accent = None
+        if row:
+            try:
+                existing_index = int(row[0]) if row[0] is not None else None
+            except Exception:
+                existing_index = None
+            try:
+                existing_accent = int(row[1]) if row[1] is not None else None
+            except Exception:
+                existing_accent = None
+        if existing_index is None:
+            role_tokens = {str(item or "").strip().lower() for item in roles if str(item or "").strip()}
+            existing_index = 0 if "hub" in role_tokens and "member" not in role_tokens else self._next_display_index(con)
+        palette_len = max(1, len(node_color_palette()))
+        if existing_accent is None:
+            existing_accent = existing_index % palette_len
+        return existing_index, existing_accent
+
     # -------------------- nodes --------------------
     def upsert_node(self, node: Dict[str, Any]) -> None:
         node_id = str(node.get("node_id"))
         subnet_id = str(node.get("subnet_id") or "")
-        roles = json.dumps(list(node.get("roles") or []), ensure_ascii=False)
+        role_items = [str(item or "").strip().lower() for item in list(node.get("roles") or []) if str(item or "").strip()]
+        roles = json.dumps(role_items, ensure_ascii=False)
         hostname = node.get("hostname")
         base_url = node.get("base_url")
         node_state = str(node.get("node_state") or "ready")
         last_seen = float(node.get("last_seen") or 0.0)
         now = _now()
         with self.sql.connect() as con:
+            display_index, accent_index = self._assigned_display_fields(
+                con,
+                node_id=node_id,
+                roles=role_items,
+            )
             con.execute(
                 """
-                INSERT INTO subnet_nodes(node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                INSERT INTO subnet_nodes(node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, display_index, accent_index, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(node_id) DO UPDATE SET
                   subnet_id=excluded.subnet_id,
                   roles_json=excluded.roles_json,
@@ -233,9 +279,23 @@ class SubnetRepo:
                   base_url=excluded.base_url,
                   node_state=excluded.node_state,
                   last_seen=excluded.last_seen,
+                  display_index=COALESCE(subnet_nodes.display_index, excluded.display_index),
+                  accent_index=COALESCE(subnet_nodes.accent_index, excluded.accent_index),
                   updated_at=excluded.updated_at
                 """,
-                (node_id, subnet_id, roles, hostname, base_url, node_state, last_seen, now, now),
+                (
+                    node_id,
+                    subnet_id,
+                    roles,
+                    hostname,
+                    base_url,
+                    node_state,
+                    last_seen,
+                    display_index,
+                    accent_index,
+                    now,
+                    now,
+                ),
             )
             con.commit()
 
@@ -272,7 +332,7 @@ class SubnetRepo:
     def list_nodes(self) -> List[Dict[str, Any]]:
         with self.sql.connect() as con:
             cur = con.execute(
-                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at FROM subnet_nodes"
+                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, display_index, accent_index, created_at, updated_at FROM subnet_nodes"
             )
             rows = []
             for r in cur.fetchall():
@@ -285,8 +345,10 @@ class SubnetRepo:
                         "base_url": r[4],
                         "node_state": r[5] or "ready",
                         "last_seen": r[6],
-                        "created_at": r[7],
-                        "updated_at": r[8],
+                        "display_index": r[7],
+                        "accent_index": r[8],
+                        "created_at": r[9],
+                        "updated_at": r[10],
                     }
                 )
             return rows
@@ -294,7 +356,7 @@ class SubnetRepo:
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         with self.sql.connect() as con:
             cur = con.execute(
-                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, created_at, updated_at FROM subnet_nodes WHERE node_id=?",
+                "SELECT node_id, subnet_id, roles_json, hostname, base_url, node_state, last_seen, display_index, accent_index, created_at, updated_at FROM subnet_nodes WHERE node_id=?",
                 (node_id,),
             )
             r = cur.fetchone()
@@ -308,8 +370,10 @@ class SubnetRepo:
                 "base_url": r[4],
                 "node_state": r[5] or "ready",
                 "last_seen": r[6],
-                "created_at": r[7],
-                "updated_at": r[8],
+                "display_index": r[7],
+                "accent_index": r[8],
+                "created_at": r[9],
+                "updated_at": r[10],
             }
 
     def upsert_runtime_projection(self, node_id: str, payload: Dict[str, Any] | None) -> None:
@@ -482,7 +546,7 @@ class SubnetRepo:
 
     def nodes_with_skill(self, name: str) -> List[Dict[str, Any]]:
         q = (
-            "SELECT n.node_id, n.subnet_id, n.roles_json, n.hostname, n.base_url, n.node_state, n.last_seen, s.version, s.active "
+            "SELECT n.node_id, n.subnet_id, n.roles_json, n.hostname, n.base_url, n.node_state, n.last_seen, n.display_index, n.accent_index, s.version, s.active "
             "FROM subnet_nodes n JOIN subnet_capacity_skills s ON n.node_id=s.node_id WHERE s.name=?"
         )
         with self.sql.connect() as con:
@@ -498,11 +562,22 @@ class SubnetRepo:
                         "base_url": r[4],
                         "node_state": r[5] or "ready",
                         "last_seen": r[6],
-                        "version": r[7],
-                        "active": bool(r[8]),
+                        "display_index": r[7],
+                        "accent_index": r[8],
+                        "version": r[9],
+                        "active": bool(r[10]),
                     }
                 )
             return out
+
+    def clear_all(self) -> None:
+        with self.sql.connect() as con:
+            con.execute("DELETE FROM subnet_capacity_io")
+            con.execute("DELETE FROM subnet_capacity_skills")
+            con.execute("DELETE FROM subnet_capacity_scenarios")
+            con.execute("DELETE FROM subnet_runtime_projection")
+            con.execute("DELETE FROM subnet_nodes")
+            con.commit()
 
     def io_for_node(self, node_id: str) -> List[Dict[str, Any]]:
         with self.sql.connect() as con:

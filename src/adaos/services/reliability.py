@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
+from adaos.services.node_display import node_display_from_config
 from adaos.services.registry.subnet_runtime_projection import (
     subnet_runtime_projection_freshness,
 )
@@ -3424,9 +3425,9 @@ def hub_member_connection_state_snapshot(
             rollout_counts[rollout_state] = int(rollout_counts.get(rollout_state) or 0) + 1
             if runtime_ref:
                 version_counts[runtime_ref] = int(version_counts.get(runtime_ref) or 0) + 1
-            label = _node_label(
+            label = str(directory_item.get("node_label") or "").strip() or _node_label(
                 member_names,
-                fallback="member" if index == 1 else f"member {index}",
+                fallback=f"Node {index}",
             )
             items.append(
                 {
@@ -3436,6 +3437,10 @@ def hub_member_connection_state_snapshot(
                     "node_snapshot": node_snapshot,
                     "label": label,
                     "primary_name": label,
+                    "node_label": label,
+                    "node_compact_label": directory_item.get("node_compact_label"),
+                    "node_index": directory_item.get("node_index"),
+                    "node_color": directory_item.get("node_color"),
                     "role": "member",
                     "state": "connected" if connected else "down",
                     "connected": connected,
@@ -3496,9 +3501,9 @@ def hub_member_connection_state_snapshot(
                     snapshot_state=snapshot_state,
                 )
             )
-            label = _node_label(
+            label = str(node.get("node_label") or "").strip() or _node_label(
                 list(runtime_projection.get("node_names") or []),
-                fallback=f"member {len(known_members) + 1}",
+                fallback=f"Node {len(known_members) + 1}",
             )
             media_capability = {}
             capacity_source = (
@@ -3531,6 +3536,10 @@ def hub_member_connection_state_snapshot(
                     "node_snapshot": dict(node_snapshot) if isinstance(node_snapshot, dict) else {},
                     "label": label,
                     "primary_name": label,
+                    "node_label": label,
+                    "node_compact_label": node.get("node_compact_label"),
+                    "node_index": node.get("node_index"),
+                    "node_color": node.get("node_color"),
                     "role": "member",
                     "state": "heartbeat" if online else "offline",
                     "connected": False,
@@ -3593,7 +3602,8 @@ def hub_member_connection_state_snapshot(
             "local_node": {
                 "node_id": node_id,
                 "node_names": local_names,
-                "label": _node_label(local_names, fallback="hub"),
+                **node_display_from_config(conf),
+                "label": str(node_display_from_config(conf).get("node_label") or _node_label(local_names, fallback="Node 0")),
                 "role": "hub",
             },
             "assessment": {
@@ -3637,7 +3647,8 @@ def hub_member_connection_state_snapshot(
         "local_node": {
             "node_id": node_id,
             "node_names": local_names,
-            "label": _node_label(local_names, fallback="member"),
+            **node_display_from_config(conf),
+            "label": str(node_display_from_config(conf).get("node_label") or _node_label(local_names, fallback="Node 1")),
             "role": "member",
         },
         "assessment": {

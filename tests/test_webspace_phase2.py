@@ -240,6 +240,51 @@ def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract(m
     }
 
 
+def test_collect_remote_skill_decls_uses_member_desktop_catalog_snapshot(monkeypatch) -> None:
+    import adaos.services.registry.subnet_directory as subnet_directory_module
+
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "load_config",
+        lambda: SimpleNamespace(role="hub", node_id="hub-1", node_names=["Hub"]),
+    )
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "hub-1")
+
+    class _Directory:
+        def list_known_nodes(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "node_id": "member-1",
+                    "roles": ["member"],
+                    "display_index": 2,
+                    "accent_index": 5,
+                    "runtime_projection": {
+                        "node_names": ["Edge One"],
+                        "primary_node_name": "Edge One",
+                        "snapshot": {
+                            "desktop_catalog": {
+                                "apps": [{"id": "weather_skill", "title": "Weather"}],
+                                "widgets": [{"id": "infrastate", "title": "Infra State"}],
+                            }
+                        },
+                    },
+                }
+            ]
+
+    monkeypatch.setattr(subnet_directory_module, "get_directory", lambda: _Directory())
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime()
+    decls = runtime._collect_remote_skill_decls()
+
+    assert len(decls) == 1
+    assert decls[0]["skill"] == "subnet.member.member-1"
+    assert decls[0]["node_id"] == "member-1"
+    assert decls[0]["apps"][0]["node_label"] == "Edge One"
+    assert decls[0]["apps"][0]["node_compact_label"] == "N2"
+    assert decls[0]["widgets"][0]["node_label"] == "Edge One"
+    assert isinstance(decls[0]["widgets"][0]["node_color"], str) and decls[0]["widgets"][0]["node_color"]
+
+
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:
     fake_state = state or {"ui": _FakeMap(), "registry": _FakeMap(), "data": _FakeMap()}
     fake_ctx = get_ctx()
@@ -2375,6 +2420,28 @@ def test_phase5_resolver_omits_catalog_modals_without_desktop_library_capability
     assert resolved.registry["modals"] == ["scenario_modal", "scenario_switcher"]
     assert "apps_catalog" not in (resolved.application.get("modals") or {})
     assert "widgets_catalog" not in (resolved.application.get("modals") or {})
+
+
+def test_skill_activated_event_can_defer_webspace_rebuild(monkeypatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    async def _fake_rebuild(webspace_id: str, *, action: str = "rebuild", source_of_truth: str = "workspace", **kwargs):  # noqa: ARG001
+        calls.append((webspace_id, action, source_of_truth))
+        return None
+
+    monkeypatch.setattr(webspace_runtime_module, "rebuild_webspace_from_sources", _fake_rebuild)
+
+    asyncio.run(
+        webspace_runtime_module._on_skill_activated(
+            {
+                "skill_name": "weather_skill",
+                "webspace_id": "default",
+                "defer_webspace_rebuild": True,
+            }
+        )
+    )
+
+    assert calls == []
 
 
 def test_phase4_rebuild_status_exposes_legacy_resolver_fallback(monkeypatch) -> None:

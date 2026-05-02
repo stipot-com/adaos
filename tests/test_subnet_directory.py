@@ -157,3 +157,19 @@ def test_subnet_directory_snapshot_heartbeat_touches_runtime_projection(monkeypa
     assert node["online"] is True
     assert node["runtime_projection"]["captured_at"] == 42.0
     assert repo.runtime_touches == [("member-1", 42.0, "ready")]
+
+
+def test_subnet_directory_get_node_exposes_persisted_display_metadata(monkeypatch) -> None:
+    repo = _FakeRepo()
+    repo.nodes["member-1"]["display_index"] = 4
+    repo.nodes["member-1"]["accent_index"] = 2
+    monkeypatch.setattr(mod, "get_ctx", lambda: type("Ctx", (), {"sql": object()})())
+    monkeypatch.setattr(mod, "SubnetRepo", lambda sql: repo)
+
+    node = mod.SubnetDirectory().get_node("member-1")
+
+    assert node is not None
+    assert node["node_label"] == "Kitchen Member"
+    assert node["node_compact_label"] == "N4"
+    assert node["node_index"] == 4
+    assert isinstance(node["node_color"], str) and node["node_color"]

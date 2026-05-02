@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from adaos.apps.api.auth import require_token
 from adaos.services.agent_context import get_ctx, AgentContext
 from adaos.services.node_config import load_config
+from adaos.services.node_display import node_display_from_config, node_display_from_directory_node
 from adaos.services.registry.subnet_directory import get_directory
 from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.scenario.webspace_runtime import rebuild_webspace_from_sources
@@ -70,25 +71,13 @@ def _local_node_id() -> str:
 def _local_node_label() -> str:
     try:
         conf = load_config()
-        node_names = getattr(getattr(conf, "node_settings", None), "node_names", None)
-        if isinstance(node_names, list):
-            for item in node_names:
-                label = str(item or "").strip()
-                if label:
-                    return label
+        return str(node_display_from_config(conf).get("node_label") or "").strip() or _local_node_id()
     except Exception:
-        pass
-    return _local_node_id()
+        return _local_node_id()
 
 
 def _node_label_from_directory(node: Dict[str, Any]) -> str:
-    runtime_projection = node.get("runtime_projection") if isinstance(node.get("runtime_projection"), dict) else {}
-    node_names = runtime_projection.get("node_names") if isinstance(runtime_projection.get("node_names"), list) else []
-    for item in node_names:
-        label = str(item or "").strip()
-        if label:
-            return label
-    return str(node.get("node_id") or "").strip() or "hub"
+    return str(node_display_from_directory_node(node).get("node_label") or "").strip() or str(node.get("node_id") or "").strip() or "hub"
 
 
 # --- API (тонкий фасад CLI) --------------------------------------------------
@@ -115,7 +104,7 @@ async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_m
     items: list[Dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     local_node_id = _local_node_id()
-    local_node_label = _local_node_label()
+    local_node_display = node_display_from_config(load_config())
     for row in rows or []:
         item = _to_mapping(row)
         scenario_id = str(item.get("name") or item.get("id") or item.get("repr") or "").strip()
@@ -128,7 +117,10 @@ async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_m
         item["id"] = scenario_id
         item["name"] = scenario_id
         item["node_id"] = local_node_id
-        item["node_label"] = local_node_label
+        item["node_label"] = str(local_node_display.get("node_label") or _local_node_label())
+        item["node_compact_label"] = local_node_display.get("node_compact_label")
+        item["node_index"] = local_node_display.get("node_index")
+        item["node_color"] = local_node_display.get("node_color")
         item["source"] = "local_installed"
         items.append(item)
     try:
@@ -138,7 +130,8 @@ async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_m
                 node_id = str(node.get("node_id") or "").strip()
                 if not node_id:
                     continue
-                node_label = _node_label_from_directory(node)
+                node_display = node_display_from_directory_node(node)
+                node_label = str(node_display.get("node_label") or _node_label_from_directory(node))
                 capacity = node.get("capacity") if isinstance(node.get("capacity"), dict) else {}
                 scenarios = capacity.get("scenarios") if isinstance(capacity.get("scenarios"), list) else []
                 for scenario in scenarios:
@@ -157,6 +150,9 @@ async def list_scenarios(fs: bool = False, mgr: ScenarioManager = Depends(_get_m
                         "name": scenario_id,
                         "node_id": node_id,
                         "node_label": node_label,
+                        "node_compact_label": node_display.get("node_compact_label"),
+                        "node_index": node_display.get("node_index"),
+                        "node_color": node_display.get("node_color"),
                         "source": "subnet_capacity",
                     })
     except Exception:

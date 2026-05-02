@@ -139,7 +139,7 @@ Primary sources:
 - [ ] `phase3.node_top_level_reserved`: add a reserved node-aware top-level envelope in shared Yjs state
 - [ ] `phase3.compat_layer_defined`: define compatibility rules for legacy skill/scenario JSON branches
 
-Current checkpoint as of 2026-05-01:
+Current checkpoint as of 2026-05-02:
 
 - browser/platform surfaces in `web_desktop` now already propagate lightweight
   node ownership metadata for catalog items, pinned widgets, workspace labels,
@@ -152,6 +152,12 @@ Current checkpoint as of 2026-05-01:
 - node multiplicity is therefore now visible in the browser contract, but the
   backend projection record shape and reserved top-level Yjs ownership branches
   are still open work
+- the browser/runtime contract now also carries stable presentation metadata
+  for nodes: `node_label`, `node_compact_label`, `node_index`, and
+  `node_color`
+- when explicit node names are missing, the hub assigns and persists stable
+  fallback numbering (`Node N` / `Nn`) so multi-node UI no longer falls back
+  to raw UUID-like labels
 - for current desktop/subnet work, webspaces themselves still remain shared
   Yjs documents; node-aware ownership is now carried by catalog items,
   stream routes, and persisted `home_scenario_ref` metadata rather than by
@@ -171,7 +177,7 @@ Primary sources:
 - [ ] `phase4.lifecycle_consumption`: consume `pending/refreshing/ready/stale/error` as first-class projection state
 - [ ] `phase4.cache_by_projection_key`: cache projection payloads by `projection_key`
 
-Current checkpoint as of 2026-05-01:
+Current checkpoint as of 2026-05-02:
 
 - browser page runtime now supports node-aware stream receiver hints
   (`nodeId`, `transport`) in addition to the existing transport-independent
@@ -185,6 +191,9 @@ Current checkpoint as of 2026-05-01:
   only from effective runtime branches (`ui.application.*`) for the current
   subnet-migration scope, leaving scenario-specific structure in Yjs/API
   ownership rather than in client fallback logic
+- semantic reload/reset events are now mirrored to members so they can
+  self-refresh their subnet snapshot contribution after desktop rebuilds
+  instead of depending on a purely hub-pulled recovery loop
 - this partially advances `phase4.node_multiplicity_visible`, but the general
   subscription registry and projection lifecycle ABI for all consumers are not
   complete yet
@@ -212,13 +221,16 @@ Primary sources:
 - [ ] `phase6.workspace_manager_pilot`: migrate shared workspace-manager and similar platform surfaces
 - [ ] `phase6.emitter_validation`: validate that platform emitters exercise the architecture before one heavy skill is migrated
 
-Current checkpoint as of 2026-05-01:
+Current checkpoint as of 2026-05-02:
 
 - `web_desktop` now acts as an early node-aware platform pilot:
   workspace manager surfaces show node ownership,
   home-scenario choices can surface scenarios seen across node-owned webspaces,
   desktop catalogs/widgets show node identity,
   and install requests may target a concrete node
+- the current desktop client no longer hides member-owned skill apps from the
+  shared apps catalog; only scenario shortcuts and dev-only surfaces remain
+  filtered by policy
 - desktop apps/widgets ordering is now emitted through shared desktop state
   (`data.desktop.iconOrder`, `data.desktop.widgetOrder`) instead of staying in
   browser-local storage only
@@ -226,6 +238,21 @@ Current checkpoint as of 2026-05-01:
   alongside plain `home_scenario`, so UI selection can distinguish
   same-named scenarios on different nodes even though full runtime resolution
   of remote scenario refs remains follow-on backend work
+- semantic Yjs soft reload for the currently open webspace now forces an
+  explicit provider resync even when the transport still reports `connected`,
+  so browser runtime state follows backend-owned rebuilds instead of trusting
+  the old live session
+- batch skill migration/update flows can now defer `skills.activated`
+  webspace rebuild side effects until one explicit final rebuild, so subnet
+  reconnect or slower `rebuild_webspace_from_sources(...)` paths do not
+  multiply rebuild cost by the number of migrated skills
+- `setup update` and `skill migrate` now converge on shared
+  runtime-refresh/rebuild helpers, and post-core-update validation performs
+  one required shared webspace refresh after boot instead of hiding rebuild
+  work inside multiple per-skill paths
+- `Infrastructure State` now also exposes a hub-side `forget_subnet` action so
+  stale experimental members can be cleared from the subnet directory and
+  active members can republish their snapshot contribution
 - this means the pilot has started, but the roadmap item should remain open
   until the same semantics are emitted through the shared dispatcher/projection
   ABI instead of compatibility-era catalog/runtime branches

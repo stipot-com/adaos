@@ -1378,9 +1378,25 @@ class BootstrapService:
                     except Exception:
                         self._log.debug("failed to mirror node.status to members", exc_info=True)
 
+                def _forward_desktop_reload_to_members(ev: Event) -> None:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type=str(ev.type or "desktop.webspace.reload"),
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror desktop reload event=%s to members", str(ev.type or ""), exc_info=True)
+
                 core_bus.subscribe("core.update.status", _forward_core_update_status_to_members)
                 core_bus.subscribe("supervisor.update.status.raw", _forward_supervisor_update_status_raw_to_members)
                 core_bus.subscribe("node.status", _forward_node_status_to_members)
+                core_bus.subscribe("desktop.webspace.reload", _forward_desktop_reload_to_members)
+                core_bus.subscribe("desktop.webspace.reloaded", _forward_desktop_reload_to_members)
+                core_bus.subscribe("desktop.webspace.reset", _forward_desktop_reload_to_members)
             except Exception:
                 self._log.debug(
                     "failed to install member status forwarders",
