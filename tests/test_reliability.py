@@ -1563,6 +1563,43 @@ def test_node_reliability_summary_endpoint_returns_compact_runtime_snapshot(monk
     assert payload["phase0Communication"]["tasks"]["nodeBrowserReady"]["status"] == "done"
 
 
+def test_node_members_endpoint_returns_hub_member_connection_state(monkeypatch) -> None:
+    from adaos.apps.api.node_api import require_token, router
+
+    monkeypatch.setattr(
+        "adaos.apps.api.node_api.load_config",
+        lambda: SimpleNamespace(node_id="hub-1", subnet_id="sn_1", role="hub", node_names=[]),
+    )
+    monkeypatch.setattr("adaos.apps.api.node_api.route_info", lambda role: ("hub", None))
+    monkeypatch.setattr("adaos.apps.api.node_api.runtime_lifecycle_snapshot", lambda: {"node_state": "ready", "draining": False})
+    monkeypatch.setattr("adaos.apps.api.node_api.is_ready", lambda: True)
+    monkeypatch.setattr(
+        "adaos.apps.api.node_api.reliability_snapshot",
+        lambda **kwargs: {
+            "runtime": {
+                "hub_member_connection_state": {
+                    "assessment": {"state": "nominal", "reason": "linked"},
+                    "member_total": 1,
+                    "known_total": 1,
+                }
+            }
+        },
+    )
+
+    app = FastAPI()
+    app.dependency_overrides[require_token] = lambda: True
+    app.include_router(router, prefix="/api/node")
+    client = TestClient(app)
+
+    response = client.get("/api/node/members")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["hub_member_connection_state"]["member_total"] == 1
+    assert payload["hub_member_connection_state"]["assessment"]["state"] == "nominal"
+
+
 def test_reliability_snapshot_times_out_slow_sync_and_media_sections(monkeypatch) -> None:
     _reset_state()
 
