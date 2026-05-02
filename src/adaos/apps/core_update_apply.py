@@ -495,6 +495,52 @@ def _git_text(repo_dir: Path, *args: str) -> str:
         return ""
 
 
+_PREPARED_SLOT_IMPORT_MODULES: tuple[str, ...] = (
+    "adaos.services.runtime_refresh",
+    "adaos.services.node_display",
+    "adaos.services.node_runtime_state",
+    "adaos.services.scenario.webspace_runtime",
+    "adaos.services.subnet.link_client",
+    "adaos.services.subnet.link_manager",
+    "adaos.apps.cli.commands.setup",
+    "adaos.apps.cli.commands.skill",
+)
+
+
+def _validate_prepared_slot_imports(python_bin: Path) -> dict[str, object]:
+    modules = list(_PREPARED_SLOT_IMPORT_MODULES)
+    script = (
+        "import importlib, json\n"
+        f"modules = {json.dumps(modules)}\n"
+        "loaded = []\n"
+        "for name in modules:\n"
+        "    importlib.import_module(name)\n"
+        "    loaded.append(name)\n"
+        "print(json.dumps({'ok': True, 'modules': loaded}))\n"
+    )
+    env = dict(os.environ)
+    # Validate the installed package, not the slot repo PYTHONPATH overlay.
+    env.pop("PYTHONPATH", None)
+    completed = subprocess.run(
+        [str(python_bin), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=env,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"prepared slot import validation failed: {details}")
+    try:
+        payload = json.loads((completed.stdout or "").strip() or "{}")
+    except Exception:
+        payload = {"ok": True, "modules": modules, "raw": completed.stdout}
+    return {
+        "ok": True,
+        "modules": list(payload.get("modules") or modules) if isinstance(payload, dict) else modules,
+    }
+
+
 def prepare_slot(
     *,
     slot: str,
@@ -595,6 +641,7 @@ def prepare_slot(
         _replace_slot_dir(prepared_slot, slot_dir)
         repair = _repair_moved_venv(final_venv_dir, original_venv_dir=original_venv_dir)
         manifest["venv_repair"] = repair
+        manifest["import_validation"] = _validate_prepared_slot_imports(final_py)
         if migrate_skill_runtimes:
             skill_runtime_migration = _migrate_installed_skill_runtimes(
                 final_py,

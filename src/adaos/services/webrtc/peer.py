@@ -142,6 +142,30 @@ def _unregister_event_channel_subscriptions(peer: "HubPeer") -> None:
         _publish_webio_stream_subscription_change(topics, action="unsubscribed", transport="webrtc_data:events")
 
 
+def _unregister_event_channel_subscription_topics(peer: "HubPeer", raw_topics: Any) -> set[str]:
+    if not isinstance(raw_topics, list):
+        return set()
+    topics = {
+        topic
+        for topic in (str(raw or "").strip() for raw in raw_topics)
+        if topic
+    }
+    if not topics:
+        return set()
+    with _EVENT_CHANNEL_SUBSCRIPTIONS_LOCK:
+        entry = _EVENT_CHANNEL_SUBSCRIBERS.get(id(peer))
+        if not isinstance(entry, dict):
+            return set()
+        tracked = entry.setdefault("topics", set())
+        removed = set(topics) & set(tracked)
+        tracked.difference_update(removed)
+        if not tracked:
+            _EVENT_CHANNEL_SUBSCRIBERS.pop(id(peer), None)
+    if removed:
+        _publish_webio_stream_subscription_change(removed, action="unsubscribed", transport="webrtc_data:events")
+    return removed
+
+
 def _iter_initial_event_channel_messages(topics: set[str]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     if any(_ws_event_topic_matches(topic, "node.status") for topic in topics):
@@ -201,9 +225,16 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
         parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
         if len(parts) < 2:
             continue
-        webspace_id = parts[0]
         node_id = None
-        receiver_parts = parts[1:]
+        if parts[0] == "nodes":
+            if len(parts) < 3:
+                continue
+            webspace_id = "default"
+            node_id = parts[1]
+            receiver_parts = parts[2:]
+        else:
+            webspace_id = parts[0]
+            receiver_parts = parts[1:]
         if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
             node_id = receiver_parts[1]
             receiver_parts = receiver_parts[2:]
@@ -240,9 +271,16 @@ def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, 
         parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
         if len(parts) < 2:
             continue
-        webspace_id = parts[0]
         node_id = None
-        receiver_parts = parts[1:]
+        if parts[0] == "nodes":
+            if len(parts) < 3:
+                continue
+            webspace_id = "default"
+            node_id = parts[1]
+            receiver_parts = parts[2:]
+        else:
+            webspace_id = parts[0]
+            receiver_parts = parts[1:]
         if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
             node_id = receiver_parts[1]
             receiver_parts = receiver_parts[2:]
@@ -554,7 +592,10 @@ class HubPeer:
             except Exception:
                 _log.debug("scheduled peer close failed device=%s reason=%s", self.device_id, reason, exc_info=True)
             finally:
-                current = asyncio.current_task()
+                try:
+                    current = asyncio.current_task()
+                except RuntimeError:
+                    current = None
                 if self._scheduled_close_task is current:
                     self._scheduled_close_task = None
 
@@ -611,6 +652,9 @@ class HubPeer:
 
                     asyncio.ensure_future(_send_initial())
                     _request_webio_stream_snapshots(added, transport="webrtc_data:events")
+                return
+            if msg.get("type") == "unsubscribe":
+                _unregister_event_channel_subscription_topics(self, msg.get("topics"))
                 return
             ch = msg.get("ch")
             t = msg.get("t")

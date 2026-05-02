@@ -134,6 +134,12 @@ def _fake_log() -> SimpleNamespace:
     )
 
 
+def test_gateway_coerces_legacy_default_webspace_to_runtime_default() -> None:
+    assert gateway_module._coerce_gateway_webspace_id("") == "desktop"
+    assert gateway_module._coerce_gateway_webspace_id("default") == "desktop"
+    assert gateway_module._coerce_gateway_webspace_id("lab") == "lab"
+
+
 def test_diagnostic_room_skips_duplicate_backend_persisted_update() -> None:
     reset_backend_room_update_markers()
     ystore = _FakeWriteYStore()
@@ -177,7 +183,28 @@ def test_request_webio_stream_snapshots_extracts_node_qualified_receiver() -> No
 
     assert len(published) == 1
     event = published[0]
-    assert getattr(event, "payload", {}).get("webspace_id") == "default"
+    assert getattr(event, "payload", {}).get("webspace_id") == "desktop"
+    assert getattr(event, "payload", {}).get("receiver") == "telemetry.feed"
+    assert getattr(event, "payload", {}).get("node_id") == "member-01"
+
+
+def test_request_webio_stream_snapshots_extracts_global_node_receiver() -> None:
+    published: list[object] = []
+
+    class _Bus:
+        def publish(self, event: object) -> None:
+            published.append(event)
+
+    gateway_module.get_agent_ctx = lambda: SimpleNamespace(bus=_Bus())
+
+    gateway_module._request_webio_stream_snapshots(
+        {"webio.stream.nodes.member-01.telemetry.feed"},
+        transport="ws",
+    )
+
+    assert len(published) == 1
+    event = published[0]
+    assert getattr(event, "payload", {}).get("webspace_id") == "desktop"
     assert getattr(event, "payload", {}).get("receiver") == "telemetry.feed"
     assert getattr(event, "payload", {}).get("node_id") == "member-01"
 

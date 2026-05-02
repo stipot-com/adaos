@@ -4,6 +4,7 @@ import asyncio
 import sys
 import time
 import types
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,136 @@ from adaos.services.workspaces import (
     set_workspace_topbar_overlay,
     set_workspace_page_schema_overlay,
 )
+
+
+def test_build_local_desktop_catalog_snapshot_uses_runtime_skill_decls(monkeypatch) -> None:
+    captured_modes: list[str] = []
+
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: SimpleNamespace())
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "node-1")
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "node_display_from_config",
+        lambda _conf: {
+            "node_label": "Node 1",
+            "node_compact_label": "N1",
+            "node_index": 1,
+            "node_color": "#F28E2B",
+        },
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "load_config",
+        lambda: SimpleNamespace(role="member", node_id="node-1", node_settings=SimpleNamespace(node_names=[])),
+    )
+
+    def _fake_collect(self, mode: str = "mixed") -> list[dict[str, object]]:  # noqa: ARG001
+        captured_modes.append(mode)
+        return [
+            {
+                "skill": "member_skill",
+                "space": "default",
+                "apps": [{"id": "member_app", "title": "Member App"}],
+                "widgets": [{"id": "member_widget", "title": "Member Widget"}],
+            }
+        ]
+
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_collect_skill_decls", _fake_collect)
+
+    snapshot = webspace_runtime_module.build_local_desktop_catalog_snapshot(mode="workspace")
+
+    assert captured_modes == ["workspace"]
+    assert snapshot["apps"][0]["id"] == "member_app"
+    assert snapshot["apps"][0]["node_id"] == "node-1"
+    assert snapshot["apps"][0]["node_label"] == "Node 1"
+    assert snapshot["widgets"][0]["id"] == "member_widget"
+
+
+def test_member_snapshot_changed_rebuilds_shared_workspaces_with_rate_limit(monkeypatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        webspace_runtime_module.workspace_index,
+        "list_workspaces",
+        lambda: [
+            SimpleNamespace(workspace_id="desktop", is_dev=False),
+            SimpleNamespace(workspace_id="dev-infrascope", is_dev=True),
+        ],
+    )
+    monkeypatch.setattr(webspace_runtime_module, "_member_snapshot_rebuild_min_interval_s", lambda: 60.0)
+    webspace_runtime_module._MEMBER_SNAPSHOT_REBUILD_AT.clear()
+
+    async def _fake_rebuild(webspace_id: str, *, action: str, source_of_truth: str, **_kwargs):
+        calls.append((webspace_id, action, source_of_truth))
+        return {"accepted": True}
+
+    monkeypatch.setattr(webspace_runtime_module, "rebuild_webspace_from_sources", _fake_rebuild)
+
+    asyncio.run(webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"}))
+    asyncio.run(webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"}))
+
+    assert calls == [("desktop", "subnet_member_snapshot_sync", "member_runtime_snapshot")]
+
+
+def test_remote_member_catalog_entries_are_node_scoped_and_auto_installed(monkeypatch) -> None:
+    previous_directory_module = sys.modules.get("adaos.services.registry.subnet_directory")
+    directory_module = types.ModuleType("adaos.services.registry.subnet_directory")
+    directory_module.get_directory = lambda: SimpleNamespace(
+        list_known_nodes=lambda: [
+            {
+                "node_id": "member-1",
+                "roles": ["member"],
+                "node_label": "Node 1",
+                "node_compact_label": "N1",
+                "runtime_projection": {
+                    "snapshot": {
+                        "desktop_catalog": {
+                            "apps": [{"id": "infrastate_app", "title": "Infra State"}],
+                            "widgets": [{"id": "infrastate_widget", "title": "Infra State"}],
+                        }
+                    }
+                },
+            }
+        ]
+    )
+    sys.modules["adaos.services.registry.subnet_directory"] = directory_module
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "load_config",
+        lambda: SimpleNamespace(role="hub", node_id="hub-1", node_settings=SimpleNamespace(node_names=[])),
+    )
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "hub-1")
+
+    try:
+        runtime = webspace_runtime_module.WebspaceScenarioRuntime(SimpleNamespace())
+        decls = runtime._collect_remote_skill_decls()
+    finally:
+        if previous_directory_module is None:
+            sys.modules.pop("adaos.services.registry.subnet_directory", None)
+        else:
+            sys.modules["adaos.services.registry.subnet_directory"] = previous_directory_module
+        importlib.invalidate_caches()
+
+    assert len(decls) == 1
+    decl = decls[0]
+    assert decl["apps"][0]["id"] == "node:member-1:infrastate_app"
+    assert decl["apps"][0]["node_local_id"] == "infrastate_app"
+    assert decl["apps"][0]["node_label"] == "Node 1"
+    assert decl["widgets"][0]["id"] == "node:member-1:infrastate_widget"
+    assert decl["contributions"] == [
+        {
+            "extensionPoint": "desktop.apps",
+            "type": "app",
+            "id": "node:member-1:infrastate_app",
+            "autoInstall": True,
+        },
+        {
+            "extensionPoint": "desktop.widgets",
+            "type": "widget",
+            "id": "node:member-1:infrastate_widget",
+            "autoInstall": True,
+        },
+    ]
 
 
 class _FakeTxn:

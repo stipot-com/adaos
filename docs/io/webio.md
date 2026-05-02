@@ -140,7 +140,7 @@ from adaos.sdk.io import stream_publish
 stream_publish(
     "infrastate.operations.active",
     operations_rows,
-    _meta={"webspace_id": "default"},
+    _meta={"webspace_id": "desktop"},
 )
 ```
 
@@ -169,13 +169,24 @@ webspace, the browser now also performs an explicit provider resync even if
 the transport still reports `connected`. This keeps the browser aligned with
 the backend-owned effective branches after rebuild instead of trusting an
 already-open provider session to notice the semantic reset on its own.
+The browser link indicator treats an open Yjs transport as connected while the
+first sync event or semantic recovery catches up, so a slow initial snapshot
+does not leave the whole desktop stuck in "recovering" when the websocket path
+is already alive.
 
 Targeting rules:
 
 * `_meta.webspace_id` targets one webspace
 * `_meta.webspace_ids` fans out to several webspaces
 * `_meta.route_id` resolves through `data.routing.routes[route_id]`
-* if no target metadata is present, the router falls back to `default`
+* if no target metadata is present, the router falls back to `desktop`
+
+`desktop` is the canonical default webspace. Legacy clients and stored browser
+preferences may still ask for `default`; the browser runtime, Yjs gateway, and
+node API normalize that value to `desktop` before selecting Yjs rooms, catalog
+state, desktop ordering, or stream snapshot topics. This keeps stale browser
+sessions from opening a second empty `default` room while the shared desktop
+state lives in `desktop`.
 
 ## Snapshot-on-Subscribe
 
@@ -202,6 +213,13 @@ Practical guidance:
   disk and publish that buffer on subscribe
 * do not rely on previous Yjs projection contents as an accidental history
   mechanism
+* expensive snapshot producers should coalesce concurrent subscribe bursts per
+  webspace/receiver family; one browser opening several widgets must not
+  trigger the same heavy snapshot rebuild many times in parallel
+* when the browser releases a stream receiver, the server emits
+  `webio.stream.subscription.changed` with `action = "unsubscribed"`; skills
+  should drop active receiver bookkeeping and cached stream fingerprints for
+  that receiver
 
 ## Member Skills and Delivery
 
@@ -234,6 +252,19 @@ Important implications:
   their local snapshot; the hub aggregates that snapshot into the shared
   desktop/runtime contract instead of inventing member-owned apps/widgets on
   its own
+* the hub desktop runtime depends on the prepared slot package carrying the
+  same projection helpers as the slot repo (`runtime_refresh`,
+  `node_display`, `node_runtime_state`, and `webspace_runtime`); these files
+  are treated as bootstrap-critical so a core update validates them before the
+  active slot starts projecting subnet state
+* prepared slots also run an import preflight against the installed venv
+  package without a `PYTHONPATH` overlay; this catches the class of failures
+  where `repo/src` contains a new helper but direct CLI/runtime imports still
+  resolve an older package from `site-packages`
+* member catalog entries are merged into shared desktop catalogs under a
+  node-scoped id (`node:<node_id>:<local_id>`). Skill and scenario ids only
+  need to be unique inside one node; the shared desktop must not dedupe
+  different nodes just because their local ids match.
 * semantic reload/reset events are now mirrored to members so they can refresh
   their own subnet snapshot contribution with local throttling, instead of
   waiting for the hub to pull every detail synchronously

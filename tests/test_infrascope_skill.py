@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -414,6 +416,59 @@ def test_infrascope_stream_snapshot_request_publishes_requested_receiver(monkeyp
             [{"id": "member-1"}],
             {"webspace_id": "ws-1"},
         )
+    ]
+
+
+def test_infrascope_stream_snapshot_requests_coalesce_initial_snapshot(monkeypatch):
+    mod = _load_infrascope_module()
+
+    published: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"total": 0}
+
+    monkeypatch.setattr(
+        mod,
+        "stream_publish",
+        lambda receiver, data=None, **kwargs: published.append(receiver) or {"ok": True},
+    )
+    monkeypatch.setattr(mod, "_last_good_snapshots", {})
+
+    def _fake_snapshot_or_fallback(webspace_id=None, task_goal=None):
+        calls["total"] += 1
+        started.set()
+        release.wait(timeout=2.0)
+        snapshot = {
+            "inventory": {"members": [{"id": "member-1"}]},
+            "operations": {"items": [{"id": "op-1"}]},
+            "inspectors": {},
+        }
+        mod._last_good_snapshots[mod._snapshot_cache_key(webspace_id=webspace_id)] = snapshot
+        return snapshot
+
+    monkeypatch.setattr(mod, "_snapshot_or_fallback", _fake_snapshot_or_fallback)
+
+    first = threading.Thread(
+        target=mod.on_webio_stream_snapshot_requested,
+        args=({"webspace_id": "ws-1", "receiver": "infrascope.inventory.members"},),
+    )
+    second = threading.Thread(
+        target=mod.on_webio_stream_snapshot_requested,
+        args=({"webspace_id": "ws-1", "receiver": "infrascope.operations.active"},),
+    )
+
+    first.start()
+    assert started.wait(timeout=1.0)
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+
+    assert calls["total"] == 1
+    assert sorted(published) == [
+        "infrascope.inventory.members",
+        "infrascope.operations.active",
     ]
 
 

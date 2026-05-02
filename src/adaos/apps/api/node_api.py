@@ -79,6 +79,7 @@ from adaos.services.system_model.service import (
 )
 from adaos.services.yjs.doc import async_read_ydoc
 from adaos.services.yjs.store import get_ystore_for_webspace
+from adaos.services.yjs.webspace import coerce_webspace_id, default_webspace_id
 
 router = APIRouter()
 _log = logging.getLogger("adaos.api.node_api")
@@ -90,6 +91,19 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 
 def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+def _coerce_node_webspace_id(value: Any = None) -> str:
+    return coerce_webspace_id(value, fallback=default_webspace_id())
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def _local_node_id() -> str:
@@ -220,12 +234,11 @@ def _compact_runtime_reliability_payload(payload: dict[str, Any], *, webspace_id
     ws = _coerce_dict(route_tunnel.get("ws"))
     yws = _coerce_dict(route_tunnel.get("yws"))
     supervisor_runtime = _coerce_dict(runtime.get("supervisor_runtime"))
-    resolved_webspace_id = str(
+    resolved_webspace_id = _coerce_node_webspace_id(
         webspace_id
         or runtime.get("webspace_id")
         or payload.get("webspace_id")
-        or "default"
-    ).strip() or "default"
+    )
     return {
         "ok": True,
         "updatedAt": int(time.time() * 1000),
@@ -372,7 +385,7 @@ def _publish_yjs_control_event(
 ) -> None:
     payload = {
         "action": str(action or "").strip(),
-        "webspace_id": str(webspace_id or "").strip() or "default",
+        "webspace_id": _coerce_node_webspace_id(webspace_id),
         "scenario_id": str(scenario_id or result.get("scenario_id") or "").strip() or None,
         "ok": bool(result.get("ok")),
         "accepted": bool(result.get("accepted")),
@@ -464,7 +477,7 @@ def _attach_runtime_and_rebuild(
     webspace_id: str,
     include_rebuild: bool = False,
 ) -> dict[str, Any]:
-    target_webspace_id = str(result.get("webspace_id") or webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(result.get("webspace_id") or webspace_id)
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=role,
         webspace_id=target_webspace_id,
@@ -677,7 +690,7 @@ async def _describe_yjs_materialization(
     *,
     rebuild_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     cached = _cached_materialization_from_rebuild(rebuild_state)
     if cached:
         return cached
@@ -809,7 +822,7 @@ async def _describe_yjs_materialization(
 
 
 async def _read_live_catalog_items(webspace_id: str, kind: str) -> list[dict[str, Any]]:
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     bucket = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
     try:
         async with async_read_ydoc(target_webspace_id) as ydoc:
@@ -872,6 +885,12 @@ async def _materialize_catalog_items(webspace_id: str, kind: str) -> list[dict[s
                 "source": source or None,
                 "origin": str(raw.get("origin") or "").strip() or None,
                 "dev": bool(raw.get("dev")),
+                "node_id": str(raw.get("node_id") or "").strip() or None,
+                "node_label": str(raw.get("node_label") or "").strip() or None,
+                "node_compact_label": str(raw.get("node_compact_label") or "").strip() or None,
+                "node_color": str(raw.get("node_color") or "").strip() or None,
+                "node_index": _coerce_optional_int(raw.get("node_index")),
+                "node_local_id": str(raw.get("node_local_id") or raw.get("remote_id") or "").strip() or None,
             }
         )
     return materialized
@@ -1263,11 +1282,12 @@ async def update_node_names(payload: NodeNamesUpdateRequest) -> dict[str, Any]:
 @router.get("/yjs/runtime", dependencies=[Depends(require_token)])
 async def node_yjs_runtime(webspace_id: str | None = None) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     return {
         "ok": True,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
-            webspace_id=str(webspace_id or "").strip() or None,
+            webspace_id=target_webspace_id,
         ),
     }
 
@@ -1275,7 +1295,7 @@ async def node_yjs_runtime(webspace_id: str | None = None) -> dict[str, Any]:
 @router.get("/infrastate/snapshot", dependencies=[Depends(require_token)])
 async def node_infrastate_snapshot(webspace_id: str | None = None) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1407,7 +1427,7 @@ async def node_logs(
 @router.post("/infrastate/action", dependencies=[Depends(require_token)])
 async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(payload.webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(payload.webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1508,7 +1528,7 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
 @router.post("/infra_access/action", dependencies=[Depends(require_token)])
 async def node_infra_access_action(payload: InfraAccessActionRequest) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(payload.webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(payload.webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1670,11 +1690,12 @@ async def node_yjs_create_webspace(payload: WebspaceCreateRequest) -> dict[str, 
 @router.get("/yjs/webspaces/{webspace_id}/runtime", dependencies=[Depends(require_token)])
 async def node_yjs_webspace_runtime(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     return {
         "ok": True,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
-            webspace_id=str(webspace_id or "").strip() or "default",
+            webspace_id=target_webspace_id,
         ),
     }
 
@@ -1682,7 +1703,7 @@ async def node_yjs_webspace_runtime(webspace_id: str) -> dict[str, Any]:
 @router.get("/yjs/webspaces/{webspace_id}", dependencies=[Depends(require_token)])
 async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     state = await describe_webspace_operational_state(target_webspace_id)
     validation = await describe_webspace_validation_state(target_webspace_id)
     overlay = describe_webspace_overlay_state(target_webspace_id)
@@ -1709,7 +1730,7 @@ async def node_yjs_webspace_state(webspace_id: str) -> dict[str, Any]:
 
 @router.get("/yjs/webspaces/{webspace_id}/validation", dependencies=[Depends(require_token)])
 async def node_yjs_webspace_validation_state(webspace_id: str) -> dict[str, Any]:
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     return {
         "ok": True,
         "accepted": True,
@@ -1724,7 +1745,7 @@ async def node_yjs_webspace_rebuild_state(
     include_runtime: bool = False,
 ) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
     result = {
         "ok": True,
@@ -1746,7 +1767,7 @@ async def node_yjs_webspace_materialization_state(
     include_runtime: bool = False,
 ) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
     materialization = await _describe_yjs_materialization(target_webspace_id, rebuild_state=rebuild)
     result = {
@@ -1767,7 +1788,7 @@ async def node_yjs_webspace_materialization_state(
 @router.patch("/yjs/webspaces/{webspace_id}", dependencies=[Depends(require_token)])
 async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequest) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1814,27 +1835,28 @@ async def node_yjs_update_webspace(webspace_id: str, payload: WebspaceUpdateRequ
 @router.post("/yjs/webspaces/{webspace_id}/backup", dependencies=[Depends(require_token)])
 async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
-    store = get_ystore_for_webspace(str(webspace_id or "default") or "default")
+    store = get_ystore_for_webspace(target_webspace_id)
     await store.backup_to_disk()
     result = {
         "ok": True,
         "accepted": True,
-        "webspace_id": str(webspace_id or "default") or "default",
+        "webspace_id": target_webspace_id,
         "runtime": yjs_sync_runtime_snapshot(
             role=conf.role,
-            webspace_id=str(webspace_id or "default") or "default",
+            webspace_id=target_webspace_id,
         ),
     }
     _publish_yjs_control_event(
         action="backup",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
     )
     return result
@@ -1843,7 +1865,7 @@ async def node_yjs_backup(webspace_id: str) -> dict[str, Any]:
 @router.post("/yjs/webspaces/{webspace_id}/reload", dependencies=[Depends(require_token)])
 async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest, request: Request) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1895,7 +1917,7 @@ async def node_yjs_reload(webspace_id: str, payload: WebspaceYjsActionRequest, r
 @router.post("/yjs/webspaces/{webspace_id}/toggle-install", dependencies=[Depends(require_token)])
 async def node_yjs_toggle_install(webspace_id: str, payload: WebspaceToggleInstallRequest) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1925,7 +1947,7 @@ async def node_yjs_toggle_install(webspace_id: str, payload: WebspaceToggleInsta
 @router.get("/yjs/webspaces/{webspace_id}/desktop", dependencies=[Depends(require_token)])
 async def node_yjs_desktop_state(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     desktop = await WebDesktopService().get_snapshot_async(target_webspace_id)
     return {
         "ok": True,
@@ -1942,7 +1964,7 @@ async def node_yjs_desktop_state(webspace_id: str) -> dict[str, Any]:
 @router.get("/yjs/webspaces/{webspace_id}/catalog/{kind}", dependencies=[Depends(require_token)])
 async def node_yjs_catalog_state(webspace_id: str, kind: str) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     normalized_kind = "widgets" if str(kind or "").strip().lower() == "widgets" else "apps"
     rebuild = describe_webspace_rebuild_state(target_webspace_id)
     materialization = await _describe_yjs_materialization(target_webspace_id, rebuild_state=rebuild)
@@ -1968,7 +1990,7 @@ async def node_yjs_set_pinned_widgets(
     payload: WebspacePinnedWidgetsRequest,
 ) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -1997,7 +2019,7 @@ async def node_yjs_update_desktop(
     payload: WebspaceDesktopUpdateRequest,
 ) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -2048,11 +2070,12 @@ async def node_yjs_update_desktop(
 @router.post("/yjs/webspaces/{webspace_id}/scenario", dependencies=[Depends(require_token)])
 async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
     scenario_id = str(payload.scenario_id or "").strip()
@@ -2060,11 +2083,11 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": str(webspace_id or "default") or "default",
+            "webspace_id": target_webspace_id,
             "error": "scenario_id_required",
         }
     result = await switch_webspace_scenario(
-        str(webspace_id or "default") or "default",
+        target_webspace_id,
         scenario_id,
         set_home=payload.set_home,
         wait_for_rebuild=bool(payload.wait_for_rebuild),
@@ -2072,12 +2095,12 @@ async def node_yjs_switch_scenario(webspace_id: str, payload: WebspaceYjsActionR
     result = _attach_runtime_and_rebuild(
         result,
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="scenario",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=scenario_id,
     )
@@ -2090,26 +2113,27 @@ async def node_yjs_go_home(
     payload: WebspaceYjsActionRequest | None = None,
 ) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
     result = await go_home_webspace(
-        str(webspace_id or "default") or "default",
+        target_webspace_id,
         wait_for_rebuild=bool(payload.wait_for_rebuild) if payload and payload.wait_for_rebuild is not None else False,
     )
     result = _attach_runtime_and_rebuild(
         result,
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="go_home",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=str(result.get("scenario_id") or result.get("home_scenario") or "").strip() or None,
     )
@@ -2137,13 +2161,14 @@ async def node_yjs_ensure_dev(payload: WebspaceYjsActionRequest) -> dict[str, An
         requested_id=str(payload.requested_id or "").strip() or None,
         title=str(payload.title or "").strip() or None,
     )
+    target_webspace_id = _coerce_node_webspace_id(result.get("webspace_id"))
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
-        webspace_id=str(result.get("webspace_id") or "default") or "default",
+        webspace_id=target_webspace_id,
     )
     _publish_yjs_control_event(
         action="ensure_dev",
-        webspace_id=str(result.get("webspace_id") or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=scenario_id,
     )
@@ -2153,11 +2178,12 @@ async def node_yjs_ensure_dev(payload: WebspaceYjsActionRequest) -> dict[str, An
 @router.post("/yjs/webspaces/{webspace_id}/set-home", dependencies=[Depends(require_token)])
 async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
     scenario_id = str(payload.scenario_id or "").strip()
@@ -2165,7 +2191,7 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": str(webspace_id or "default") or "default",
+            "webspace_id": target_webspace_id,
             "error": "scenario_id_required",
         }
     set_home_kwargs: dict[str, Any] = {}
@@ -2174,7 +2200,7 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
     elif "scenario_ref" in getattr(payload, "model_fields_set", set()):
         set_home_kwargs["home_scenario_ref"] = payload.scenario_ref
     info = await WebspaceService().set_home_scenario(
-        str(webspace_id or "default") or "default",
+        target_webspace_id,
         scenario_id,
         **set_home_kwargs,
     )
@@ -2183,7 +2209,7 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
         result = {
             "ok": False,
             "accepted": False,
-            "webspace_id": str(webspace_id or "default") or "default",
+            "webspace_id": target_webspace_id,
             "scenario_id": scenario_id,
             "error": "webspace_not_found",
         }
@@ -2198,11 +2224,11 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
         }
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
     )
     _publish_yjs_control_event(
         action="set_home",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=scenario_id,
     )
@@ -2212,21 +2238,22 @@ async def node_yjs_set_home(webspace_id: str, payload: WebspaceYjsActionRequest)
 @router.post("/yjs/webspaces/{webspace_id}/set-home-current", dependencies=[Depends(require_token)])
 async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
-    result = await set_current_webspace_home(str(webspace_id or "default") or "default")
+    result = await set_current_webspace_home(target_webspace_id)
     result["runtime"] = yjs_sync_runtime_snapshot(
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
     )
     _publish_yjs_control_event(
         action="set_home_current",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
         scenario_id=str(result.get("scenario_id") or result.get("home_scenario") or "").strip() or None,
     )
@@ -2236,7 +2263,7 @@ async def node_yjs_set_home_current(webspace_id: str) -> dict[str, Any]:
 @router.post("/yjs/webspaces/{webspace_id}/reset", dependencies=[Depends(require_token)])
 async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest, request: Request) -> dict[str, Any]:
     conf = load_config()
-    target_webspace_id = str(webspace_id or "default").strip() or "default"
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
@@ -2285,23 +2312,24 @@ async def node_yjs_reset(webspace_id: str, payload: WebspaceYjsActionRequest, re
 @router.post("/yjs/webspaces/{webspace_id}/restore", dependencies=[Depends(require_token)])
 async def node_yjs_restore(webspace_id: str) -> dict[str, Any]:
     conf = load_config()
+    target_webspace_id = _coerce_node_webspace_id(webspace_id)
     if str(getattr(conf, "role", "") or "").strip().lower() != "hub":
         return {
             "ok": False,
             "accepted": False,
-            "webspace_id": webspace_id,
+            "webspace_id": target_webspace_id,
             "error": "hub_role_required",
         }
-    result = await restore_webspace_from_snapshot(str(webspace_id or "default") or "default")
+    result = await restore_webspace_from_snapshot(target_webspace_id)
     result = _attach_runtime_and_rebuild(
         result,
         role=conf.role,
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         include_rebuild=True,
     )
     _publish_yjs_control_event(
         action="restore",
-        webspace_id=str(webspace_id or "default") or "default",
+        webspace_id=target_webspace_id,
         result=result,
     )
     return result

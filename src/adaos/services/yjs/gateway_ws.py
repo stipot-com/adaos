@@ -36,6 +36,7 @@ from adaos.services.yjs.observers import attach_room_observers, forget_room_obse
 from adaos.services.yjs.store import evict_ystore_for_webspace, get_ystore_for_webspace, ystore_write_metadata_sync
 from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.yjs.update_origin import consume_backend_room_update
+from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.scheduler import get_scheduler
 from adaos.domain import Event as DomainEvent
 from adaos.services.agent_context import get_ctx as get_agent_ctx
@@ -89,6 +90,15 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
     except Exception:
         value = float(default)
     return max(float(minimum), value)
+
+
+def _coerce_gateway_webspace_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    default_id = default_webspace_id()
+    # Older browser builds persisted "default"; route them to the runtime default.
+    if not raw or raw == "default":
+        return default_id
+    return raw
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -1107,9 +1117,16 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
         parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
         if len(parts) < 2:
             continue
-        webspace_id = parts[0]
         node_id = None
-        receiver_parts = parts[1:]
+        if parts[0] == "nodes":
+            if len(parts) < 3:
+                continue
+            webspace_id = _coerce_gateway_webspace_id(None)
+            node_id = parts[1]
+            receiver_parts = parts[2:]
+        else:
+            webspace_id = _coerce_gateway_webspace_id(parts[0])
+            receiver_parts = parts[1:]
         if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
             node_id = receiver_parts[1]
             receiver_parts = receiver_parts[2:]
@@ -1148,9 +1165,16 @@ def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, 
         parts = [str(part or "").strip() for part in suffix.split(".") if str(part or "").strip()]
         if len(parts) < 2:
             continue
-        webspace_id = parts[0]
         node_id = None
-        receiver_parts = parts[1:]
+        if parts[0] == "nodes":
+            if len(parts) < 3:
+                continue
+            webspace_id = _coerce_gateway_webspace_id(None)
+            node_id = parts[1]
+            receiver_parts = parts[2:]
+        else:
+            webspace_id = _coerce_gateway_webspace_id(parts[0])
+            receiver_parts = parts[1:]
         if len(receiver_parts) >= 3 and receiver_parts[0] == "nodes":
             node_id = receiver_parts[1]
             receiver_parts = receiver_parts[2:]
@@ -1231,6 +1255,24 @@ def _unregister_ws_event_subscriptions(websocket: WebSocket) -> None:
     topics = set(entry.get("topics") or []) if isinstance(entry, dict) else set()
     if topics:
         _publish_webio_stream_subscription_change(topics, action="unsubscribed", transport="ws")
+
+
+def _unregister_ws_event_subscription_topics(websocket: WebSocket, raw_topics: Any) -> set[str]:
+    topics = _normalize_ws_event_topics(raw_topics)
+    if not topics:
+        return set()
+    with _WS_EVENT_SUBSCRIPTIONS_LOCK:
+        entry = _WS_EVENT_SUBSCRIBERS.get(id(websocket))
+        if not isinstance(entry, dict):
+            return set()
+        tracked = entry.setdefault("topics", set())
+        removed = set(topics) & set(tracked)
+        tracked.difference_update(removed)
+        if not tracked:
+            _WS_EVENT_SUBSCRIBERS.pop(id(websocket), None)
+    if removed:
+        _publish_webio_stream_subscription_change(removed, action="unsubscribed", transport="ws")
+    return removed
 
 
 def _forward_ws_bus_event(ev: DomainEvent) -> None:
@@ -2050,7 +2092,7 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
       - default is "default".
     """
     params: Dict[str, str] = dict(websocket.query_params)
-    webspace_id = (room or params.get("ws")) or "default"
+    webspace_id = _coerce_gateway_webspace_id(room or params.get("ws"))
     dev_id = params.get("dev") or "unknown"
 
     if _ws_trace_enabled():
@@ -2193,8 +2235,8 @@ async def process_events_command(
 
     if kind == "device.register":
         new_device = payload.get("device_id") or "dev-unknown"
-        requested_webspace = payload.get("webspace_id") or payload.get("id") or "default"
-        new_webspace = str(requested_webspace or "default")
+        requested_webspace = payload.get("webspace_id") or payload.get("id")
+        new_webspace = _coerce_gateway_webspace_id(requested_webspace)
 
         captured_device = new_device
         captured_ws = new_webspace
@@ -2529,7 +2571,7 @@ async def events_ws(websocket: WebSocket):
             pass
 
     device_id: str | None = None
-    webspace_id = "default"
+    webspace_id = _coerce_gateway_webspace_id(None)
     ws_loop = asyncio.get_running_loop()
 
     async def _ws_send(msg: dict[str, Any]) -> None:
@@ -2570,6 +2612,10 @@ async def events_ws(websocket: WebSocket):
                 if added:
                     await _send_initial_ws_event_messages(websocket, added)
                     _request_webio_stream_snapshots(added, transport="ws")
+                continue
+
+            if msg.get("type") == "unsubscribe":
+                _unregister_ws_event_subscription_topics(websocket, msg.get("topics"))
                 continue
 
             ch = msg.get("ch")

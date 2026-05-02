@@ -42,6 +42,7 @@ _WS_ID_RE = re.compile(r"[^a-zA-Z0-9-_]+")
 _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 _WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
+_MEMBER_SNAPSHOT_REBUILD_AT: dict[str, float] = {}
 _RESOLVED_WEBSPACE_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _RESOLVED_WEBSPACE_CACHE_LIMIT = 64
 _EFFECTIVE_BRANCH_PATHS = (
@@ -53,6 +54,16 @@ _EFFECTIVE_BRANCH_PATHS = (
     "data.routing",
     "registry.merged",
 )
+
+
+def _member_snapshot_rebuild_min_interval_s() -> float:
+    raw = str(os.getenv("ADAOS_MEMBER_SNAPSHOT_REBUILD_MIN_INTERVAL_S", "") or "").strip()
+    if raw:
+        try:
+            return max(0.0, min(float(raw), 60.0))
+        except Exception:
+            pass
+    return 5.0
 
 
 def _webspace_runtime_async_write_meta(*, root_names: list[str], source: str):
@@ -372,8 +383,8 @@ def _local_catalog_decl_entries(decls: List[Dict[str, Any]]) -> dict[str, Any]:
 
 
 def build_local_desktop_catalog_snapshot(*, mode: str = "workspace") -> dict[str, Any]:
-    svc = WebspaceService()
-    return _local_catalog_decl_entries(svc._collect_skill_decls(mode=mode))
+    runtime = WebspaceScenarioRuntime()
+    return _local_catalog_decl_entries(runtime._collect_skill_decls(mode=mode))
 
 
 def _merge_by_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -386,6 +397,28 @@ def _merge_by_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(item_id)
         merged.append(item)
     return merged
+
+
+def _node_scoped_catalog_id(node_id: str, item_id: str) -> str:
+    node_token = str(node_id or "").strip()
+    item_token = str(item_id or "").strip()
+    if not node_token or not item_token:
+        return item_token
+    if item_token.startswith(f"node:{node_token}:"):
+        return item_token
+    return f"node:{node_token}:{item_token}"
+
+
+def _scope_remote_catalog_entry_id(entry: Dict[str, Any], *, node_id: str) -> Dict[str, Any]:
+    data = dict(entry)
+    remote_node_id = str(node_id or "").strip()
+    local_item_id = str(data.get("id") or "").strip()
+    if not remote_node_id or not local_item_id:
+        return data
+    data.setdefault("node_local_id", local_item_id)
+    data.setdefault("remote_id", local_item_id)
+    data["id"] = _node_scoped_catalog_id(remote_node_id, local_item_id)
+    return data
 
 
 def _merge_registry_lists(base: List[str], extras: List[List[str]]) -> List[str]:
@@ -1954,15 +1987,44 @@ class WebspaceScenarioRuntime:
                 "apps": [],
                 "widgets": [],
                 "registry": {},
+                "contributions": [],
             }
             for item in apps:
                 if not isinstance(item, dict):
                     continue
-                decl["apps"].append(_apply_node_display_to_entry(item, display, node_id=node_id))
+                entry = _scope_remote_catalog_entry_id(
+                    _apply_node_display_to_entry(item, display, node_id=node_id),
+                    node_id=node_id,
+                )
+                decl["apps"].append(entry)
+                app_id = str(entry.get("id") or "").strip()
+                if app_id:
+                    decl["contributions"].append(
+                        {
+                            "extensionPoint": "desktop.apps",
+                            "type": "app",
+                            "id": app_id,
+                            "autoInstall": True,
+                        }
+                    )
             for item in widgets:
                 if not isinstance(item, dict):
                     continue
-                decl["widgets"].append(_apply_node_display_to_entry(item, display, node_id=node_id))
+                entry = _scope_remote_catalog_entry_id(
+                    _apply_node_display_to_entry(item, display, node_id=node_id),
+                    node_id=node_id,
+                )
+                decl["widgets"].append(entry)
+                widget_id = str(entry.get("id") or "").strip()
+                if widget_id:
+                    decl["contributions"].append(
+                        {
+                            "extensionPoint": "desktop.widgets",
+                            "type": "widget",
+                            "id": widget_id,
+                            "autoInstall": True,
+                        }
+                    )
             decls.append(decl)
         return decls
 
@@ -3600,6 +3662,34 @@ async def _on_scenario_removed(evt: Dict[str, Any]) -> None:
         action="scenario_uninstall_sync",
         source_of_truth="scenario_projection",
     )
+
+
+@subscribe("subnet.member.snapshot.changed")
+async def _on_subnet_member_snapshot_changed(evt: Any) -> None:
+    payload = _payload(evt)
+    node_id = str(payload.get("node_id") or "").strip() or "member"
+    now = time.monotonic()
+    interval_s = _member_snapshot_rebuild_min_interval_s()
+    try:
+        rows = [row for row in workspace_index.list_workspaces() if not bool(getattr(row, "is_dev", False))]
+    except Exception:
+        rows = []
+    targets = [
+        str(getattr(row, "workspace_id", "") or "").strip()
+        for row in rows
+        if str(getattr(row, "workspace_id", "") or "").strip()
+    ] or [default_webspace_id()]
+    for webspace_id in targets:
+        key = f"{node_id}\0{webspace_id}"
+        last_at = float(_MEMBER_SNAPSHOT_REBUILD_AT.get(key) or 0.0)
+        if interval_s > 0 and last_at > 0 and now - last_at < interval_s:
+            continue
+        _MEMBER_SNAPSHOT_REBUILD_AT[key] = now
+        await rebuild_webspace_from_sources(
+            webspace_id,
+            action="subnet_member_snapshot_sync",
+            source_of_truth="member_runtime_snapshot",
+        )
 
 
 @subscribe("desktop.webspace.create")

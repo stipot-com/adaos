@@ -11,12 +11,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
 from adaos.services.agent_context import get_ctx
 from adaos.services.hub_root_protocol_store import protocol_streams_snapshot
-from adaos.services.node_display import node_display_from_config
+from adaos.services.node_display import node_display_from_config, node_display_payload
 from adaos.services.registry.subnet_runtime_projection import (
     subnet_runtime_projection_freshness,
 )
@@ -3294,6 +3295,23 @@ def _node_label(node_names: Any, *, fallback: str) -> str:
     return fallback
 
 
+def _connection_local_node_display(*, role: str, node_id: str, node_names: list[str]) -> dict[str, Any]:
+    conf = SimpleNamespace(
+        role=str(role or "").strip().lower(),
+        node_id=str(node_id or "").strip(),
+        node_names=list(node_names or []),
+        primary_node_name="",
+    )
+    try:
+        return node_display_from_config(conf)
+    except Exception:
+        return node_display_payload(
+            role=str(role or "").strip().lower(),
+            node_id=str(node_id or "").strip(),
+            node_names=list(node_names or []),
+        )
+
+
 def _member_snapshot_state(*, connected: bool, last_snapshot_ago_s: Any) -> str:
     if not connected:
         return "down"
@@ -3338,6 +3356,7 @@ def hub_member_connection_state_snapshot(
     role_norm = str(role or "").strip().lower()
     now = time.time()
     local_names = list(node_names or [])
+    local_display = _connection_local_node_display(role=role_norm, node_id=node_id, node_names=local_names)
     if role_norm == "hub":
         try:
             from adaos.services.subnet.link_manager import hub_link_manager_snapshot
@@ -3602,8 +3621,8 @@ def hub_member_connection_state_snapshot(
             "local_node": {
                 "node_id": node_id,
                 "node_names": local_names,
-                **node_display_from_config(conf),
-                "label": str(node_display_from_config(conf).get("node_label") or _node_label(local_names, fallback="Node 0")),
+                **local_display,
+                "label": str(local_display.get("node_label") or _node_label(local_names, fallback="Node 0")),
                 "role": "hub",
             },
             "assessment": {
@@ -3647,8 +3666,8 @@ def hub_member_connection_state_snapshot(
         "local_node": {
             "node_id": node_id,
             "node_names": local_names,
-            **node_display_from_config(conf),
-            "label": str(node_display_from_config(conf).get("node_label") or _node_label(local_names, fallback="Node 1")),
+            **local_display,
+            "label": str(local_display.get("node_label") or _node_label(local_names, fallback="Node 1")),
             "role": "member",
         },
         "assessment": {

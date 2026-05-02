@@ -5,6 +5,7 @@ import os
 from adaos.services.webspace_id import coerce_webspace_id as _coerce_webspace_id
 
 _DEFAULT_WEBSPACE_ID = os.getenv("ADAOS_WEBSPACE_ID") or "desktop"
+_LEGACY_DEFAULT_WEBSPACE_ID = "default"
 # Dedicated development webspace. This id is reserved and cannot be deleted.
 _DEV_WEBSPACE_ID = os.getenv("ADAOS_DEV_WEBSPACE_ID") or "dev"
 
@@ -20,5 +21,10 @@ def dev_webspace_id() -> str:
 
 
 def coerce_webspace_id(value, *, fallback: str | None = None) -> str:
-    return _coerce_webspace_id(value, fallback=fallback or default_webspace_id())
+    default_id = fallback or default_webspace_id()
+    token = _coerce_webspace_id(value, fallback=default_id)
+    # Legacy browser/runtime builds used "default"; route it to the configured shared desktop room.
+    if token == _LEGACY_DEFAULT_WEBSPACE_ID and default_id != _LEGACY_DEFAULT_WEBSPACE_ID:
+        return default_id
+    return token
 

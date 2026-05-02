@@ -272,6 +272,31 @@ def test_migrate_installed_skill_runtimes_reports_missing_script_in_prepared_rep
     assert payload["skills"] == []
 
 
+def test_validate_prepared_slot_imports_checks_installed_package_without_pythonpath(monkeypatch, tmp_path: Path) -> None:
+    import adaos.apps.core_update_apply as mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd, *, capture_output=None, text=None, timeout=None, env=None):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(env or {})
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"ok": True, "modules": ["adaos.services.runtime_refresh"]}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("PYTHONPATH", "/tmp/source-overlay")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+    payload = mod._validate_prepared_slot_imports(tmp_path / "venv" / "bin" / "python")
+
+    assert payload["ok"] is True
+    assert captured["cmd"][1] == "-c"
+    assert "PYTHONPATH" not in captured["env"]
+
+
 def test_strip_repo_vcs_metadata_removes_git_dir(tmp_path: Path) -> None:
     import adaos.apps.core_update_apply as mod
 
@@ -410,6 +435,7 @@ def test_prepare_slot_preserves_explicit_empty_repo_url(monkeypatch, tmp_path: P
     monkeypatch.setattr(mod, "_strip_repo_vcs_metadata", lambda _repo_dir: None)
     monkeypatch.setattr(mod, "_replace_slot_dir", lambda prepared_slot, slot_dir: shutil.move(str(prepared_slot), str(slot_dir)))
     monkeypatch.setattr(mod, "_repair_moved_venv", lambda _venv_dir, original_venv_dir=None: {"ok": True, "repaired_files": []})
+    monkeypatch.setattr(mod, "_validate_prepared_slot_imports", lambda _python_bin: {"ok": True, "modules": []})
     monkeypatch.setattr(mod, "_migrate_installed_skill_runtimes", lambda *args, **kwargs: {"ok": True, "skills": []})
     monkeypatch.setattr(mod, "_git_text", lambda *_args: "value")
     monkeypatch.setattr(mod, "_detect_bootstrap_promotion_requirement", lambda *_args, **_kwargs: {"required": False, "changed_paths": []})
@@ -461,4 +487,17 @@ def test_bootstrap_critical_paths_are_shared_with_core_update_service() -> None:
 
     assert apply_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
     assert core_mod.BOOTSTRAP_CRITICAL_PATHS is BOOTSTRAP_CRITICAL_PATHS
+
+
+def test_bootstrap_critical_paths_include_runtime_projection_helpers() -> None:
+    from adaos.services.bootstrap_update import BOOTSTRAP_CRITICAL_PATHS
+
+    critical = set(BOOTSTRAP_CRITICAL_PATHS)
+
+    assert "src/adaos/services/runtime_refresh.py" in critical
+    assert "src/adaos/services/node_display.py" in critical
+    assert "src/adaos/services/node_runtime_state.py" in critical
+    assert "src/adaos/services/scenario/webspace_runtime.py" in critical
+    assert "src/adaos/services/subnet/link_client.py" in critical
+    assert "src/adaos/services/subnet/link_manager.py" in critical
 

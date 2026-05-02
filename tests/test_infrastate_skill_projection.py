@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -842,7 +843,7 @@ def test_infrastate_project_async_excludes_stream_sections_from_yjs(monkeypatch)
     monkeypatch.setattr(
         mod,
         "_publish_stream_payload",
-        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+        lambda *, receiver, data, webspace_id=None, force=False: published.append((receiver, data, webspace_id)),
     )
 
     snapshot = {
@@ -890,7 +891,7 @@ def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeyp
     monkeypatch.setattr(
         mod,
         "_publish_stream_payload",
-        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+        lambda *, receiver, data, webspace_id=None, force=False: published.append((receiver, data, webspace_id)),
     )
 
     mod.on_webio_stream_snapshot_requested(
@@ -905,7 +906,39 @@ def test_infrastate_stream_snapshot_request_publishes_requested_receiver(monkeyp
     assert published == [
         ("infrastate.logs.recent", [{"id": "log-1"}], "default"),
     ]
-    assert cache_flags == [False]
+    assert cache_flags == [True]
+
+
+def test_infrastate_cached_snapshot_coalesces_concurrent_stream_requests(monkeypatch):
+    mod = _load_infrastate_module()
+    calls: list[str | None] = []
+    start = threading.Event()
+
+    monkeypatch.setattr(mod, "_SNAPSHOT_CACHE_TTL_S", 30.0)
+    mod._snapshot_cache.clear()
+
+    def _slow_snapshot(*, webspace_id=None):
+        calls.append(webspace_id)
+        time.sleep(0.05)
+        return {"summary": {"value": "ready"}, "webspace_id": webspace_id}
+
+    monkeypatch.setattr(mod, "_snapshot_or_fallback", _slow_snapshot)
+
+    results: list[dict[str, object]] = []
+
+    def _worker() -> None:
+        start.wait(timeout=5)
+        results.append(mod._snapshot_or_fallback_cached(webspace_id="default", allow_cache=True))
+
+    threads = [threading.Thread(target=_worker) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    start.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(results) == 5
+    assert calls == ["default"]
 
 
 def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
@@ -922,7 +955,7 @@ def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
     monkeypatch.setattr(
         mod,
         "_publish_stream_payload",
-        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+        lambda *, receiver, data, webspace_id=None, force=False: published.append((receiver, data, webspace_id)),
     )
 
     mod.on_webio_stream_snapshot_requested(
@@ -935,7 +968,11 @@ def test_infrastate_stream_snapshot_request_supports_yjs_load_mark(monkeypatch):
     )
 
     assert published == [
-        ("infrastate.yjs.load_mark", [{"root": "ui", "peak_bps": 12.0}], "default"),
+        (
+            "infrastate.yjs.load_mark",
+            [{"root": "ui", "peak_bps": 12.0, "kind": "root", "id": "ui", "display": "ui"}],
+            "default",
+        ),
     ]
 
 
@@ -963,7 +1000,7 @@ def test_infrastate_stream_snapshot_request_supports_yjs_load_mark_from_reliabil
     monkeypatch.setattr(
         mod,
         "_publish_stream_payload",
-        lambda *, receiver, data, webspace_id=None: published.append((receiver, data, webspace_id)),
+        lambda *, receiver, data, webspace_id=None, force=False: published.append((receiver, data, webspace_id)),
     )
 
     mod.on_webio_stream_snapshot_requested(
@@ -976,7 +1013,11 @@ def test_infrastate_stream_snapshot_request_supports_yjs_load_mark_from_reliabil
     )
 
     assert published == [
-        ("infrastate.yjs.load_mark", [{"root": "registry", "avg_bps": 7.0}], "default"),
+        (
+            "infrastate.yjs.load_mark",
+            [{"root": "registry", "avg_bps": 7.0, "kind": "root", "id": "registry", "display": "registry"}],
+            "default",
+        ),
     ]
 
 
@@ -998,13 +1039,15 @@ def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):
         lambda *, webspace_id=None, reason="runtime.event": refreshed.append((webspace_id, reason)),
     )
 
-    mod.on_runtime_event(
-        SimpleNamespace(
-            type="core.update.status",
-            payload={
-                "state": "succeeded",
-                "webspace_id": "default",
-            },
+    asyncio.run(
+        mod.on_runtime_event(
+            SimpleNamespace(
+                type="core.update.status",
+                payload={
+                    "state": "succeeded",
+                    "webspace_id": "default",
+                },
+            )
         )
     )
 

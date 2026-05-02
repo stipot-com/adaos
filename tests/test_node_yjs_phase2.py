@@ -46,6 +46,28 @@ class _FakeAsyncDoc:
         return False
 
 
+def test_node_yjs_webspace_endpoint_coerces_legacy_default_to_desktop(monkeypatch) -> None:
+    captured: list[str] = []
+
+    async def _fake_desktop_snapshot(webspace_id: str):
+        captured.append(webspace_id)
+        return SimpleNamespace(to_dict=lambda: {"installed": {"apps": [], "widgets": []}})
+
+    monkeypatch.setattr(node_api_module, "load_config", lambda: SimpleNamespace(role="hub"))
+    monkeypatch.setattr(
+        node_api_module.WebDesktopService,
+        "get_snapshot_async",
+        lambda self, webspace_id: _fake_desktop_snapshot(webspace_id),
+    )
+    monkeypatch.setattr(node_api_module, "yjs_sync_runtime_snapshot", lambda **kwargs: {"webspace_id": kwargs.get("webspace_id")})
+
+    result = asyncio.run(node_api_module.node_yjs_desktop_state("default"))
+
+    assert captured == ["desktop"]
+    assert result["webspace_id"] == "desktop"
+    assert result["runtime"]["webspace_id"] == "desktop"
+
+
 def test_node_yjs_switch_scenario_endpoint_forwards_set_home(monkeypatch) -> None:
     captured: list[tuple[str, str, bool]] = []
     published: list[tuple[str, str, str | None, bool, str | None]] = []
@@ -356,11 +378,11 @@ def test_node_yjs_toggle_install_endpoint_uses_desktop_service(monkeypatch) -> N
             captured.append((item_type, item_id, str(webspace_id or "")))
 
         async def get_installed_async(self, webspace_id: str | None = None) -> _Installed:
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return _Installed()
 
         async def get_snapshot_async(self, webspace_id: str | None = None):
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return SimpleNamespace(
                 to_dict=lambda: {
                     "installed": {"apps": ["scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
@@ -379,10 +401,10 @@ def test_node_yjs_toggle_install_endpoint_uses_desktop_service(monkeypatch) -> N
         )
     )
 
-    assert captured == [("widget", "weather", "default")]
+    assert captured == [("widget", "weather", "desktop")]
     assert result["ok"] is True
     assert result["installed"]["widgets"] == ["weather"]
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_infrastate_snapshot_endpoint_runs_skill_tool(monkeypatch) -> None:
@@ -407,7 +429,7 @@ def test_node_infrastate_snapshot_endpoint_runs_skill_tool(monkeypatch) -> None:
 
     result = asyncio.run(node_api_module.node_infrastate_snapshot("default"))
 
-    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "default"})]
+    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "desktop", "project": False})]
     assert result["ok"] is True
     assert result["snapshot"]["summary"]["value"] == "idle"
 
@@ -498,7 +520,7 @@ def test_node_infrastate_action_endpoint_publishes_event_and_returns_snapshot(mo
     assert getattr(published[0], "type", "") == "infrastate.action"
     assert getattr(published[0], "payload", {})["node_id"] == "member-1"
     assert wait_calls == [2.5]
-    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "default"})]
+    assert captured == [("infrastate_skill", "get_snapshot", {"webspace_id": "desktop", "project": False})]
     assert result["ok"] is True
     assert result["action"] == "select_node"
     assert result["operation_id"] == "op-node-select"
@@ -555,7 +577,7 @@ def test_node_infrastate_action_marketplace_install_returns_fast_operation_ack(m
     assert len(submitted) == 1
     assert submitted[0]["target_kind"] == "scenario"
     assert submitted[0]["target_id"] == "prompt_engineer_scenario"
-    assert submitted[0]["webspace_id"] == "default"
+    assert submitted[0]["webspace_id"] == "desktop"
     assert submitted[0]["initiator"] == {"kind": "api.node", "id": "marketplace_install"}
     assert submitted[0]["ctx"] is not None
     assert result["ok"] is True
@@ -623,7 +645,7 @@ def test_node_infra_access_action_endpoint_runs_skill_tools(monkeypatch) -> None
             "infra_access_skill",
             "issue_codex_connection",
             {
-                "webspace_id": "default",
+                "webspace_id": "desktop",
                 "target_id": None,
                 "capability_profile": "ProfileOpsRead",
                 "ttl_seconds": 600,
@@ -633,7 +655,7 @@ def test_node_infra_access_action_endpoint_runs_skill_tools(monkeypatch) -> None
             "infra_access_skill",
             "get_snapshot",
             {
-                "webspace_id": "default",
+                "webspace_id": "desktop",
                 "target_id": None,
             },
         ),
@@ -734,12 +756,13 @@ def test_node_yjs_create_webspace_endpoint_uses_service(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
 
     class _Svc:
-        async def create(self, requested_id, title, *, scenario_id="web_desktop", dev=False):
+        async def create(self, requested_id, title, *, scenario_id="web_desktop", scenario_ref=None, dev=False):
             captured.append(
                 {
                     "requested_id": requested_id,
                     "title": title,
                     "scenario_id": scenario_id,
+                    "scenario_ref": scenario_ref,
                     "dev": dev,
                 }
             )
@@ -772,6 +795,7 @@ def test_node_yjs_create_webspace_endpoint_uses_service(monkeypatch) -> None:
             "requested_id": "preview-space",
             "title": "Preview Space",
             "scenario_id": "prompt_engineer_scenario",
+            "scenario_ref": None,
             "dev": True,
         }
     ]
@@ -817,14 +841,14 @@ def test_node_yjs_update_webspace_endpoint_uses_service(monkeypatch) -> None:
 
     assert captured == [
         {
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "title": "Desktop",
             "home_scenario": "prompt_engineer_scenario",
         }
     ]
     assert result["ok"] is True
     assert result["webspace"]["home_scenario"] == "prompt_engineer_scenario"
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_yjs_webspace_state_endpoint_returns_operational_snapshot(monkeypatch) -> None:
@@ -998,9 +1022,9 @@ def test_node_yjs_webspace_rebuild_state_endpoint_returns_lightweight_snapshot(m
     assert result == {
         "ok": True,
         "accepted": True,
-        "webspace_id": "default",
+        "webspace_id": "desktop",
         "rebuild": {
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "status": "running",
             "pending": True,
             "background": True,
@@ -1050,16 +1074,16 @@ def test_node_yjs_webspace_materialization_state_endpoint_returns_lightweight_sn
     assert result == {
         "ok": True,
         "accepted": True,
-        "webspace_id": "default",
+        "webspace_id": "desktop",
         "materialization": {
             "ready": False,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "current_scenario": "infrascope",
             "readiness_state": "interactive",
             "missing_branches": ["data.desktop"],
         },
         "rebuild": {
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "status": "running",
             "pending": True,
             "background": True,
@@ -1104,23 +1128,23 @@ def test_node_yjs_webspace_rebuild_state_endpoint_includes_cached_materializatio
 def test_describe_yjs_materialization_prefers_cached_rebuild_snapshot_while_pending(monkeypatch) -> None:
     result = asyncio.run(
         node_api_module._describe_yjs_materialization(
-            "default",
+            "desktop",
             rebuild_state={
-                "webspace_id": "default",
+                "webspace_id": "desktop",
                 "status": "running",
                 "pending": True,
-                    "materialization": {
-                        "ready": False,
-                        "webspace_id": "default",
-                        "current_scenario": "infrascope",
-                        "readiness_state": "hydrating",
-                        "missing_branches": ["data.catalog.apps"],
-                        "snapshot_source": "semantic_rebuild:structure",
-                        "observed_at": 123.0,
-                        "stale": False,
-                    },
+                "materialization": {
+                    "ready": False,
+                    "webspace_id": "desktop",
+                    "current_scenario": "infrascope",
+                    "readiness_state": "hydrating",
+                    "missing_branches": ["data.catalog.apps"],
+                    "snapshot_source": "semantic_rebuild:structure",
+                    "observed_at": 123.0,
+                    "stale": False,
                 },
-            )
+            },
+        )
     )
 
     assert result["readiness_state"] == "hydrating"
@@ -1143,10 +1167,12 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
                     },
                 },
                 "scenarios": {
-                    "prompt_engineer_scenario": {
-                        "application": {
-                            "desktop": {
-                                "pageSchema": {"id": "legacy-desktop"},
+                    "hub-1": {
+                        "prompt_engineer_scenario": {
+                            "application": {
+                                "desktop": {
+                                    "pageSchema": {"id": "node-desktop"},
+                                },
                             },
                         },
                     }
@@ -1156,8 +1182,10 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
         "registry": _FakeMap(
             {
                 "scenarios": {
-                    "prompt_engineer_scenario": {
-                        "modals": ["legacy-modal"],
+                    "hub-1": {
+                        "prompt_engineer_scenario": {
+                            "modals": ["node-modal"],
+                        }
                     }
                 }
             }
@@ -1169,9 +1197,11 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
                     "widgets": [{"id": "weather"}],
                 },
                 "scenarios": {
-                    "prompt_engineer_scenario": {
-                        "catalog": {
-                            "apps": [{"id": "legacy-app"}],
+                    "hub-1": {
+                        "prompt_engineer_scenario": {
+                            "catalog": {
+                                "apps": [{"id": "node-app"}],
+                            }
                         }
                     }
                 },
@@ -1180,6 +1210,7 @@ def test_describe_yjs_materialization_reports_ready_readiness_and_no_missing_bra
     }
 
     monkeypatch.setattr(node_api_module, "async_read_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+    monkeypatch.setattr(node_api_module, "_local_node_id", lambda: "hub-1")
 
     result = asyncio.run(node_api_module._describe_yjs_materialization("default"))
 
@@ -1329,7 +1360,7 @@ def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) 
     monkeypatch.setattr(
         webspace_runtime_module,
         "mutate_live_room",
-        lambda webspace_id, mutator: (live_mutations.append(str(webspace_id)), True)[1],
+        lambda webspace_id, mutator, **_kwargs: (live_mutations.append(str(webspace_id)), True)[1],
     )
     monkeypatch.setattr(
         webspace_runtime_module,
@@ -1365,7 +1396,7 @@ def test_switch_webspace_scenario_uses_live_room_pointer_fast_path(monkeypatch) 
 def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
     class _DesktopService:
         async def get_snapshot_async(self, webspace_id: str | None = None):
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return SimpleNamespace(
                 to_dict=lambda: {
                     "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
@@ -1391,7 +1422,7 @@ def test_node_yjs_desktop_state_endpoint_returns_snapshot(monkeypatch) -> None:
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
     assert result["desktop"]["topbar"][0]["id"] == "home"
     assert result["desktop"]["pageSchema"]["id"] == "desktop"
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monkeypatch) -> None:
@@ -1425,12 +1456,25 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
         node_api_module,
         "_read_live_catalog_items",
         lambda webspace_id, kind: _awaitable(
-            [{"id": "weather", "title": "Weather"}] if kind == "widgets" else []
+            [
+                {
+                    "id": "weather",
+                    "title": "Weather",
+                    "node_id": "member-1",
+                    "node_label": "Node 1",
+                    "node_compact_label": "N1",
+                    "node_color": "#F28E2B",
+                    "node_index": 1,
+                    "node_local_id": "weather",
+                }
+            ]
+            if kind == "widgets"
+            else []
         ),
     )
     class _DesktopService:
         async def get_snapshot_async(self, webspace_id: str | None = None):
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return SimpleNamespace(
                 installed=SimpleNamespace(apps=[], widgets=["weather"]),
                 pinned_widgets=[{"id": "weather", "type": "visual.metricTile"}],
@@ -1448,9 +1492,14 @@ def test_node_yjs_catalog_state_endpoint_returns_items_and_materialization(monke
     assert result["items"][0]["installType"] == "widget"
     assert result["items"][0]["installed"] is True
     assert result["items"][0]["pinned"] is True
+    assert result["items"][0]["node_id"] == "member-1"
+    assert result["items"][0]["node_label"] == "Node 1"
+    assert result["items"][0]["node_compact_label"] == "N1"
+    assert result["items"][0]["node_index"] == 1
+    assert result["items"][0]["node_local_id"] == "weather"
     assert result["materialization"]["ready"] is False
-    assert result["rebuild"]["webspace_id"] == "default"
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["rebuild"]["webspace_id"] == "desktop"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) -> None:
@@ -1461,7 +1510,7 @@ def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) 
             captured.append((list(pinned_widgets), str(webspace_id or "")))
 
         async def get_snapshot_async(self, webspace_id: str | None = None):
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return SimpleNamespace(
                 to_dict=lambda: {
                     "installed": {"apps": [], "widgets": ["weather"]},
@@ -1491,12 +1540,12 @@ def test_node_yjs_set_pinned_widgets_endpoint_uses_desktop_service(monkeypatch) 
     assert captured == [
         (
             [{"id": "infra-status", "type": "visual.metricTile"}],
-            "default",
+            "desktop",
         )
     ]
     assert result["ok"] is True
     assert result["desktop"]["pinnedWidgets"][0]["id"] == "infra-status"
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> None:
@@ -1504,7 +1553,7 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
 
     class _DesktopService:
         async def get_snapshot_async(self, webspace_id: str | None = None):
-            assert webspace_id == "default"
+            assert webspace_id == "desktop"
             return node_api_module.WebDesktopSnapshot(
                 installed=node_api_module.WebDesktopInstalled(apps=["scenario:web_desktop"], widgets=["weather"]),
                 pinned_widgets=[{"id": "infra-status", "type": "visual.metricTile"}],
@@ -1549,7 +1598,7 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
 
     assert captured == [
         {
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "installed": {"apps": ["scenario:web_desktop"], "widgets": ["weather"]},
             "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile"}],
             "topbar": [{"id": "overlay-home", "label": "Overlay Home"}],
@@ -1563,7 +1612,7 @@ def test_node_yjs_update_desktop_endpoint_uses_snapshot_update(monkeypatch) -> N
         }
     ]
     assert result["ok"] is True
-    assert result["runtime"]["webspace_id"] == "default"
+    assert result["runtime"]["webspace_id"] == "desktop"
 
 
 def test_node_cli_yjs_control_action_includes_set_home(monkeypatch) -> None:
@@ -1856,7 +1905,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "scenario_id": "infrascope",
             "scenario_switch_mode": "pointer_only",
             "switch_skipped": False,
@@ -1870,7 +1919,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "scenario_id": "infrascope",
             "scenario_switch_mode": "pointer_only",
             "switch_skipped": False,
@@ -2036,7 +2085,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "materialization": {
                 "ready": False,
                 "webspace_id": "default",
@@ -2048,7 +2097,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "materialization": {
                 "ready": True,
                 "webspace_id": "default",
@@ -2060,7 +2109,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "materialization": {
                 "ready": False,
                 "webspace_id": "default",
@@ -2072,7 +2121,7 @@ def test_node_cli_benchmark_scenario_restores_baseline_and_prints_summary(monkey
         {
             "ok": True,
             "accepted": True,
-            "webspace_id": "default",
+            "webspace_id": "desktop",
             "materialization": {
                 "ready": True,
                 "webspace_id": "default",
@@ -2282,7 +2331,7 @@ def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(mo
                 {
                     "ok": True,
                     "accepted": True,
-                    "webspace_id": "default",
+                    "webspace_id": "desktop",
                     "materialization": {
                         "ready": True,
                         "webspace_id": "default",
@@ -2305,7 +2354,7 @@ def test_node_cli_benchmark_scenario_tolerates_transient_rebuild_poll_timeout(mo
                 {
                     "ok": True,
                     "accepted": True,
-                    "webspace_id": "default",
+                    "webspace_id": "desktop",
                     "scenario_id": "infrascope",
                     "scenario_switch_mode": "pointer_only",
                     "switch_skipped": False,
