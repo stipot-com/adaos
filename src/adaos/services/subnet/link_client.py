@@ -12,6 +12,7 @@ from typing import Any, Callable
 import requests
 import websockets  # type: ignore
 
+from adaos.apps.cli.active_control import resolve_control_token
 from adaos.build_info import BUILD_INFO
 from adaos.domain import Event as DomainEvent
 from adaos.adapters.db import SqliteSkillRegistry
@@ -745,8 +746,10 @@ class MemberLinkClient:
     @staticmethod
     def _post_local_admin(path: str, body: dict[str, Any]) -> dict[str, Any]:
         base = MemberLinkClient._resolve_local_control_base()
-        conf = get_ctx().config
-        token = str(getattr(conf, "token", "") or "dev-local-token")
+        # Re-resolve the control token against the selected local control base because
+        # the active runtime may be serving with a newer supervisor/env token than the
+        # persisted node config still knows about.
+        token = str(resolve_control_token(base_url=base) or "dev-local-token")
         headers = {"X-AdaOS-Token": token, "Accept": "application/json"}
         sess = requests.Session()
         try:

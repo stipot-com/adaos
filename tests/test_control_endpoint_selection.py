@@ -35,6 +35,10 @@ class _FakeResponse:
         self.status_code = int(status_code)
         self._payload = payload
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
     def json(self):
         if self._payload is None:
             raise ValueError("no json payload")
@@ -237,6 +241,29 @@ def test_member_link_resolve_local_control_base_skips_candidate_ping(monkeypatch
     assert base == "http://127.0.0.1:8779"
 
 
+def test_member_link_post_local_admin_resolves_token_for_selected_base(monkeypatch) -> None:
+    monkeypatch.setattr(MemberLinkClient, "_resolve_local_control_base", staticmethod(lambda: "http://127.0.0.1:8779"))
+    monkeypatch.setattr(
+        "adaos.services.subnet.link_client.resolve_control_token",
+        lambda *, explicit=None, base_url=None: "wrapper-service-token" if base_url == "http://127.0.0.1:8779" else "stale-config-token",
+    )
+
+    class _FakeSession:
+        trust_env = False
+
+        def post(self, url: str, headers=None, json=None, timeout=None):
+            assert url == "http://127.0.0.1:8779/api/admin/update/start"
+            assert headers["X-AdaOS-Token"] == "wrapper-service-token"
+            return _FakeResponse(200, {"ok": True, "accepted": True})
+
+    monkeypatch.setattr("adaos.services.subnet.link_client.requests.Session", _FakeSession)
+
+    payload = MemberLinkClient._post_local_admin("/api/admin/update/start", {"reason": "test"})
+
+    assert payload["ok"] is True
+    assert payload["accepted"] is True
+
+
 def test_member_link_client_does_not_reemit_hub_mirrored_events(monkeypatch) -> None:
     class _FakeBus:
         def __init__(self) -> None:
@@ -251,7 +278,7 @@ def test_member_link_client_does_not_reemit_hub_mirrored_events(monkeypatch) -> 
             self.published.append(event)
 
     fake_bus = _FakeBus()
-    fake_ctx = types.SimpleNamespace(bus=fake_bus)
+    fake_ctx = types.SimpleNamespace(bus=fake_bus, config=types.SimpleNamespace(node_id="member-1"))
     monkeypatch.setattr("adaos.services.subnet.link_client.get_ctx", lambda: fake_ctx)
 
     client = MemberLinkClient()
