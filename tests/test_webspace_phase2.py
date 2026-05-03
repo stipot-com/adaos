@@ -73,6 +73,101 @@ def test_build_local_desktop_catalog_snapshot_uses_runtime_skill_decls(monkeypat
     assert snapshot["widgets"][0]["id"] == "member_widget"
 
 
+def test_build_local_desktop_catalog_snapshot_prefers_live_ydoc_values_over_decl_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(webspace_runtime_module, "get_ctx", lambda: SimpleNamespace())
+    monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "node-1")
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "node_display_from_config",
+        lambda _conf: {
+            "node_label": "Node 1",
+            "node_compact_label": "N1",
+            "node_index": 1,
+            "node_color": "#F28E2B",
+        },
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "load_config",
+        lambda: SimpleNamespace(role="member", node_id="node-1", node_settings=SimpleNamespace(node_names=[])),
+    )
+
+    def _fake_collect(self, mode: str = "mixed") -> list[dict[str, object]]:  # noqa: ARG001
+        return [
+            {
+                "skill": "infrastate_skill",
+                "space": "default",
+                "apps": [],
+                "widgets": [],
+                "ydoc_defaults": {
+                    "data/infrastate/summary": {
+                        "label": "Core update",
+                        "value": "idle",
+                        "subtitle": "slot --",
+                        "description": "No update in progress",
+                    }
+                },
+            }
+        ]
+
+    class _Map:
+        def __init__(self, data):
+            self._data = data
+
+        def get(self, key):
+            value = self._data.get(key)
+            if isinstance(value, dict):
+                return _Map(value)
+            return value
+
+        def items(self):
+            return self._data.items()
+
+    class _YDoc:
+        def __init__(self, data):
+            self._data = data
+
+        def get_map(self, key):
+            value = self._data.get(key, {})
+            return _Map(value if isinstance(value, dict) else {})
+
+    class _CtxMgr:
+        def __enter__(self):
+            return _YDoc(
+                {
+                    "data": {
+                        "nodes": {
+                            "node-1": {
+                                "infrastate": {
+                                    "summary": {
+                                        "label": "Core update",
+                                        "value": "succeeded",
+                                        "subtitle": "slot B | 2ac1fa3",
+                                        "description": "runtime boot validated on slot B",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(webspace_runtime_module.WebspaceScenarioRuntime, "_collect_skill_decls", _fake_collect)
+    monkeypatch.setattr(webspace_runtime_module, "get_ydoc", lambda webspace_id: _CtxMgr())
+
+    snapshot = webspace_runtime_module.build_local_desktop_catalog_snapshot(mode="workspace")
+
+    assert snapshot["ydoc_defaults"]["data/nodes/node-1/infrastate/summary"] == {
+        "label": "Core update",
+        "value": "succeeded",
+        "subtitle": "slot B | 2ac1fa3",
+        "description": "runtime boot validated on slot B",
+    }
+
+
 def test_member_snapshot_changed_rebuilds_shared_workspaces_with_rate_limit(monkeypatch) -> None:
     calls: list[tuple[str, str, str]] = []
 
@@ -506,6 +601,70 @@ def test_collect_remote_skill_decls_uses_member_desktop_catalog_snapshot(monkeyp
     assert decls[0]["webio"]["receivers"]["infrastate.realtime"]["mode"] == "replace"
     assert "nodeId" not in decls[0]["webio"]["receivers"]["infrastate.realtime"]
     assert decls[0]["ydoc_defaults"]["data/nodes/member-1/weather/current"] == {"city": "Moscow"}
+
+
+def test_resolve_webspace_preserves_live_remote_entries_during_projection_gap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "load_config",
+        lambda: SimpleNamespace(role="hub", node_id="hub-1", node_names=["Hub"]),
+    )
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "node_display_from_config",
+        lambda _conf: {
+            "node_label": "Hub",
+            "node_compact_label": "N0",
+            "node_index": 0,
+            "node_color": "#4E79A7",
+        },
+    )
+
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime()
+    resolved = runtime.resolve_webspace(
+        webspace_runtime_module.WebspaceResolverInputs(
+            webspace_id="desktop",
+            scenario_id="web_desktop",
+            source_mode="workspace",
+            scenario_application={"desktop": {"pageSchema": {"id": "desktop"}}},
+            scenario_catalog={"apps": [{"id": "hub_app", "title": "Hub App"}], "widgets": []},
+            scenario_registry={"modals": ["apps_catalog"], "widgets": []},
+            overlay_snapshot={},
+            live_state={
+                "application": {
+                    "modals": {
+                        "node:member-1:weather_modal": {
+                            "title": "Weather Settings",
+                        }
+                    }
+                },
+                "catalog": {
+                    "apps": [
+                        {"id": "node:member-1:weather_skill", "title": "Weather", "node_id": "member-1"},
+                    ],
+                    "widgets": [
+                        {"id": "node:member-1:infrastate", "title": "Infra State", "node_id": "member-1"},
+                    ],
+                },
+                "registry": {
+                    "modals": ["apps_catalog", "node:member-1:weather_modal"],
+                    "widgets": [],
+                },
+                "desktop": {},
+                "routing": {},
+            },
+            skill_decls=[],
+            desktop_scenarios=[],
+        )
+    )
+
+    app_ids = [str(item.get("id") or "") for item in resolved.catalog["apps"]]
+    widget_ids = [str(item.get("id") or "") for item in resolved.catalog["widgets"]]
+    assert "hub_app" in app_ids
+    assert "node:member-1:weather_skill" in app_ids
+    assert "node:member-1:infrastate" in widget_ids
+    assert "node:member-1:weather_modal" in resolved.application["modals"]
+    assert "node:member-1:weather_modal" in resolved.registry["modals"]
 
 
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:

@@ -514,7 +514,43 @@ def _local_catalog_decl_entries(decls: List[Dict[str, Any]]) -> dict[str, Any]:
 
 def build_local_desktop_catalog_snapshot(*, mode: str = "workspace") -> dict[str, Any]:
     runtime = WebspaceScenarioRuntime()
-    return _local_catalog_decl_entries(runtime._collect_skill_decls(mode=mode))
+    snapshot = _local_catalog_decl_entries(runtime._collect_skill_decls(mode=mode))
+    return _overlay_current_ydoc_defaults(snapshot, webspace_id=default_webspace_id())
+
+
+_YDOC_PATH_MISSING = object()
+
+
+def _read_current_ydoc_path_value(ydoc: Any, path: str) -> Any:
+    segments = [str(seg or "").strip() for seg in str(path or "").split("/") if str(seg or "").strip()]
+    if len(segments) < 2:
+        return _YDOC_PATH_MISSING
+    current: Any = ydoc.get_map(segments[0])
+    for seg in segments[1:]:
+        getter = getattr(current, "get", None)
+        if not callable(getter):
+            return _YDOC_PATH_MISSING
+        current = getter(seg)
+        if current is None:
+            return _YDOC_PATH_MISSING
+    return _clone_json_like(current)
+
+
+def _overlay_current_ydoc_defaults(snapshot: dict[str, Any], *, webspace_id: str) -> dict[str, Any]:
+    defaults = snapshot.get("ydoc_defaults") if isinstance(snapshot.get("ydoc_defaults"), dict) else {}
+    if not defaults:
+        return snapshot
+    try:
+        with get_ydoc(webspace_id) as ydoc:
+            for path in list(defaults.keys()):
+                live_value = _read_current_ydoc_path_value(ydoc, str(path or ""))
+                if live_value is _YDOC_PATH_MISSING:
+                    continue
+                defaults[str(path)] = live_value
+    except Exception:
+        return snapshot
+    snapshot["ydoc_defaults"] = defaults
+    return snapshot
 
 
 def _merge_by_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -537,6 +573,87 @@ def _node_scoped_catalog_id(node_id: str, item_id: str) -> str:
     if item_token.startswith(f"node:{node_token}:"):
         return item_token
     return f"node:{node_token}:{item_token}"
+
+
+def _node_scoped_entry_node_id(item_id: Any) -> str | None:
+    token = str(item_id or "").strip()
+    if not token.startswith("node:"):
+        return None
+    parts = token.split(":", 2)
+    if len(parts) != 3:
+        return None
+    node_id = str(parts[1] or "").strip()
+    return node_id or None
+
+
+def _preserve_live_remote_catalog_entries(
+    merged: List[Dict[str, Any]],
+    *,
+    current_items: Any,
+    active_remote_node_ids: set[str],
+) -> List[Dict[str, Any]]:
+    if not isinstance(current_items, list):
+        return merged
+    seen_ids = {
+        str(item.get("id") or "").strip()
+        for item in merged
+        if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+    }
+    preserved: List[Dict[str, Any]] = list(merged)
+    for item in current_items:
+        if not isinstance(item, Mapping):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id in seen_ids:
+            continue
+        node_id = _node_scoped_entry_node_id(item_id)
+        if not node_id or node_id in active_remote_node_ids:
+            continue
+        preserved.append(dict(item))
+        seen_ids.add(item_id)
+    return preserved
+
+
+def _preserve_live_remote_modals(
+    merged_modals_map: Dict[str, Any],
+    *,
+    current_modals: Any,
+    active_remote_node_ids: set[str],
+) -> Dict[str, Any]:
+    if not isinstance(current_modals, Mapping):
+        return merged_modals_map
+    preserved = dict(merged_modals_map)
+    for key, value in current_modals.items():
+        modal_id = str(key or "").strip()
+        if not modal_id or modal_id in preserved:
+            continue
+        node_id = _node_scoped_entry_node_id(modal_id)
+        if not node_id or node_id in active_remote_node_ids:
+            continue
+        preserved[modal_id] = _clone_json_like(value)
+    return preserved
+
+
+def _preserve_live_remote_registry_tokens(
+    merged_tokens: List[str],
+    *,
+    current_tokens: Any,
+    active_remote_node_ids: set[str],
+) -> List[str]:
+    tokens = [str(token or "").strip() for token in merged_tokens if str(token or "").strip()]
+    seen = set(tokens)
+    if not isinstance(current_tokens, list):
+        return tokens
+    for value in current_tokens:
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        node_id = _node_scoped_entry_node_id(token)
+        if not node_id or node_id in active_remote_node_ids:
+            continue
+        tokens.append(token)
+        seen.add(token)
+    return tokens
 
 
 def _scope_remote_catalog_entry_id(entry: Dict[str, Any], *, node_id: str) -> Dict[str, Any]:
@@ -2352,6 +2469,9 @@ class WebspaceScenarioRuntime:
             scenario_registry=registry_entry,
             overlay_snapshot=overlay_snapshot,
             live_state={
+                "application": _coerce_dict(ui_map.get("application") or {}),
+                "catalog": _coerce_dict(data_map.get("catalog") or {}),
+                "registry": _coerce_dict(registry_map.get("merged") or {}),
                 "desktop": _coerce_dict(data_map.get("desktop") or {}),
                 "routing": _coerce_dict(data_map.get("routing") or {}),
             },
@@ -2400,6 +2520,7 @@ class WebspaceScenarioRuntime:
         skill_registry_widgets: List[List[str]] = []
         auto_widget_ids: set[str] = set()
         auto_app_ids: set[str] = set()
+        active_remote_node_ids: set[str] = set()
         local_display = node_display_from_config(load_config())
 
         for decl in skill_decls:
@@ -2407,6 +2528,8 @@ class WebspaceScenarioRuntime:
             space = decl.get("space") or "default"
             node_id = str(decl.get("node_id") or "").strip()
             node_owned = _is_node_owned_skill(str(skill_name or ""))
+            if node_id and str(skill_name or "").strip().startswith("subnet.member."):
+                active_remote_node_ids.add(node_id)
             decl_display = {
                 "node_label": str(decl.get("node_label") or "").strip(),
                 "node_compact_label": str(decl.get("node_compact_label") or "").strip(),
@@ -2478,6 +2601,17 @@ class WebspaceScenarioRuntime:
 
         merged_apps = _merge_by_id(merged_apps + extra_apps + skill_apps)
         merged_widgets = _merge_by_id(merged_widgets + skill_widgets)
+        live_catalog = _coerce_dict((inputs.live_state or {}).get("catalog") or {})
+        merged_apps = _preserve_live_remote_catalog_entries(
+            merged_apps,
+            current_items=live_catalog.get("apps"),
+            active_remote_node_ids=active_remote_node_ids,
+        )
+        merged_widgets = _preserve_live_remote_catalog_entries(
+            merged_widgets,
+            current_items=live_catalog.get("widgets"),
+            active_remote_node_ids=active_remote_node_ids,
+        )
         supports_catalog_controls = _scenario_supports_catalog_controls(
             scenario_id,
             scenario_application,
@@ -2612,6 +2746,25 @@ class WebspaceScenarioRuntime:
                     ],
                 },
             }
+
+        live_application = _coerce_dict((inputs.live_state or {}).get("application") or {})
+        merged_modals_map = _preserve_live_remote_modals(
+            merged_modals_map,
+            current_modals=live_application.get("modals"),
+            active_remote_node_ids=active_remote_node_ids,
+        )
+
+        live_registry = _coerce_dict((inputs.live_state or {}).get("registry") or {})
+        merged_registry["modals"] = _preserve_live_remote_registry_tokens(
+            list(merged_registry.get("modals") or []),
+            current_tokens=live_registry.get("modals"),
+            active_remote_node_ids=active_remote_node_ids,
+        )
+        merged_registry["widgets"] = _preserve_live_remote_registry_tokens(
+            list(merged_registry.get("widgets") or []),
+            current_tokens=live_registry.get("widgets"),
+            active_remote_node_ids=active_remote_node_ids,
+        )
 
         app_with_modals: Dict[str, Any] = dict(scenario_application)
         if merged_modals_map:
