@@ -14,6 +14,7 @@ from adaos.sdk.core.decorators import tool
 from adaos.sdk.io.context import get_current_meta
 from adaos.services.agent_context import get_ctx
 from adaos.services.eventbus import emit as _emit
+from adaos.services.node_config import load_config
 from adaos.services.webspace_id import coerce_webspace_id
 
 __all__ = ["chat_append", "say", "media_route", "stream_publish"]
@@ -50,6 +51,20 @@ def _merged_meta(_meta: Mapping[str, Any] | None) -> dict[str, Any]:
     if _meta:
         meta.update(dict(_meta))
     return _normalize_meta(meta) if meta else meta
+
+
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return ""
 
 
 @tool(
@@ -217,6 +232,10 @@ def stream_publish(
         "ts": float(ts) if ts is not None else time.time(),
     }
     meta = _merged_meta(_meta)
+    node_id = _local_node_id()
+    if node_id:
+        meta.setdefault("node_id", node_id)
+        meta.setdefault("source_node_id", node_id)
     if meta:
         payload["_meta"] = meta
 

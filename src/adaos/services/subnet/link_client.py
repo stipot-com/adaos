@@ -623,6 +623,15 @@ class MemberLinkClient:
         meta["subnet_hub_mirrored"] = True
         if self._hub_node_id:
             meta.setdefault("subnet_hub_node_id", self._hub_node_id)
+        target_node_id = str(
+            mirrored_payload.get("target_node_id")
+            or meta.get("target_node_id")
+            or meta.get("node_target_id")
+            or ""
+        ).strip()
+        local_node_id = str(getattr(get_ctx().config, "node_id", "") or "").strip()
+        if target_node_id and local_node_id and target_node_id != local_node_id:
+            return
         mirrored_payload["_meta"] = meta
         self._last_hub_event_type = event_type
         self._last_hub_event_at = time.time()

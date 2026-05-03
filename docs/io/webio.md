@@ -61,6 +61,10 @@ AdaOS now treats Yjs and browser streams as different contracts:
 * **Yjs** is for collaborative or reconnect-stable shared state.
   Keep here the compact state that should survive reconnect, page reload, or
   later semantic rebuild.
+* **Node-owned Yjs skill state** is projected under
+  `data.nodes.<node_id>.*` in the shared webspace. A member can keep using
+  local skill paths such as `data/weather/current`; the runtime scopes those
+  paths when the data enters the shared desktop contract.
 * **`dataSource.kind = "stream"`** is for transport-independent live data.
   Use it for telemetry, active operations, rolling event tails, log fragments,
   and other high-churn arrays that do not need CRDT merge semantics.
@@ -125,6 +129,9 @@ Current client behavior:
   back into Yjs
 * `nodeId` scopes the receiver to one node-owned producer when the same
   receiver family may be emitted by more than one node
+* receiver declarations in `webio.receivers` describe reduction and transport
+  semantics only; node ownership belongs to the widget/modal `dataSource`
+  after runtime projection
 * `transport` controls routing preference:
   `auto` subscribes to both node-aware and hub-routed topics,
   `member` prefers member-originated delivery only,
@@ -144,9 +151,11 @@ stream_publish(
 )
 ```
 
-The hub router resolves targets from `_meta` and emits semantic browser events
-of the form `webio.stream.<webspace_id>.<receiver>`. When `_meta.node_id` is
-present, the router also emits node-qualified topics:
+`stream_publish` stamps the local `node_id` and `source_node_id` into `_meta`
+when the caller did not provide them explicitly. The hub router resolves
+targets from `_meta` and emits semantic browser events of the form
+`webio.stream.<webspace_id>.<receiver>`. When `_meta.node_id` is present, the
+router also emits node-qualified topics:
 
 * `webio.stream.<webspace_id>.nodes.<node_id>.<receiver>`
 * `webio.stream.nodes.<node_id>.<receiver>`
@@ -199,6 +208,8 @@ The server emits `webio.stream.snapshot.requested` with:
 * `receiver`
 * `webspace_id`
 * `node_id` when the subscription was node-qualified
+* `target_node_id` and `_meta.target_node_id` when a concrete member should
+  answer the request
 * `transport`
 
 Skills that own a stream receiver should answer that request by publishing the
@@ -265,6 +276,12 @@ Important implications:
   node-scoped id (`node:<node_id>:<local_id>`). Skill and scenario ids only
   need to be unique inside one node; the shared desktop must not dedupe
   different nodes just because their local ids match.
+* node-owned modal ids are scoped the same way, so two nodes can both expose a
+  local `weather_modal` without sharing modal state or action context
+* node-owned actions carry `node_id`, `target_node_id`, and
+  `_meta.target_node_id`; the hub forwards such events only to the matching
+  member, while skill subscription wrappers ignore events targeted to another
+  node
 * semantic reload/reset events are now mirrored to members so they can refresh
   their own subnet snapshot contribution with local throttling, instead of
   waiting for the hub to pull every detail synchronously
@@ -282,7 +299,7 @@ Recommended skill-authoring rules:
 ## Current Desktop Ownership Rules
 
 The current `web_desktop` client now treats ownership explicitly even before
-the final shared Yjs node envelope is complete.
+the full subnet transport roadmap is complete.
 
 Current browser-facing rules:
 
@@ -308,10 +325,12 @@ Current browser-facing rules:
 * webspaces themselves remain shared Yjs documents; node binding currently
   belongs to node-owned apps/widgets/streams and to the selected
   `home_scenario_ref`, not to the webspace container itself
+* node-owned skill state in the shared Yjs document lives under
+  `data.nodes.<node_id>.*`; shared runtime branches such as `data.catalog`,
+  `data.desktop`, `data.webio`, and `registry` stay node-agnostic
 
 This means the UI is already node-aware at the catalog/widget surface even
-though the broader projection ABI and node-reserved Yjs envelope are still in
-progress.
+though browser-to-member transport can still fall back through the hub.
 
 ## Webspaces in Detail
 

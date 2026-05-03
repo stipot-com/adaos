@@ -17,6 +17,7 @@ def test_stream_publish_normalizes_webspace_meta(monkeypatch) -> None:
     seen = []
     bus.subscribe("io.out.stream.publish", lambda ev: seen.append(ev))
     monkeypatch.setattr(out, "get_ctx", lambda: SimpleNamespace(bus=bus))
+    monkeypatch.setattr(out, "load_config", lambda: SimpleNamespace(node_id="member-01"))
 
     result = out.stream_publish(
         "infrastate.realtime",
@@ -32,3 +33,5 @@ def test_stream_publish_normalizes_webspace_meta(monkeypatch) -> None:
     meta = seen[0].payload["_meta"]
     assert meta["webspace_id"] == "default"
     assert meta["webspace_ids"] == ["default", "desktop"]
+    assert meta["node_id"] == "member-01"
+    assert meta["source_node_id"] == "member-01"

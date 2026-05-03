@@ -83,6 +83,27 @@ def _snapshot_event_payload(node_id: str, *, node_names: list[str], snapshot: di
     }
 
 
+def _target_node_id_for_hub_event(event_type: str, payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    target = str(
+        payload.get("target_node_id")
+        or payload.get("node_target_id")
+        or meta.get("target_node_id")
+        or meta.get("node_target_id")
+        or ""
+    ).strip()
+    if target:
+        return target
+    if str(event_type or "").strip() in {
+        "webio.stream.snapshot.requested",
+        "webio.stream.subscription.changed",
+    }:
+        return str(payload.get("node_id") or "").strip()
+    return ""
+
+
 @dataclass
 class HubMemberLink:
     node_id: str
@@ -460,11 +481,13 @@ class HubLinkManager:
         event_type_norm = str(event_type or "").strip()
         if not event_type_norm:
             return {"sent": 0, "failed": 0}
+        payload_dict = payload if isinstance(payload, dict) else {"value": payload}
+        target_node_id = _target_node_id_for_hub_event(event_type_norm, payload_dict)
         msg = {
             "t": "hub.event",
             "event": {
                 "type": event_type_norm,
-                "payload": payload if isinstance(payload, dict) else {"value": payload},
+                "payload": payload_dict,
                 "source": str(source or "hub"),
                 "ts": time.time(),
             },
@@ -474,6 +497,8 @@ class HubLinkManager:
         sent = 0
         failed = 0
         for link in links:
+            if target_node_id and link.node_id != target_node_id:
+                continue
             try:
                 await link.send_json(msg)
                 link.last_hub_event_at = time.time()

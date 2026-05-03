@@ -65,7 +65,11 @@ class _FakeDirectory:
 
 
 class _FakeWebSocket:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
     async def send_json(self, msg: dict) -> None:
+        self.messages.append(msg)
         return None
 
 
@@ -174,3 +178,24 @@ def test_update_member_snapshot_ignores_nested_capacity_timestamps(monkeypatch) 
     assert first["changed"] is True
     assert second["changed"] is False
     assert len(changed_events) == 1
+
+
+def test_broadcast_event_sends_node_targeted_payload_only_to_matching_member() -> None:
+    manager = mod.HubLinkManager()
+    member_1_ws = _FakeWebSocket()
+    member_2_ws = _FakeWebSocket()
+    manager._links["member-1"] = mod.HubMemberLink(node_id="member-1", websocket=member_1_ws)
+    manager._links["member-2"] = mod.HubMemberLink(node_id="member-2", websocket=member_2_ws)
+
+    result = asyncio.run(
+        manager.broadcast_event(
+            event_type="weather.city_changed",
+            payload={"city": "Berlin", "target_node_id": "member-2"},
+            source="hub",
+        )
+    )
+
+    assert result["sent"] == 1
+    assert member_1_ws.messages == []
+    assert len(member_2_ws.messages) == 1
+    assert member_2_ws.messages[0]["event"]["payload"]["target_node_id"] == "member-2"

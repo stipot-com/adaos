@@ -1391,12 +1391,58 @@ class BootstrapService:
                     except Exception:
                         self._log.debug("failed to mirror desktop reload event=%s to members", str(ev.type or ""), exc_info=True)
 
+                def _forward_webio_stream_control_to_members(ev: Event) -> None:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type=str(ev.type or ""),
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror webio stream control event=%s to members", str(ev.type or ""), exc_info=True)
+
+                def _forward_targeted_event_to_members(ev: Event) -> None:
+                    event_type = str(ev.type or "").strip()
+                    if not event_type or event_type.startswith("desktop."):
+                        return
+                    if event_type in {"webio.stream.snapshot.requested", "webio.stream.subscription.changed"}:
+                        return
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+                    if bool(meta.get("subnet_origin_node_id")) or bool(meta.get("subnet_hub_mirrored")):
+                        return
+                    target_node_id = str(
+                        payload.get("target_node_id")
+                        or payload.get("node_target_id")
+                        or meta.get("target_node_id")
+                        or meta.get("node_target_id")
+                        or ""
+                    ).strip()
+                    if not target_node_id or target_node_id == str(getattr(conf, "node_id", "") or "").strip():
+                        return
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _get_hub_link_manager().broadcast_event(
+                                event_type=event_type,
+                                payload=payload,
+                                source=str(ev.source or "hub"),
+                            )
+                        )
+                    except Exception:
+                        self._log.debug("failed to mirror node-targeted event=%s to members", event_type, exc_info=True)
+
                 core_bus.subscribe("core.update.status", _forward_core_update_status_to_members)
                 core_bus.subscribe("supervisor.update.status.raw", _forward_supervisor_update_status_raw_to_members)
                 core_bus.subscribe("node.status", _forward_node_status_to_members)
                 core_bus.subscribe("desktop.webspace.reload", _forward_desktop_reload_to_members)
                 core_bus.subscribe("desktop.webspace.reloaded", _forward_desktop_reload_to_members)
                 core_bus.subscribe("desktop.webspace.reset", _forward_desktop_reload_to_members)
+                core_bus.subscribe("webio.stream.snapshot.requested", _forward_webio_stream_control_to_members)
+                core_bus.subscribe("webio.stream.subscription.changed", _forward_webio_stream_control_to_members)
+                core_bus.subscribe("*", _forward_targeted_event_to_members)
             except Exception:
                 self._log.debug(
                     "failed to install member status forwarders",

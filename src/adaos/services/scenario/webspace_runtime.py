@@ -35,6 +35,7 @@ from adaos.services.yjs.bootstrap import ensure_webspace_seeded_from_scenario
 from adaos.services.yjs.seed import SEED
 from adaos.services.eventbus import emit
 from adaos.sdk.core.decorators import subscribe
+from .node_data_scope import node_scope_data_path
 from .workflow_runtime import ScenarioWorkflowRuntime
 
 _log = logging.getLogger("adaos.scenario.webspace_runtime")
@@ -347,6 +348,80 @@ def _apply_node_display_to_entry(entry: Dict[str, Any], display: Mapping[str, An
     return data
 
 
+def _is_node_owned_skill(skill_name: str) -> bool:
+    token = str(skill_name or "").strip()
+    return bool(token) and token != "web_desktop_skill"
+
+
+def _scope_node_data_source(data_source: Any, *, node_id: str) -> Any:
+    if not isinstance(data_source, Mapping):
+        return data_source
+    scoped = _clone_json_like(data_source)
+    if not isinstance(scoped, dict):
+        return data_source
+    kind = str(scoped.get("kind") or "").strip().lower()
+    if kind == "stream":
+        if node_id and not str(scoped.get("nodeId") or scoped.get("node_id") or "").strip():
+            scoped["nodeId"] = node_id
+    if kind == "y" and scoped.get("path") is not None:
+        scoped["path"] = node_scope_data_path(str(scoped.get("path") or ""), node_id)
+    if kind == "api":
+        for key in ("params", "body"):
+            value = scoped.get(key)
+            if isinstance(value, dict) and node_id and not str(value.get("node_id") or value.get("target_node_id") or "").strip():
+                value["node_id"] = node_id
+                value.setdefault("target_node_id", node_id)
+    return scoped
+
+
+def _apply_node_context_to_ui(
+    value: Any,
+    display: Mapping[str, Any] | None,
+    *,
+    node_id: str,
+    modal_id_map: Mapping[str, str] | None = None,
+) -> Any:
+    if not node_id:
+        return _clone_json_like(value)
+    if isinstance(value, list):
+        return [
+            _apply_node_context_to_ui(item, display, node_id=node_id, modal_id_map=modal_id_map)
+            for item in value
+        ]
+    if not isinstance(value, Mapping):
+        return _clone_json_like(value)
+
+    data: Dict[str, Any] = {
+        str(key): _apply_node_context_to_ui(item, display, node_id=node_id, modal_id_map=modal_id_map)
+        for key, item in value.items()
+    }
+    if data.get("id") or data.get("type") or data.get("dataSource") or data.get("actions") or data.get("source"):
+        data = _apply_node_display_to_entry(data, display, node_id=node_id)
+    if isinstance(data.get("dataSource"), Mapping):
+        data["dataSource"] = _scope_node_data_source(data.get("dataSource"), node_id=node_id)
+    if isinstance(data.get("source"), str):
+        data["source"] = node_scope_data_path(str(data.get("source") or ""), node_id)
+    if modal_id_map and isinstance(data.get("launchModal"), str):
+        modal_id = str(data.get("launchModal") or "").strip()
+        if modal_id in modal_id_map:
+            data["launchModal"] = modal_id_map[modal_id]
+    return data
+
+
+def _node_scoped_modal_ids(registry: Mapping[str, Any], *, node_id: str) -> Dict[str, str]:
+    if not node_id:
+        return {}
+    modals = registry.get("modals") if isinstance(registry.get("modals"), Mapping) else {}
+    if not isinstance(modals, Mapping):
+        return {}
+    out: Dict[str, str] = {}
+    for key in modals.keys():
+        token = str(key or "").strip()
+        if token:
+            out[token] = _node_scoped_catalog_id(node_id, token)
+    return out
+
+
 def _local_catalog_decl_entries(decls: List[Dict[str, Any]]) -> dict[str, Any]:
     try:
         conf = load_config()
@@ -361,24 +436,79 @@ def _local_catalog_decl_entries(decls: List[Dict[str, Any]]) -> dict[str, Any]:
     node_id = _local_node_id()
     apps: List[Dict[str, Any]] = []
     widgets: List[Dict[str, Any]] = []
+    registry_modals: Dict[str, Any] = {}
+    registry_widgets: Dict[str, Any] = {}
+    webio_receivers: Dict[str, Any] = {}
+    ydoc_defaults: Dict[str, Any] = {}
     for decl in decls:
         skill_name = str(decl.get("skill") or "").strip()
         source = f"skill:{skill_name}" if skill_name else "skill:unknown"
         dev_flag = str(decl.get("space") or "default").strip().lower() == "dev"
+        node_owned = _is_node_owned_skill(skill_name)
+        reg = decl.get("registry") if isinstance(decl.get("registry"), Mapping) else {}
+        modal_id_map = _node_scoped_modal_ids(reg, node_id=node_id) if node_owned else {}
         for app in decl.get("apps") or []:
             if not isinstance(app, dict):
                 continue
             entry = _mark_entry(app, source=source, dev=dev_flag)
+            if node_owned:
+                entry = _apply_node_context_to_ui(entry, display, node_id=node_id, modal_id_map=modal_id_map)
             apps.append(_apply_node_display_to_entry(entry, display, node_id=node_id))
         for widget in decl.get("widgets") or []:
             if not isinstance(widget, dict):
                 continue
             entry = _mark_entry(widget, source=source, dev=dev_flag)
+            if node_owned:
+                entry = _apply_node_context_to_ui(entry, display, node_id=node_id, modal_id_map=modal_id_map)
             widgets.append(_apply_node_display_to_entry(entry, display, node_id=node_id))
+        mod_spec = reg.get("modals") if isinstance(reg, Mapping) else {}
+        if isinstance(mod_spec, Mapping):
+            for key, value in mod_spec.items():
+                token = str(key or "").strip()
+                if not token:
+                    continue
+                scoped_token = modal_id_map.get(token, token)
+                if scoped_token in registry_modals:
+                    continue
+                registry_modals[scoped_token] = (
+                    _apply_node_context_to_ui(value, display, node_id=node_id, modal_id_map=modal_id_map)
+                    if node_owned
+                    else _clone_json_like(value)
+                )
+        wid_spec = reg.get("widgets") if isinstance(reg, Mapping) else {}
+        if isinstance(wid_spec, Mapping):
+            for key, value in wid_spec.items():
+                token = str(key or "").strip()
+                if not token or token in registry_widgets:
+                    continue
+                registry_widgets[token] = (
+                    _apply_node_context_to_ui(value, display, node_id=node_id, modal_id_map=modal_id_map)
+                    if node_owned
+                    else _clone_json_like(value)
+                )
+        webio = decl.get("webio") if isinstance(decl.get("webio"), Mapping) else {}
+        receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
+        for key, value in receivers.items():
+            token = str(key or "").strip()
+            if token and token not in webio_receivers:
+                webio_receivers[token] = _normalize_webio_receiver(value)
+        raw_defaults = decl.get("ydoc_defaults") if isinstance(decl.get("ydoc_defaults"), Mapping) else {}
+        for path, value in raw_defaults.items():
+            token = str(path or "").strip()
+            if not token:
+                continue
+            scoped_path = node_scope_data_path(token, node_id) if node_owned else token
+            ydoc_defaults.setdefault(scoped_path, _clone_json_like(value))
     return {
         "captured_at": time.time(),
         "apps": _merge_by_id(apps),
         "widgets": _merge_by_id(widgets),
+        "registry": {
+            "modals": registry_modals,
+            "widgets": registry_widgets,
+        },
+        "webio": {"receivers": webio_receivers},
+        "ydoc_defaults": ydoc_defaults,
     }
 
 
@@ -602,6 +732,56 @@ def _json_like_equal(current: Any, next_value: Any) -> bool:
         return _clone_json_like(current) == _clone_json_like(next_value)
 
 
+def _merge_nested_json_path(existing: Any, segments: List[str], payload: Any) -> tuple[bool, Any]:
+    if not segments:
+        if _json_like_equal(existing, payload):
+            return False, existing
+        return True, _clone_json_like(payload)
+
+    key = str(segments[0] or "")
+    if not key:
+        return False, _clone_json_like(existing)
+
+    child_existing = None
+    items = _mapping_items(existing)
+    if items is not None:
+        for item_key, item_value in items:
+            if item_key == key:
+                child_existing = item_value
+                break
+
+    changed, merged_child = _merge_nested_json_path(child_existing, segments[1:], payload)
+    if not changed:
+        return False, existing
+
+    base = _clone_json_like(existing)
+    if not isinstance(base, dict):
+        base = {}
+    merged = dict(base)
+    merged[key] = merged_child
+    return True, merged
+
+
+def _nested_json_path_exists(existing: Any, segments: List[str]) -> bool:
+    current = existing
+    for segment in segments:
+        key = str(segment or "")
+        if not key:
+            return False
+        items = _mapping_items(current)
+        if items is None:
+            return False
+        found = False
+        for item_key, item_value in items:
+            if item_key == key:
+                current = item_value
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
 def _is_y_map_value(value: Any) -> bool:
     y_map_type = getattr(Y, "YMap", None)
     return bool(y_map_type) and isinstance(value, y_map_type)
@@ -737,7 +917,6 @@ def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
     receivers: Dict[str, Any] = {}
     for decl in skill_decls:
         skill_name = str(decl.get("skill") or "").strip()
-        node_id = str(decl.get("node_id") or "").strip()
         webio = decl.get("webio") if isinstance(decl.get("webio"), Mapping) else {}
         raw_receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
         for key, value in raw_receivers.items():
@@ -750,8 +929,6 @@ def _merge_webio_receivers(skill_decls: List[Dict[str, Any]]) -> Dict[str, Any]:
             normalized["id"] = receiver_id
             if skill_name:
                 normalized["origin"] = f"skill:{skill_name}"
-            if node_id and "nodeId" not in normalized:
-                normalized["nodeId"] = node_id
             receivers[receiver_id] = normalized
     return {"receivers": receivers}
 
@@ -1977,23 +2154,65 @@ class WebspaceScenarioRuntime:
             )
             apps = catalog.get("apps") if isinstance(catalog.get("apps"), list) else []
             widgets = catalog.get("widgets") if isinstance(catalog.get("widgets"), list) else []
-            if not apps and not widgets:
+            registry = catalog.get("registry") if isinstance(catalog.get("registry"), Mapping) else {}
+            webio = catalog.get("webio") if isinstance(catalog.get("webio"), Mapping) else {}
+            ydoc_defaults = catalog.get("ydoc_defaults") if isinstance(catalog.get("ydoc_defaults"), Mapping) else {}
+            if not apps and not widgets and not registry and not webio and not ydoc_defaults:
                 continue
             display = node_display_from_directory_node(node)
+            modal_id_map = _node_scoped_modal_ids(registry, node_id=node_id)
             decl: Dict[str, Any] = {
                 "skill": f"subnet.member.{node_id}",
                 "space": "default",
                 "node_id": node_id,
                 "apps": [],
                 "widgets": [],
-                "registry": {},
+                "registry": {"modals": {}, "widgets": {}},
+                "webio": {"receivers": {}},
+                "ydoc_defaults": {},
                 "contributions": [],
             }
+            mod_spec = registry.get("modals") if isinstance(registry.get("modals"), Mapping) else {}
+            if isinstance(mod_spec, Mapping):
+                for key, value in mod_spec.items():
+                    token = str(key or "").strip()
+                    if not token:
+                        continue
+                    scoped_token = modal_id_map.get(token, _node_scoped_catalog_id(node_id, token))
+                    decl["registry"]["modals"][scoped_token] = _apply_node_context_to_ui(
+                        value,
+                        display,
+                        node_id=node_id,
+                        modal_id_map=modal_id_map,
+                    )
+            wid_spec = registry.get("widgets") if isinstance(registry.get("widgets"), Mapping) else {}
+            if isinstance(wid_spec, Mapping):
+                for key, value in wid_spec.items():
+                    token = str(key or "").strip()
+                    if not token:
+                        continue
+                    scoped_token = _node_scoped_catalog_id(node_id, token)
+                    decl["registry"]["widgets"][scoped_token] = _apply_node_context_to_ui(
+                        value,
+                        display,
+                        node_id=node_id,
+                        modal_id_map=modal_id_map,
+                    )
+            webio_receivers = webio.get("receivers") if isinstance(webio.get("receivers"), Mapping) else {}
+            if isinstance(webio_receivers, Mapping):
+                for key, value in webio_receivers.items():
+                    token = str(key or "").strip()
+                    if token:
+                        decl["webio"]["receivers"][token] = _normalize_webio_receiver(value)
+            for path, value in ydoc_defaults.items():
+                token = str(path or "").strip()
+                if token:
+                    decl["ydoc_defaults"][node_scope_data_path(token, node_id)] = _clone_json_like(value)
             for item in apps:
                 if not isinstance(item, dict):
                     continue
                 entry = _scope_remote_catalog_entry_id(
-                    _apply_node_display_to_entry(item, display, node_id=node_id),
+                    _apply_node_context_to_ui(item, display, node_id=node_id, modal_id_map=modal_id_map),
                     node_id=node_id,
                 )
                 decl["apps"].append(entry)
@@ -2011,7 +2230,7 @@ class WebspaceScenarioRuntime:
                 if not isinstance(item, dict):
                     continue
                 entry = _scope_remote_catalog_entry_id(
-                    _apply_node_display_to_entry(item, display, node_id=node_id),
+                    _apply_node_context_to_ui(item, display, node_id=node_id, modal_id_map=modal_id_map),
                     node_id=node_id,
                 )
                 decl["widgets"].append(entry)
@@ -2034,25 +2253,38 @@ class WebspaceScenarioRuntime:
             raw = decl.get("ydoc_defaults") or {}
             if not isinstance(raw, dict):
                 continue
+            skill_name = str(decl.get("skill") or "").strip()
+            node_id = str(decl.get("node_id") or "").strip()
             for path, default in raw.items():
                 if not isinstance(path, str):
                     continue
+                if _is_node_owned_skill(skill_name) and node_id:
+                    path = node_scope_data_path(path, node_id)
                 # Preserve first writer semantics for conflicting defaults.
                 spec.setdefault(path, default)
 
         for path, default in spec.items():
             segments = [s for s in path.split("/") if s]
-            if len(segments) != 2:
+            if len(segments) < 2:
                 continue
-            root_name, key = segments
+            root_name, key = segments[0], segments[1]
             root = ydoc.get_map(root_name)
-            if root.get(key) is not None:
-                continue
             try:
                 value = json.loads(json.dumps(default))
             except Exception:
                 value = default
-            root.set(txn, key, value)
+            if len(segments) == 2:
+                if root.get(key) is not None:
+                    continue
+                root.set(txn, key, value)
+                continue
+            current_top = root.get(key)
+            tail = segments[2:]
+            if _nested_json_path_exists(current_top, tail):
+                continue
+            changed, merged = _merge_nested_json_path(current_top, tail, value)
+            if changed:
+                root.set(txn, key, merged)
 
     def _collect_resolver_inputs_in_doc(self, ydoc: Y.YDoc, webspace_id: str) -> WebspaceResolverInputs:
         ui_map = ydoc.get_map("ui")
@@ -2174,6 +2406,7 @@ class WebspaceScenarioRuntime:
             skill_name = decl.get("skill") or ""
             space = decl.get("space") or "default"
             node_id = str(decl.get("node_id") or "").strip()
+            node_owned = _is_node_owned_skill(str(skill_name or ""))
             decl_display = {
                 "node_label": str(decl.get("node_label") or "").strip(),
                 "node_compact_label": str(decl.get("node_compact_label") or "").strip(),
@@ -2184,23 +2417,31 @@ class WebspaceScenarioRuntime:
                 decl_display = local_display
             source = f"skill:{skill_name}"
             dev_flag = space == "dev"
+            reg = decl.get("registry") or {}
+            modal_id_map = _node_scoped_modal_ids(reg, node_id=node_id) if node_owned else {}
             for app in decl.get("apps") or []:
                 if isinstance(app, dict):
                     entry = _mark_entry(app, source=source, dev=dev_flag)
+                    if node_owned and node_id:
+                        entry = _apply_node_context_to_ui(entry, decl_display, node_id=node_id, modal_id_map=modal_id_map)
                     skill_apps.append(_apply_node_display_to_entry(entry, decl_display, node_id=node_id))
             for widget in decl.get("widgets") or []:
                 if isinstance(widget, dict):
                     entry = _mark_entry(widget, source=source, dev=dev_flag)
+                    if node_owned and node_id:
+                        entry = _apply_node_context_to_ui(entry, decl_display, node_id=node_id, modal_id_map=modal_id_map)
                     skill_widgets.append(_apply_node_display_to_entry(entry, decl_display, node_id=node_id))
-            reg = decl.get("registry") or {}
             mod_spec = reg.get("modals") or {}
             if isinstance(mod_spec, dict):
-                skill_registry_modals.append([str(k) for k in mod_spec.keys()])
+                skill_registry_modals.append([modal_id_map.get(str(k), str(k)) for k in mod_spec.keys()])
             else:
                 skill_registry_modals.append([str(x) for x in mod_spec])
             wid_spec = reg.get("widgets") or {}
             if isinstance(wid_spec, dict):
-                skill_registry_widgets.append([str(k) for k in wid_spec.keys()])
+                skill_registry_widgets.append([
+                    _node_scoped_catalog_id(node_id, str(k)) if node_owned and node_id else str(k)
+                    for k in wid_spec.keys()
+                ])
             else:
                 skill_registry_widgets.append([str(x) for x in wid_spec])
             for contrib in decl.get("contributions") or []:
@@ -2275,10 +2516,27 @@ class WebspaceScenarioRuntime:
             mod_spec = reg.get("modals") or {}
             if not isinstance(mod_spec, dict):
                 continue
+            skill_name = str(decl.get("skill") or "").strip()
+            node_id = str(decl.get("node_id") or "").strip()
+            node_owned = _is_node_owned_skill(skill_name)
+            decl_display = {
+                "node_label": str(decl.get("node_label") or "").strip(),
+                "node_compact_label": str(decl.get("node_compact_label") or "").strip(),
+                "node_color": str(decl.get("node_color") or "").strip(),
+                "node_index": decl.get("node_index"),
+            }
+            if not any(decl_display.values()):
+                decl_display = local_display
+            modal_id_map = _node_scoped_modal_ids(reg, node_id=node_id) if node_owned else {}
             for key, value in mod_spec.items():
-                token = str(key)
+                raw_token = str(key)
+                token = modal_id_map.get(raw_token, raw_token)
                 if token and token not in merged_modals_map:
-                    merged_modals_map[token] = value
+                    merged_modals_map[token] = (
+                        _apply_node_context_to_ui(value, decl_display, node_id=node_id, modal_id_map=modal_id_map)
+                        if node_owned and node_id
+                        else value
+                    )
 
         if supports_catalog_controls and "apps_catalog" not in merged_modals_map:
             merged_modals_map["apps_catalog"] = {

@@ -8,6 +8,8 @@ import logging
 
 from adaos.sdk.data.context import get_current_skill
 from adaos.services.agent_context import AgentContext, get_ctx
+from adaos.services.node_config import load_config
+from adaos.services.scenario.node_data_scope import node_scope_data_path
 from adaos.services.yjs.doc import mutate_live_room, async_get_ydoc
 from adaos.services.yjs.store import ystore_write_metadata
 from adaos.services.user.profile import UserProfileService
@@ -22,6 +24,20 @@ def _projection_write_owner() -> str:
     if name:
         return f"skill:{name}"
     return "core"
+
+
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return "hub"
 
 
 def _clone_json_like(value: Any) -> Any:
@@ -153,7 +169,7 @@ class ProjectionService:
             return
         for t in targets:
             if t.backend == "yjs":
-                await self._apply_yjs(t, value, user_id=user_id, webspace_id=webspace_id)
+                await self._apply_yjs(t, value, scope=scope, user_id=user_id, webspace_id=webspace_id)
             elif t.backend == "kv":
                 self._apply_kv(scope, slot, value, user_id=user_id)
             else:
@@ -165,6 +181,7 @@ class ProjectionService:
         target: ProjectionTarget,
         value: Any,
         *,
+        scope: str,
         user_id: Optional[str],
         webspace_id: Optional[str],
     ) -> None:
@@ -177,6 +194,8 @@ class ProjectionService:
         path = target.path or ""
         if not path:
             return
+        if str(scope or "").strip() == "subnet":
+            path = node_scope_data_path(path, _local_node_id())
 
         # Allow simple {user_id} templating inside Yjs paths.
         if "{user_id}" in path:

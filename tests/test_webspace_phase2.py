@@ -207,6 +207,43 @@ class _FakeAsyncDoc:
         return False
 
 
+def test_ydoc_defaults_create_node_scoped_nested_skill_state() -> None:
+    runtime = webspace_runtime_module.WebspaceScenarioRuntime(get_ctx())
+    fake_state = {
+        "data": _FakeMap(
+            {
+                "nodes": {
+                    "member-1": {
+                        "weather": {
+                            "current": {"city": "Paris"},
+                        }
+                    }
+                }
+            }
+        )
+    }
+    fake_doc = _FakeDoc(fake_state)
+
+    runtime._apply_ydoc_defaults_in_txn(
+        fake_doc,
+        _FakeTxn(),
+        [
+            {
+                "skill": "weather_skill",
+                "node_id": "member-1",
+                "ydoc_defaults": {
+                    "data/weather/current": {"city": "Moscow"},
+                    "data/weather/cities": ["Moscow", "Paris"],
+                },
+            }
+        ],
+    )
+
+    weather = fake_state["data"]["nodes"]["member-1"]["weather"]
+    assert weather["current"] == {"city": "Paris"}
+    assert weather["cities"] == ["Moscow", "Paris"]
+
+
 def test_describe_webspace_operational_state_exposes_manifest_and_current_scenario(monkeypatch) -> None:
     webspace_id = "phase2-describe"
     ensure_workspace(webspace_id)
@@ -340,6 +377,13 @@ def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract(m
                     "skill": "telemetry_skill",
                     "space": "default",
                     "node_id": "node-1",
+                    "widgets": [
+                        {
+                            "id": "telemetry_widget",
+                            "title": "Telemetry",
+                            "dataSource": {"kind": "stream", "receiver": "telemetry_feed"},
+                        }
+                    ],
                     "webio": {
                         "receivers": {
                             "telemetry_feed": {
@@ -365,10 +409,10 @@ def test_resolve_webspace_merges_webio_receivers_into_compact_runtime_contract(m
                 "maxItems": 50,
                 "initialState": {"items": []},
                 "origin": "skill:telemetry_skill",
-                "nodeId": "node-1",
             }
         }
     }
+    assert resolved.catalog["widgets"][0]["dataSource"]["nodeId"] == "node-1"
 
 
 def test_collect_remote_skill_decls_uses_member_desktop_catalog_snapshot(monkeypatch) -> None:
@@ -394,8 +438,47 @@ def test_collect_remote_skill_decls_uses_member_desktop_catalog_snapshot(monkeyp
                         "primary_node_name": "Edge One",
                         "snapshot": {
                             "desktop_catalog": {
-                                "apps": [{"id": "weather_skill", "title": "Weather"}],
-                                "widgets": [{"id": "infrastate", "title": "Infra State"}],
+                                "apps": [
+                                    {
+                                        "id": "weather_skill",
+                                        "title": "Weather",
+                                        "launchModal": "weather_modal",
+                                        "dataSource": {"kind": "y", "path": "data/weather/current"},
+                                    }
+                                ],
+                                "widgets": [
+                                    {
+                                        "id": "infrastate",
+                                        "title": "Infra State",
+                                        "dataSource": {"kind": "stream", "receiver": "infrastate.realtime"},
+                                    }
+                                ],
+                                "registry": {
+                                    "modals": {
+                                        "weather_modal": {
+                                            "title": "Weather Settings",
+                                            "schema": {
+                                                "widgets": [
+                                                    {
+                                                        "type": "selector",
+                                                        "source": "data/weather/cities",
+                                                    }
+                                                ]
+                                            },
+                                        }
+                                    }
+                                },
+                                "webio": {
+                                    "receivers": {
+                                        "infrastate.realtime": {
+                                            "mode": "replace",
+                                            "initialState": {"status": "idle"},
+                                        }
+                                    }
+                                },
+                                "ydoc_defaults": {
+                                    "data/weather/current": {"city": "Moscow"},
+                                },
                             }
                         },
                     },
@@ -412,8 +495,17 @@ def test_collect_remote_skill_decls_uses_member_desktop_catalog_snapshot(monkeyp
     assert decls[0]["node_id"] == "member-1"
     assert decls[0]["apps"][0]["node_label"] == "Edge One"
     assert decls[0]["apps"][0]["node_compact_label"] == "N2"
+    assert decls[0]["apps"][0]["id"] == "node:member-1:weather_skill"
+    assert decls[0]["apps"][0]["launchModal"] == "node:member-1:weather_modal"
+    assert decls[0]["apps"][0]["dataSource"]["path"] == "data/nodes/member-1/weather/current"
     assert decls[0]["widgets"][0]["node_label"] == "Edge One"
     assert isinstance(decls[0]["widgets"][0]["node_color"], str) and decls[0]["widgets"][0]["node_color"]
+    assert decls[0]["widgets"][0]["id"] == "node:member-1:infrastate"
+    assert decls[0]["widgets"][0]["dataSource"]["nodeId"] == "member-1"
+    assert decls[0]["registry"]["modals"]["node:member-1:weather_modal"]["schema"]["widgets"][0]["source"] == "data/nodes/member-1/weather/cities"
+    assert decls[0]["webio"]["receivers"]["infrastate.realtime"]["mode"] == "replace"
+    assert "nodeId" not in decls[0]["webio"]["receivers"]["infrastate.realtime"]
+    assert decls[0]["ydoc_defaults"]["data/nodes/member-1/weather/current"] == {"city": "Moscow"}
 
 
 def _patch_switch_dependencies(monkeypatch, *, state: dict[str, _FakeMap] | None = None) -> dict[str, _FakeMap]:
@@ -1535,6 +1627,16 @@ def test_webspace_listing_includes_local_node_metadata(monkeypatch) -> None:
 
     monkeypatch.setattr(webspace_runtime_module, "_local_node_id", lambda: "member-01")
     monkeypatch.setattr(webspace_runtime_module, "_local_node_label", lambda: "Edge Member")
+    monkeypatch.setattr(
+        webspace_runtime_module,
+        "_local_node_display",
+        lambda: {
+            "node_label": "Edge Member",
+            "node_compact_label": "N1",
+            "node_index": 1,
+            "node_color": "#F28E2B",
+        },
+    )
     monkeypatch.setattr(webspace_runtime_module, "_try_read_live_current_scenario", lambda _webspace_id: "web_desktop")
 
     listing = webspace_runtime_module._webspace_listing()

@@ -1143,6 +1143,8 @@ def _request_webio_stream_snapshots(topics: set[str], *, transport: str) -> None
             }
             if node_id:
                 payload["node_id"] = node_id
+                payload["target_node_id"] = node_id
+                payload["_meta"] = {"webspace_id": webspace_id, "target_node_id": node_id}
             ctx.bus.publish(
                 DomainEvent(
                     type="webio.stream.snapshot.requested",
@@ -1192,6 +1194,8 @@ def _publish_webio_stream_subscription_change(topics: set[str], *, action: str, 
             }
             if node_id:
                 payload["node_id"] = node_id
+                payload["target_node_id"] = node_id
+                payload["_meta"] = {"webspace_id": webspace_id, "target_node_id": node_id}
             ctx.bus.publish(
                 DomainEvent(
                     type="webio.stream.subscription.changed",
@@ -2187,9 +2191,21 @@ def _make_publish_bus(
     def _publish_bus(topic: str, extra: Dict[str, Any] | None = None) -> None:
         data = dict(extra or {})
         effective_ws = str(data.get("webspace_id") or webspace_id_ref())
-        data.setdefault("webspace_id", effective_ws)
+        if not data.get("webspace_id"):
+            data["webspace_id"] = effective_ws
         meta = dict(data.get("_meta") or {})
         meta.setdefault("webspace_id", effective_ws)
+        target_node_id = str(
+            data.get("target_node_id")
+            or data.get("node_target_id")
+            or meta.get("target_node_id")
+            or meta.get("node_target_id")
+            or data.get("node_id")
+            or ""
+        ).strip()
+        if target_node_id:
+            data.setdefault("target_node_id", target_node_id)
+            meta.setdefault("target_node_id", target_node_id)
         did = device_id_ref()
         if did:
             meta.setdefault("device_id", did)
@@ -2383,7 +2399,10 @@ async def process_events_command(
             return None
 
     if kind == "weather.city_changed":
-        _publish_bus("weather.city_changed", {"city": payload.get("city"), "webspace_id": payload.get("webspace_id")})
+        event_payload = dict(payload or {})
+        event_payload["city"] = payload.get("city")
+        event_payload["webspace_id"] = payload.get("webspace_id")
+        _publish_bus("weather.city_changed", event_payload)
         await _ack()
         return None
 

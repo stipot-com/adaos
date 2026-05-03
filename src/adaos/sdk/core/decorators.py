@@ -10,6 +10,7 @@ from adaos.sdk.data.context import set_current_skill, clear_current_skill
 from adaos.sdk.core._ctx import require_ctx
 from adaos.sdk.core.errors import SdkRuntimeNotInitialized
 from adaos.sdk.io.context import io_meta
+from adaos.services.node_config import load_config
 from adaos.services.skill.activation import load_skill_activation_policy, subscription_strategy_for_policy
 
 # публичные реестры (стабильные имена)
@@ -60,6 +61,41 @@ def _run_sync_subscription_in_thread(topic: str) -> bool:
         return False
 
 
+def _local_node_id() -> str:
+    try:
+        conf = load_config()
+        node_id = str(getattr(conf, "node_id", "") or "").strip()
+        if node_id:
+            return node_id
+        nested = str(getattr(getattr(conf, "node_settings", None), "id", "") or "").strip()
+        if nested:
+            return nested
+    except Exception:
+        pass
+    return ""
+
+
+def _target_node_id_from_event(evt: object) -> str:
+    payload = getattr(evt, "payload", None) if hasattr(evt, "payload") else None
+    if not isinstance(payload, dict):
+        return ""
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    return str(
+        payload.get("target_node_id")
+        or payload.get("node_target_id")
+        or meta.get("target_node_id")
+        or meta.get("node_target_id")
+        or ""
+    ).strip()
+
+
+def _skill_event_targets_this_node(evt: object) -> bool:
+    target_node_id = _target_node_id_from_event(evt)
+    if not target_node_id:
+        return True
+    return target_node_id == _local_node_id()
+
+
 def subscribe(topic: str):
     """Регистрирует обработчик; фактическая подписка делает register_subscriptions()."""
 
@@ -97,6 +133,8 @@ async def register_subscriptions():
         if inspect.iscoroutinefunction(fn):
 
             async def _wrap(evt, _fn=fn, _skill=skill_name, _topic=topic):
+                if _skill and not _skill_event_targets_this_node(evt):
+                    return None
                 pushed = _maybe_push_skill(_fn, _skill)
                 try:
                     payload = getattr(evt, "payload", None) if hasattr(evt, "payload") else None
@@ -112,6 +150,8 @@ async def register_subscriptions():
         else:
 
             async def _wrap(evt, _fn=fn, _skill=skill_name, _topic=topic):
+                if _skill and not _skill_event_targets_this_node(evt):
+                    return None
                 pushed = _maybe_push_skill(_fn, _skill)
                 try:
                     def _call_sync_handler():
