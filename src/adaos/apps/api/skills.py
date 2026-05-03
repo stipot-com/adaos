@@ -64,6 +64,13 @@ class UpdateReq(BaseModel):
     dry_run: bool = False
     webspace_id: str | None = None
     defer_webspace_rebuild: bool = False
+    force: bool | None = None
+
+
+class UninstallReq(BaseModel):
+    name: str
+    webspace_id: str | None = None
+    force: bool = False
 
 
 def _safe_version(v: Any) -> Version | None:
@@ -392,10 +399,11 @@ async def install(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
 
 
 @router.post("/uninstall")
-async def uninstall(body: InstallReq, mgr: SkillManager = Depends(_get_manager)):
+async def uninstall(body: UninstallReq, mgr: SkillManager = Depends(_get_manager)):
     webspace_id = body.webspace_id or default_webspace_id()
     mgr.uninstall(
         body.name,
+        force=bool(body.force),
     )
     try:
         await rebuild_webspace_projection(
@@ -530,7 +538,10 @@ async def runtime_setup(body: RuntimeSetupReq, mgr: SkillManager = Depends(_get_
 async def update_skill(body: UpdateReq, ctx: AgentContext = Depends(get_ctx)):
     service = SkillUpdateService(ctx)
     try:
-        result = service.request_update(body.name, dry_run=body.dry_run)
+        kwargs: dict[str, Any] = {"dry_run": body.dry_run}
+        if body.force is not None:
+            kwargs["force"] = body.force
+        result = service.request_update(body.name, **kwargs)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:

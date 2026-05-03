@@ -165,6 +165,25 @@ def test_skill_migrate_uses_longer_hub_timeout_for_remote_updates(monkeypatch) -
     assert "weather_skill: updated (version 2.0.0)" in result.output
 
 
+def test_skill_migrate_passes_force_flag_when_requested(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[tuple[str, dict | None, float]] = []
+
+    monkeypatch.setattr(skill_cmd, "_hub_api_ready", lambda timeout_s=3.0: True)
+    monkeypatch.setattr(skill_cmd, "default_webspace_id", lambda: "default")
+
+    def _fake_hub_post(path: str, *, body: dict | None = None, timeout_s: float = 30) -> dict:
+        calls.append((path, body, timeout_s))
+        return {"updated": True, "version": "2.0.0"}
+
+    monkeypatch.setattr(skill_cmd, "_hub_post", _fake_hub_post)
+
+    result = runner.invoke(skill_cmd.app, ["migrate", "weather_skill", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["force"] is True
+
+
 def test_skill_migrate_batches_remote_rebuild_until_the_end(monkeypatch) -> None:
     runner = CliRunner()
     calls: list[tuple[str, dict | None, float]] = []
@@ -214,3 +233,21 @@ def test_skill_migrate_batches_remote_rebuild_until_the_end(monkeypatch) -> None
             120,
         ),
     ]
+
+
+def test_skill_uninstall_suggests_force_when_workspace_is_dirty(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class _Mgr:
+        def uninstall(self, name: str, *, safe: bool = False, force: bool = False) -> None:  # noqa: ARG002
+            raise RuntimeError("git sparse-checkout init failed: error: cannot initialize sparse-checkout: You have unstaged changes.")
+
+    monkeypatch.setattr(skill_cmd, "_hub_api_ready", lambda timeout_s=3.0: False)
+    monkeypatch.setattr(skill_cmd, "_mgr", lambda: _Mgr())
+    monkeypatch.setattr(skill_cmd, "_", lambda key, **kwargs: f"rerun adaos skill uninstall {kwargs.get('name', '')} --force")
+
+    result = runner.invoke(skill_cmd.app, ["uninstall", "infrascope_skill"])
+
+    assert result.exit_code == 1
+    assert "uninstall failed" in result.output
+    assert "--force" in result.output

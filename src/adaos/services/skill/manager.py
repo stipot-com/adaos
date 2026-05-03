@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -38,6 +39,7 @@ from adaos.services.semver import bump_version
 import ast
 
 _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
+_log = logging.getLogger("adaos.skill.manager")
 
 
 def _default_webspace_id() -> str:
@@ -865,7 +867,7 @@ class SkillManager:
                 results[test_name] = replace(result, detail=detail)
         return results
 
-    def uninstall(self, name: str, *, safe: bool = False) -> None:
+    def uninstall(self, name: str, *, safe: bool = False, force: bool = False) -> None:
         self.caps.require("core", "skills.manage", "net.git")
         name = name.strip()
         if not _name_re.match(name):
@@ -883,13 +885,25 @@ class SkillManager:
             return f"uninstalled: {name} (registry-only{suffix})"
         names = [r.name for r in self.reg.list()]
         prefixed = [f"skills/{n}" for n in names]
-        if safe:
+        if force:
+            stash_ref = self.ctx.git.stash_push(
+                str(root),
+                f"adaos:auto-stash forced skill uninstall {name}",
+                include_untracked=True,
+            )
+            _log.warning(
+                "forced skill uninstall requested skill=%s repo=%s stash=%s",
+                name,
+                str(root),
+                str(stash_ref or "-"),
+            )
+        elif safe:
             # Безопасный режим: проверяем отсутствие незакоммиченных изменений под управляемыми путями.
             ensure_clean(self.ctx.git, str(root), prefixed)
         self.ctx.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.ctx.git.sparse_set(str(root), prefixed, no_cone=True)
-        if safe:
+        if safe and not force:
             # В безопасном режиме обновляем workspace, чтобы поддерево навыков соответствовало удалённому репо.
             self.ctx.git.pull(str(root))
         remove_error: Exception | None = None

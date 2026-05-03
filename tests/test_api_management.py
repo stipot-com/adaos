@@ -84,8 +84,9 @@ class _FakeSkillManager:
         self.calls.append(f"activate_for_space:{name}:{version}:{slot}:{webspace_id}")
         return slot or "B"
 
-    def uninstall(self, name: str) -> None:
-        self.calls.append(f"uninstall:{name}")
+    def uninstall(self, name: str, **kwargs: Any) -> None:
+        force = int(bool(kwargs.get("force", False)))
+        self.calls.append(f"uninstall:{name}:{force}")
 
     def push(self, name: str, message: str, *, signoff: bool = False) -> str:
         self.calls.append(f"push:{name}:{message}:{int(signoff)}")
@@ -145,7 +146,7 @@ def test_skill_api_exposes_management_routes() -> None:
     }
     async def _rebuild(webspace_id: str, *, action: str = "rebuild", scenario_id: str | None = None, source_of_truth: str = "workspace"):
         rebuilds.append((webspace_id, action, source_of_truth, scenario_id))
-    skills.rebuild_webspace_from_sources = _rebuild
+    skills.rebuild_webspace_projection = _rebuild
     client = _make_client(skill_mgr, scenario_mgr)
 
     resp = client.get("/api/skills/list")
@@ -278,7 +279,7 @@ def test_skill_update_refreshes_runtime_when_source_version_changed(monkeypatch)
 
     monkeypatch.setattr(skills, "SkillUpdateService", _Service)
     monkeypatch.setattr(skills, "_get_manager", lambda ctx: skill_mgr)
-    monkeypatch.setattr(skills, "rebuild_webspace_from_sources", _rebuild)
+    monkeypatch.setattr(skills, "rebuild_webspace_projection", _rebuild)
 
     resp = client.post("/api/skills/update", json={"name": "demo", "webspace_id": "default"})
     assert resp.status_code == 200
@@ -303,12 +304,17 @@ def test_skill_update_can_defer_webspace_rebuild_until_batch_finalize(monkeypatc
             return SimpleNamespace(updated=True, version="2.0.0")
 
     async def _rebuild(*args, **kwargs):
-        rebuilds.append((args[0], kwargs.get("action", "rebuild"), kwargs.get("source_of_truth", "workspace"), kwargs.get("scenario_id")))
+        rebuilds.append((
+            kwargs.get("webspace_id") if "webspace_id" in kwargs else args[0],
+            kwargs.get("action", "rebuild"),
+            kwargs.get("source_of_truth", "workspace"),
+            kwargs.get("scenario_id"),
+        ))
         return None
 
     monkeypatch.setattr(skills, "SkillUpdateService", _Service)
     monkeypatch.setattr(skills, "_get_manager", lambda ctx: skill_mgr)
-    monkeypatch.setattr(skills, "rebuild_webspace_from_sources", _rebuild)
+    monkeypatch.setattr(skills, "rebuild_webspace_projection", _rebuild)
     monkeypatch.setattr(skills, "bus_emit", lambda bus, typ, payload, source: bus_events.append((typ, payload, source)))
     monkeypatch.setattr(skills, "get_ctx", lambda: SimpleNamespace(bus=object()))
 
@@ -337,10 +343,15 @@ def test_skill_runtime_rebuild_webspace_endpoint_rebuilds_once(monkeypatch) -> N
     rebuilds: list[tuple[str, str, str, str | None]] = []
 
     async def _rebuild(*args, **kwargs):
-        rebuilds.append((args[0], kwargs.get("action", "rebuild"), kwargs.get("source_of_truth", "workspace"), kwargs.get("scenario_id")))
+        rebuilds.append((
+            kwargs.get("webspace_id") if "webspace_id" in kwargs else args[0],
+            kwargs.get("action", "rebuild"),
+            kwargs.get("source_of_truth", "workspace"),
+            kwargs.get("scenario_id"),
+        ))
         return None
 
-    monkeypatch.setattr(skills, "rebuild_webspace_from_sources", _rebuild)
+    monkeypatch.setattr(skills, "rebuild_webspace_projection", _rebuild)
 
     resp = client.post(
         "/api/skills/runtime/rebuild-webspace",
@@ -388,3 +399,27 @@ def test_skill_update_returns_conflict_for_runtime_git_errors(monkeypatch) -> No
     resp = client.post("/api/skills/update", json={"name": "demo"})
     assert resp.status_code == 409
     assert resp.json()["detail"] == "workspace has local changes"
+
+
+def test_skill_update_passes_force_flag_when_requested(monkeypatch) -> None:
+    skill_mgr = _FakeSkillManager()
+    scenario_mgr = _FakeScenarioManager()
+    client = _make_client(skill_mgr, scenario_mgr)
+    captured: list[tuple[str, bool, bool | None]] = []
+
+    class _Service:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+
+        def request_update(self, skill_id: str, *, dry_run: bool = False, force: bool | None = None):
+            captured.append((skill_id, dry_run, force))
+            return SimpleNamespace(updated=True, version="2.0.0")
+
+    monkeypatch.setattr(skills, "SkillUpdateService", _Service)
+    monkeypatch.setattr(skills, "_get_manager", lambda ctx: skill_mgr)
+    monkeypatch.setattr(skills, "rebuild_webspace_projection", lambda *args, **kwargs: None)
+
+    resp = client.post("/api/skills/update", json={"name": "demo", "force": True})
+
+    assert resp.status_code == 200
+    assert captured == [("demo", False, True)]

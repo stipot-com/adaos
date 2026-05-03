@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +12,8 @@ from typing import Optional
 
 from adaos.services.agent_context import AgentContext
 from adaos.services.workspace_registry import rebuild_workspace_registry, write_workspace_registry
+
+_log = logging.getLogger("adaos.skill.update")
 
 
 @dataclass(slots=True)
@@ -25,6 +29,41 @@ _LOCAL_OVERLAY_FILES: tuple[str, ...] = (".skill_env.json",)
 class _OverlayBackup:
     path: Path
     backup: Path
+
+
+def _env_type() -> str:
+    return str(os.getenv("ENV_TYPE", "prod") or "prod").strip().lower()
+
+
+def _effective_force(force: bool | None) -> bool:
+    if force is not None:
+        return bool(force)
+    return _env_type() != "dev"
+
+
+def _maybe_force_stash_workspace(ctx: AgentContext, repo_root: Path, *, skill_id: str) -> str | None:
+    git = getattr(ctx, "git", None)
+    if git is None or not (repo_root / ".git").exists():
+        return None
+    env_type = _env_type()
+    repo_path = str(repo_root)
+    stash_ref = git.stash_push(repo_path, f"adaos:auto-stash forced skill update {skill_id}", include_untracked=True)
+    if stash_ref:
+        _log.warning(
+            "forced skill update stashed local workspace changes env_type=%s skill=%s repo=%s stash=%s",
+            env_type,
+            skill_id,
+            repo_path,
+            stash_ref,
+        )
+    else:
+        _log.warning(
+            "forced skill update requested env_type=%s skill=%s repo=%s; no local changes were stashed",
+            env_type,
+            skill_id,
+            repo_path,
+        )
+    return stash_ref
 
 
 def _iter_overlay_paths(*, repo_root: Path, skill_path: Path) -> list[Path]:
@@ -138,7 +177,7 @@ def _preserve_skill_overlays(*, repo_root: Path, skill_path: Path):
 class SkillUpdateService:
     ctx: AgentContext
 
-    def request_update(self, skill_id: str, *, dry_run: bool = False) -> SkillUpdateResult:
+    def request_update(self, skill_id: str, *, dry_run: bool = False, force: bool | None = None) -> SkillUpdateResult:
         repo = self.ctx.skills_repo
         meta = repo.get(skill_id)
         if meta is None:
@@ -151,6 +190,13 @@ class SkillUpdateService:
 
         if dry_run:
             return SkillUpdateResult(updated=False, version=version)
+        effective_force = _effective_force(force)
+        if force is None and effective_force:
+            _log.warning(
+                "skill update auto-force enabled for non-dev node env_type=%s skill=%s",
+                _env_type(),
+                skill_id,
+            )
 
         fs = getattr(self.ctx, "fs", None)
         if fs and hasattr(fs, "require_write"):
@@ -184,9 +230,13 @@ class SkillUpdateService:
                         raise PermissionError("fs.readonly") from exc
                 # Ensure the requested skill path is present in sparse patterns before pulling.
                 git.sparse_add(str(workspace_root), sparse_target)
+                if effective_force:
+                    _maybe_force_stash_workspace(self.ctx, workspace_root, skill_id=skill_id)
                 git.pull(str(pull_root))
                 _rebuild_workspace_registry_after_pull(workspace_root)
             else:
+                if effective_force:
+                    _maybe_force_stash_workspace(self.ctx, skill_path, skill_id=skill_id)
                 git.pull(str(skill_path))
 
         refreshed = repo.get(skill_id) or meta

@@ -4,7 +4,10 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from adaos.adapters.git.cli_git import CliGitClient
+from adaos.adapters.git.cli_git import GitError
 from adaos.adapters.skills.git_repo import GitSkillRepository
 from adaos.services.skill.update import SkillUpdateService
 
@@ -179,3 +182,48 @@ def test_request_update_rebuilds_workspace_registry_when_local_registry_is_dirty
     assert '"name": "infrastate_skill"' in registry_payload
     assert '"version": "1.0.4"' in registry_payload
     assert '"name": "local_only"' not in registry_payload
+
+
+def test_request_update_auto_forces_on_non_dev_by_stashing_local_changes(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    monkeypatch.setenv("ENV_TYPE", "prod")
+    remote = _init_monorepo(tmp_path / "case-force-prod", tracked_skill_env=False)
+    service, paths, repo = _make_service(tmp_path / "case-force-prod-node", remote)
+
+    repo.install("infrastate_skill")
+    skill_dir = paths.skills_dir() / "infrastate_skill"
+    (skill_dir / "skill.yaml").write_text(
+        "id: infrastate_skill\nname: Infra State\nversion: 'local-dev'\n",
+        encoding="utf-8",
+    )
+    _update_remote_skill(remote, version="1.0.5", skill_env='{"mode":"remote-default"}\n')
+
+    result = service.request_update("infrastate_skill")
+
+    assert result.updated is True
+    assert result.version == "1.0.5"
+    assert "version: '1.0.5'" in (skill_dir / "skill.yaml").read_text(encoding="utf-8")
+    stashes = _run_git(["stash", "list"], cwd=paths.workspace_dir())
+    assert "adaos:auto-stash forced skill update infrastate_skill" in stashes
+
+
+def test_request_update_requires_explicit_force_on_dev_nodes(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ADAOS_TESTING", "0")
+    monkeypatch.setenv("ENV_TYPE", "dev")
+    remote = _init_monorepo(tmp_path / "case-force-dev", tracked_skill_env=False)
+    service, paths, repo = _make_service(tmp_path / "case-force-dev-node", remote)
+
+    repo.install("infrastate_skill")
+    skill_dir = paths.skills_dir() / "infrastate_skill"
+    (skill_dir / "skill.yaml").write_text(
+        "id: infrastate_skill\nname: Infra State\nversion: 'local-dev'\n",
+        encoding="utf-8",
+    )
+    _update_remote_skill(remote, version="1.0.6", skill_env='{"mode":"remote-default"}\n')
+
+    with pytest.raises(GitError):
+        service.request_update("infrastate_skill")
+
+    result = service.request_update("infrastate_skill", force=True)
+    assert result.updated is True
+    assert result.version == "1.0.6"

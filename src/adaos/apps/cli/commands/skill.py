@@ -668,16 +668,32 @@ def sync():
 def uninstall(
     name: str,
     safe: bool = typer.Option(False, "--safe", help=_("cli.skill.uninstall.option.safe")),
+    force: bool = typer.Option(False, "--force", help=_("cli.skill.uninstall.option.force")),
     local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
     if not local and _hub_api_ready():
         # Server-side uninstall is always the correct behavior for AB core slots.
         # API currently does not expose `safe`; keep it for backward-compat but ignore in remote mode.
-        _hub_post("/api/skills/uninstall", body={"name": name, "webspace_id": default_webspace_id()})
+        _hub_post(
+            "/api/skills/uninstall",
+            body={
+                "name": name,
+                "webspace_id": default_webspace_id(),
+                "force": bool(force),
+            },
+        )
         typer.echo(_("cli.skill.uninstall.done", name=name))
         return
     mgr = _mgr()
-    mgr.uninstall(name, safe=safe)
+    try:
+        mgr.uninstall(name, safe=safe, force=force)
+    except Exception as exc:
+        message = str(exc)
+        typer.secho(f"uninstall failed: {message}", fg=typer.colors.RED)
+        lowered = message.lower()
+        if "unstaged changes" in lowered and not force:
+            typer.echo(_("cli.skill.uninstall.force_hint", name=name))
+        raise typer.Exit(1) from exc
     _rebuild_local_webspace(webspace_id=default_webspace_id())
     typer.echo(_("cli.skill.uninstall.done", name=name))
 
@@ -1563,6 +1579,7 @@ def doctor(name: str):
 def migrate(
     name: Optional[str] = typer.Argument(None, help="skill to migrate"),
     dry_run: bool = typer.Option(False, "--dry-run", help="report without applying changes"),
+    force: bool = typer.Option(False, "--force", help=_("cli.skill.migrate.option.force")),
     local: bool = typer.Option(False, "--local", help="Force local execution (bypass hub API)."),
 ):
     if not local and _hub_api_ready(timeout_s=3.0):
@@ -1575,6 +1592,7 @@ def migrate(
                     "name": name,
                     "dry_run": False,
                     "webspace_id": default_webspace_id(),
+                    **({"force": True} if force else {}),
                 },
                 timeout_s=120,
             )
@@ -1604,6 +1622,7 @@ def migrate(
                         "dry_run": False,
                         "webspace_id": default_webspace_id(),
                         "defer_webspace_rebuild": True,
+                        **({"force": True} if force else {}),
                     },
                     timeout_s=120,
                 )
@@ -1644,7 +1663,10 @@ def migrate(
     mgr = _mgr()
     for skill_name in names:
         try:
-            result = service.request_update(skill_name, dry_run=dry_run)
+            kwargs = {"dry_run": dry_run}
+            if force:
+                kwargs["force"] = True
+            result = service.request_update(skill_name, **kwargs)
         except FileNotFoundError as exc:
             failed = True
             typer.secho(f"{skill_name}: {exc}", fg=typer.colors.RED)
