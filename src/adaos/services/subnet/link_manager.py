@@ -166,6 +166,34 @@ class HubLinkManager:
             return
         await link.send_json({"t": "node.display.assignment", "node_display": payload, "ts": time.time()})
 
+    async def _push_current_core_update_status(self, node_id: str) -> None:
+        link = await self._get_link(node_id)
+        if not link:
+            return
+        try:
+            from adaos.services.core_update import read_status as read_core_update_status
+
+            payload = read_core_update_status() or {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict) or not payload:
+            return
+        await link.send_json(
+            {
+                "t": "hub.event",
+                "event": {
+                    "type": "core.update.status",
+                    "payload": payload,
+                    "source": "hub.register",
+                    "ts": time.time(),
+                },
+            }
+        )
+        link.last_hub_event_at = time.time()
+        link.last_hub_event_type = "core.update.status"
+        link.last_hub_core_update_state = str(payload.get("state") or "").strip() or None
+        link.last_hub_core_update_action = str(payload.get("action") or "").strip() or None
+
     async def register(
         self,
         node_id: str,
@@ -213,6 +241,10 @@ class HubLinkManager:
             await self._push_node_display_assignment(node_id)
         except Exception:
             _log.debug("failed to push node display assignment on register node_id=%s", node_id, exc_info=True)
+        try:
+            await self._push_current_core_update_status(node_id)
+        except Exception:
+            _log.debug("failed to push current core.update.status on register node_id=%s", node_id, exc_info=True)
         return link
 
     async def unregister(self, node_id: str) -> None:
