@@ -1001,6 +1001,7 @@ class InfrastateActionRequest(BaseModel):
     id: str = Field(..., min_length=1)
     webspace_id: str | None = None
     node_id: str | None = None
+    target_node_id: str | None = None
     value: Any | None = None
 
 
@@ -1441,6 +1442,13 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
         value = payload.value if isinstance(payload.value, dict) else {}
         target_kind = str(value.get("kind") or value.get("target_kind") or "").strip().lower()
         target_id = str(value.get("id") or value.get("target_id") or "").strip()
+        target_node_id = str(
+            value.get("target_node_id")
+            or value.get("node_id")
+            or payload.target_node_id
+            or payload.node_id
+            or ""
+        ).strip()
         if target_kind not in {"skill", "scenario"} or not target_id:
             return {
                 "ok": False,
@@ -1453,7 +1461,11 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
             target_kind=target_kind,
             target_id=target_id,
             webspace_id=target_webspace_id,
-            initiator={"kind": "api.node", "id": "marketplace_install"},
+            initiator={
+                "kind": "api.node",
+                "id": "marketplace_install",
+                "target_node_id": target_node_id or None,
+            },
             ctx=ctx,
         )
         return {
@@ -1461,6 +1473,7 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
             "accepted": True,
             "webspace_id": target_webspace_id,
             "action": action_id,
+            "target_node_id": target_node_id or None,
             "operation_id": operation.get("operation_id"),
             "result": {
                 "ok": True,
@@ -1483,10 +1496,13 @@ async def node_infrastate_action(payload: InfrastateActionRequest) -> dict[str, 
         "id": action_id,
         "webspace_id": target_webspace_id,
     }
-    node_id = str(payload.node_id or "").strip()
+    node_id = str(payload.node_id or payload.target_node_id or "").strip()
+    target_node_id = str(payload.target_node_id or payload.node_id or "").strip()
     value = payload.value
     if node_id:
         event_payload["node_id"] = node_id
+    if target_node_id:
+        event_payload["target_node_id"] = target_node_id
     if value is not None:
         event_payload["value"] = value
     ctx.bus.publish(Event(type="infrastate.action", payload=event_payload, source="api.node", ts=time.time()))

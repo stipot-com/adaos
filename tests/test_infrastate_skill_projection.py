@@ -134,6 +134,78 @@ def test_infrastate_update_actions_use_member_label():
     assert items[0]["title"] == "Update skills & scenarios (Edge One)"
 
 
+def test_infrastate_set_node_names_prefers_selected_member_over_injected_local_node(monkeypatch):
+    mod = _load_infrastate_module()
+
+    class _Conf:
+        role = "hub"
+        node_id = "hub-1"
+
+    pushed: list[tuple[str, list[str]]] = []
+    ui_updates: list[dict[str, object]] = []
+
+    class _Manager:
+        async def set_member_node_names(self, node_id: str, node_names: list[str]) -> None:
+            pushed.append((node_id, list(node_names)))
+
+    monkeypatch.setattr(mod, "_ui_state", lambda: {"selected_node_id": "member-1"})
+    monkeypatch.setattr(mod, "_write_ui_state", lambda **kwargs: ui_updates.append(dict(kwargs)))
+    monkeypatch.setitem(
+        sys.modules,
+        "adaos.services.subnet.link_manager",
+        types.SimpleNamespace(get_hub_link_manager=lambda: _Manager()),
+    )
+
+    result = mod._perform_action(
+        "set_node_names",
+        _Conf(),
+        {"node_id": "hub-1", "value": "Edge One"},
+    )
+
+    assert result["ok"] is True
+    assert result["scope"] == "remote-member"
+    assert result["node_id"] == "member-1"
+    assert pushed == [("member-1", ["Edge One"])]
+    assert ui_updates[-1]["selected_node_id"] == "member-1"
+
+
+def test_infrastate_marketplace_action_is_a_safe_noop(monkeypatch):
+    mod = _load_infrastate_module()
+    ui_updates: list[dict[str, object]] = []
+
+    class _Conf:
+        node_id = "hub-1"
+
+    monkeypatch.setattr(mod, "_ui_state", lambda: {"selected_node_id": "member-1"})
+    monkeypatch.setattr(mod, "_write_ui_state", lambda **kwargs: ui_updates.append(dict(kwargs)))
+
+    result = mod._perform_action("marketplace", _Conf(), {})
+
+    assert result == {"ok": True, "action": "marketplace", "selected_node_id": "member-1"}
+    assert ui_updates[-1]["last_action"] == "marketplace"
+
+
+def test_infrastate_marketplace_items_include_selected_node_target(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "get_ctx", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        mod,
+        "_marketplace_catalog_entries",
+        lambda kind: [{"kind": kind[:-1], "id": f"{kind[:-1]}_one", "name": f"{kind[:-1]}_one", "version": "1.0.0"}],
+    )
+    monkeypatch.setattr(mod, "_skills_items", lambda: [])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active_items": []})
+    monkeypatch.setattr(mod, "read_manifest", lambda name: {})
+
+    items = mod._marketplace_items(webspace_id="default", selected_node_id="member-1", local_node_id="hub-1")
+
+    assert items["skills"][0]["node_id"] == "member-1"
+    assert items["skills"][0]["target_node_id"] == "member-1"
+    assert items["scenarios"][0]["node_id"] == "member-1"
+
+
 def test_infrastate_adaos_update_local_uses_shared_webspace_refresh(monkeypatch):
     mod = _load_infrastate_module()
 
