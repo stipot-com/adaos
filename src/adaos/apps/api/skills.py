@@ -73,6 +73,10 @@ class UninstallReq(BaseModel):
     force: bool = False
 
 
+class SyncReq(BaseModel):
+    force: bool | None = None
+
+
 def _safe_version(v: Any) -> Version | None:
     if v is None:
         return None
@@ -299,9 +303,9 @@ async def installed_status(mgr: SkillManager = Depends(_get_manager), ctx: Agent
 
 
 @router.post("/sync")
-async def sync(mgr: SkillManager = Depends(_get_manager)):
+async def sync(body: SyncReq | None = None, mgr: SkillManager = Depends(_get_manager)):
     try:
-        mgr.sync()
+        mgr.sync(force=(body.force if body is not None else None))
     except Exception as exc:
         # Surface the failure as a structured client error instead of a 500.
         # Common causes: dirty workspace, git remote/upstream misconfiguration, or merge conflicts.

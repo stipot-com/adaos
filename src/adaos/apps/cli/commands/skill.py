@@ -1601,7 +1601,7 @@ def migrate(
                 + (f" (version {result.get('version')})" if result.get("version") else "")
             )
             return
-        _hub_post("/api/skills/sync")
+        _hub_post("/api/skills/sync", body={"force": True} if force else None)
         listing = _hub_get("/api/skills/list")
         items = listing.get("items") if isinstance(listing, dict) else []
         if not isinstance(items, list):

@@ -235,6 +235,32 @@ def test_skill_migrate_batches_remote_rebuild_until_the_end(monkeypatch) -> None
     ]
 
 
+def test_skill_migrate_passes_force_flag_to_remote_sync_when_requested(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[tuple[str, dict | None, float]] = []
+
+    monkeypatch.setattr(skill_cmd, "_hub_api_ready", lambda timeout_s=3.0: True)
+    monkeypatch.setattr(skill_cmd, "default_webspace_id", lambda: "default")
+    monkeypatch.setattr(
+        skill_cmd,
+        "_hub_get",
+        lambda path, **kwargs: {"items": []},
+    )
+
+    def _fake_hub_post(path: str, *, body: dict | None = None, timeout_s: float = 30) -> dict:
+        calls.append((path, body, timeout_s))
+        return {"ok": True}
+
+    monkeypatch.setattr(skill_cmd, "_hub_post", _fake_hub_post)
+
+    result = runner.invoke(skill_cmd.app, ["migrate", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        ("/api/skills/sync", {"force": True}, 30),
+    ]
+
+
 def test_skill_uninstall_suggests_force_when_workspace_is_dirty(monkeypatch) -> None:
     runner = CliRunner()
 

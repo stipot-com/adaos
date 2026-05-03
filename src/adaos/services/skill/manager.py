@@ -42,6 +42,10 @@ _name_re = re.compile(r"^[a-zA-Z0-9_\-\/]+$")
 _log = logging.getLogger("adaos.skill.manager")
 
 
+def _env_type() -> str:
+    return str(os.getenv("ENV_TYPE", "prod") or "prod").strip().lower()
+
+
 def _default_webspace_id() -> str:
     from adaos.services.yjs.webspace import default_webspace_id
 
@@ -98,7 +102,7 @@ class SkillManager:
     def get(self, skill_id: str) -> Optional[SkillMeta]:
         return self.ctx.skills_repo.get(skill_id)
 
-    def sync(self) -> None:
+    def sync(self, *, force: bool | None = None) -> None:
         self.caps.require("core", "skills.manage", "net.git")
         self.ctx.skills_repo.ensure()
         root = self.ctx.paths.workspace_dir()
@@ -121,7 +125,21 @@ class SkillManager:
             *[f"skills/{n}" for n in names],
             *[f"scenarios/{n}" for n in scenario_names],
         ]
-        ensure_clean(self.ctx.git, str(root), prefixed)
+        effective_force = (_env_type() != "dev") if force is None else bool(force)
+        if effective_force:
+            stash_ref = self.ctx.git.stash_push(
+                str(root),
+                "adaos:auto-stash forced skill sync",
+                include_untracked=True,
+            )
+            _log.warning(
+                "forced skill sync requested env_type=%s repo=%s stash=%s",
+                _env_type(),
+                str(root),
+                str(stash_ref or "-"),
+            )
+        else:
+            ensure_clean(self.ctx.git, str(root), prefixed)
         self.ctx.git.sparse_init(str(root), cone=False)
         if prefixed:
             self.ctx.git.sparse_set(str(root), prefixed, no_cone=True)

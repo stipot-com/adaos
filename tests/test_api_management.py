@@ -57,8 +57,8 @@ class _FakeSkillManager:
         self.calls.append("list_present")
         return [_Meta(id=type("Id", (), {"value": "demo"})(), name="demo", version="1.0.0", path="/skills/demo")]
 
-    def sync(self) -> None:
-        self.calls.append("sync")
+    def sync(self, *, force: bool | None = None) -> None:
+        self.calls.append(f"sync:{force}")
 
     def install(self, name: str, **kwargs: Any):
         self.calls.append(f"install:{name}")
@@ -155,6 +155,7 @@ def test_skill_api_exposes_management_routes() -> None:
     assert payload["items"][0]["name"] == "demo"
 
     assert client.post("/api/skills/sync").status_code == 200
+    assert "sync:None" in skill_mgr.calls
 
     resp = client.post("/api/skills/install", json={"name": "demo"})
     assert resp.status_code == 200
