@@ -867,7 +867,19 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
 
     # Preserve unknown top-level sections (e.g. capacity) when rewriting node.yaml.
     merged = _deep_merge(existing_raw, data)
-    for key in ("hub_url", "token", "root_state", "nats"):
+    role_norm = str(conf.role or "").strip().lower()
+    existing_hub_url = str(existing_raw.get("hub_url") or "").strip()
+    durable_hub_url = str(conf.hub_url or "").strip()
+    if role_norm == "member" and not durable_hub_url:
+        # Keep the member rendezvous URL durable in node.yaml so the node can
+        # recover its hub link even if runtime-state was truncated or reset.
+        durable_hub_url = existing_hub_url
+    if role_norm == "member" and durable_hub_url:
+        merged["hub_url"] = durable_hub_url
+        conf.hub_url = durable_hub_url
+    else:
+        merged.pop("hub_url", None)
+    for key in ("token", "root_state", "nats"):
         merged.pop(key, None)
     root_payload = merged.get("root")
     if isinstance(root_payload, dict):
@@ -878,7 +890,10 @@ def save_node(conf: NodeConfig, *, ctx: AgentContext | None = None) -> None:
         encoding="utf-8",
     )
     try:
-        save_node_runtime_state(hub_url=conf.hub_url, token=conf.token)
+        save_node_runtime_state(
+            hub_url=(durable_hub_url if role_norm == "member" else conf.hub_url),
+            token=conf.token,
+        )
     except Exception:
         pass
     try:

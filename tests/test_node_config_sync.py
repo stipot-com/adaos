@@ -14,7 +14,11 @@ import adaos.services.node_config as node_config_mod
 from adaos.adapters.db.sqlite import durable_state_get
 from adaos.services.agent_context import get_ctx
 from adaos.services.node_config import NodeConfig, load_config, save_config
-from adaos.services.node_runtime_state import load_nats_runtime_config, load_node_runtime_state
+from adaos.services.node_runtime_state import (
+    load_nats_runtime_config,
+    load_node_runtime_state,
+    save_node_runtime_state,
+)
 from adaos.services.subnet_alias import load_subnet_alias
 
 
@@ -335,6 +339,7 @@ def test_save_config_moves_dynamic_runtime_state_out_of_node_yaml() -> None:
     ctx = get_ctx()
     node_path = Path(ctx.paths.base_dir()) / "node.yaml"
     detached = _detached_config()
+    detached.role = "member"
     detached.hub_url = "http://127.0.0.1:8778"
     detached.token = "runtime-token"
     detached.root_state = {
@@ -356,7 +361,7 @@ def test_save_config_moves_dynamic_runtime_state_out_of_node_yaml() -> None:
     runtime_state = load_node_runtime_state()
     persisted_root = durable_state_get("node_config", "root_state") or {}
 
-    assert "hub_url" not in saved
+    assert saved.get("hub_url") == "http://127.0.0.1:8778"
     assert "token" not in saved
     assert "root_state" not in saved
     assert "profile" not in root
@@ -367,6 +372,35 @@ def test_save_config_moves_dynamic_runtime_state_out_of_node_yaml() -> None:
     assert persisted_root["profile"]["owner_id"] == "owner-1"
     assert persisted_root["access_token_cached"] == "access-1"
     assert persisted_root["refresh_token_fallback"] == "refresh-1"
+
+
+def test_save_config_keeps_member_hub_url_runtime_state_when_detached_copy_loses_it() -> None:
+    detached = _detached_config()
+    detached.role = "member"
+    detached.hub_url = "https://ru.api.inimatic.com/hubs/sn_member01"
+    save_config(detached)
+
+    save_node_runtime_state(hub_url=None)
+    detached.hub_url = None
+    save_config(detached)
+
+    runtime_state = load_node_runtime_state()
+    saved = yaml.safe_load((Path(get_ctx().paths.base_dir()) / "node.yaml").read_text(encoding="utf-8")) or {}
+
+    assert saved.get("hub_url") == "https://ru.api.inimatic.com/hubs/sn_member01"
+    assert runtime_state.get("hub_url") == "https://ru.api.inimatic.com/hubs/sn_member01"
+
+
+def test_save_config_drops_hub_url_from_hub_node_yaml() -> None:
+    detached = _detached_config()
+    detached.role = "hub"
+    detached.hub_url = "http://127.0.0.1:8777"
+
+    save_config(detached)
+
+    saved = yaml.safe_load((Path(get_ctx().paths.base_dir()) / "node.yaml").read_text(encoding="utf-8")) or {}
+
+    assert "hub_url" not in saved
 
 
 def test_load_config_migrates_legacy_nats_runtime_state_and_alias() -> None:
