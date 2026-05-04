@@ -118,6 +118,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 _IDLE_ROOM_EVICT_SEC = _env_float("ADAOS_YJS_IDLE_ROOM_EVICT_SEC", 60.0, minimum=0.0)
 _YROOM_DIAG_ENABLED = _env_flag("ADAOS_YJS_ROOM_DIAG_ENABLED", True)
+_YWS_ROOM_READY_TIMEOUT_S = _env_float("ADAOS_YWS_ROOM_READY_TIMEOUT_S", 12.0, minimum=0.0)
+_YWS_FIRST_MESSAGE_TIMEOUT_S = _env_float("ADAOS_YWS_FIRST_MESSAGE_TIMEOUT_S", 12.0, minimum=0.0)
 _YROOM_DIAG_LOG_INTERVAL_SEC = _env_float("ADAOS_YJS_ROOM_DIAG_LOG_INTERVAL_SEC", 5.0, minimum=0.0)
 _YROOM_DIAG_BUFFER_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_BUFFER_WARN", 32, minimum=1)
 _YROOM_DIAG_PENDING_WARN = _env_int("ADAOS_YJS_ROOM_DIAG_PENDING_WARN", 32, minimum=1)
@@ -2009,6 +2011,8 @@ class FastAPIWebsocketAdapter:
     def __init__(self, ws: WebSocket, path: str):
         self._ws = ws
         self._path = path
+        self._first_message_timeout_s = _YWS_FIRST_MESSAGE_TIMEOUT_S
+        self._first_message_received = False
 
     @property
     def path(self) -> str:
@@ -2032,17 +2036,28 @@ class FastAPIWebsocketAdapter:
 
     async def recv(self) -> bytes:
         while True:
-            msg = await self._ws.receive()
+            try:
+                if not self._first_message_received and self._first_message_timeout_s > 0:
+                    # Healthy Yjs clients should send their first sync frame immediately.
+                    # If the proxy path wedges before that point we would otherwise leak a
+                    # runtime session until the process restarts.
+                    msg = await asyncio.wait_for(self._ws.receive(), timeout=self._first_message_timeout_s)
+                else:
+                    msg = await self._ws.receive()
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("websocket first message timeout") from exc
             msg_type = msg.get("type")
             if msg_type == "websocket.receive":
                 if msg.get("bytes") is not None:
                     data = msg["bytes"]
                     if data:
+                        self._first_message_received = True
                         return data
                     continue
                 if msg.get("text") is not None:
                     data = msg["text"].encode("utf-8")
                     if data:
+                        self._first_message_received = True
                         return data
                     continue
                 continue
@@ -2114,6 +2129,29 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
     _ylog.info("yws connection open webspace=%s dev=%s", webspace_id, dev_id)
     if not await _accept_websocket(websocket, channel="yws"):
         return
+    await start_y_server()
+
+    adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=webspace_id)
+    try:
+        if _YWS_ROOM_READY_TIMEOUT_S > 0:
+            room_ref = await asyncio.wait_for(
+                y_server.get_room(webspace_id),
+                timeout=_YWS_ROOM_READY_TIMEOUT_S,
+            )
+        else:
+            room_ref = await y_server.get_room(webspace_id)
+    except asyncio.TimeoutError:
+        _ylog.warning(
+            "yws room ready timeout webspace=%s dev=%s timeout_s=%.3f",
+            webspace_id,
+            dev_id,
+            _YWS_ROOM_READY_TIMEOUT_S,
+        )
+        try:
+            await websocket.close(code=1013, reason="room_ready_timeout")
+        except Exception:
+            pass
+        return
     _record_yws_open(webspace_id, dev_id)
     _track_yws_connection(webspace_id, websocket, device_id=dev_id)
     _transport_mark_open("yws")
@@ -2127,11 +2165,8 @@ async def _yws_impl(websocket: WebSocket, room: str | None) -> None:
             "source": "yws.gateway",
         },
     )
-    await start_y_server()
-
-    adapter: YWebsocket = FastAPIWebsocketAdapter(websocket, path=webspace_id)
     try:
-        await y_server.serve(adapter)
+        await room_ref.serve(adapter)
     except RuntimeError:
         return
     finally:

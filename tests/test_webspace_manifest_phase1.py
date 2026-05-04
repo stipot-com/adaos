@@ -650,6 +650,46 @@ def test_web_desktop_service_get_snapshot_returns_overlay_state(monkeypatch) -> 
     }
 
 
+def test_web_desktop_service_get_snapshot_async_prefers_read_only_live_doc(monkeypatch) -> None:
+    webspace_id = "phase5-desktop-snapshot-async"
+    ensure_workspace(webspace_id)
+    set_workspace_installed_overlay(
+        webspace_id,
+        {"apps": ["scenario:prompt_engineer_scenario"], "widgets": ["weather"]},
+    )
+    set_workspace_pinned_widgets_overlay(
+        webspace_id,
+        [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+    )
+    set_workspace_icon_order_overlay(webspace_id, ["scenario:prompt_engineer_scenario"])
+    set_workspace_widget_order_overlay(webspace_id, ["weather"])
+    fake_state = {
+        "ui": _FakeMap({"application": {"desktop": {}}}),
+        "data": _FakeMap({"desktop": {}, "installed": {}}),
+    }
+
+    monkeypatch.setattr(
+        desktop_module,
+        "async_get_ydoc",
+        lambda _webspace_id: (_ for _ in ()).throw(AssertionError("async_get_ydoc should not be used for read-only snapshots")),
+    )
+    monkeypatch.setattr(desktop_module, "async_read_ydoc", lambda _webspace_id: _FakeAsyncDoc(fake_state))
+
+    snapshot = asyncio.run(desktop_module.WebDesktopService().get_snapshot_async(webspace_id))
+
+    assert snapshot.to_dict() == {
+        "installed": {
+            "apps": ["scenario:prompt_engineer_scenario"],
+            "widgets": ["weather"],
+        },
+        "pinnedWidgets": [{"id": "infra-status", "type": "visual.metricTile", "title": "Infra"}],
+        "topbar": [],
+        "pageSchema": {},
+        "iconOrder": ["scenario:prompt_engineer_scenario"],
+        "widgetOrder": ["weather"],
+    }
+
+
 def test_web_desktop_service_set_snapshot_updates_overlay_and_live_doc(monkeypatch) -> None:
     webspace_id = "phase5-shell-snapshot"
     ensure_workspace(webspace_id)

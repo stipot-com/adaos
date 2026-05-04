@@ -43,6 +43,13 @@ if existing_ypy_websocket is None or not hasattr(existing_ypy_websocket, "__path
         async def start_room(self, room) -> None:  # noqa: ARG002
             return None
 
+        async def get_room(self, name) -> object:
+            room = self.rooms.get(name)
+            if room is None:
+                room = _StubYRoom()
+                self.rooms[name] = room
+            return room
+
         async def serve(self, adapter) -> None:  # noqa: ARG002
             return None
 
@@ -854,6 +861,115 @@ def test_active_browser_session_snapshot_tracks_yws_clients() -> None:
 
     gateway_module._untrack_yws_connection("ops", ws)
     assert gateway_module.active_browser_session_snapshot(now_ts=123.0)["peers"] == []
+
+
+def test_yws_impl_aborts_when_room_ready_times_out(monkeypatch) -> None:
+    gateway_module._TRANSPORT_STATE["yws"].update(
+        {
+            "active_connections": 0,
+            "open_total": 0,
+            "close_total": 0,
+            "last_open_at": 0.0,
+            "last_close_at": 0.0,
+        }
+    )
+    gateway_module._ACTIVE_YWS_CONNECTIONS.clear()
+    gateway_module._ACTIVE_YWS_CLIENTS.clear()
+    monkeypatch.setattr(gateway_module, "_YWS_ROOM_READY_TIMEOUT_S", 0.01)
+    events: list[tuple[str, dict[str, object] | None]] = []
+
+    class _FakeWebSocket:
+        query_params = {"dev": "dev-timeout"}
+        close_calls: list[tuple[int, str]]
+
+        def __init__(self) -> None:
+            self.close_calls = []
+
+        async def accept(self) -> None:
+            return None
+
+        async def close(self, *, code: int, reason: str) -> None:
+            self.close_calls.append((code, reason))
+
+    async def _fake_start_y_server() -> None:
+        return None
+
+    async def _fake_get_room(_name: str) -> object:
+        await asyncio.sleep(0.05)
+        raise AssertionError("timed wait should cancel before room creation completes")
+
+    monkeypatch.setattr(gateway_module, "start_y_server", _fake_start_y_server)
+    monkeypatch.setattr(gateway_module, "_publish_runtime_event", lambda topic, payload=None, source="yjs.gateway": events.append((topic, payload)))
+    monkeypatch.setattr(gateway_module.y_server, "get_room", _fake_get_room)
+
+    websocket = _FakeWebSocket()
+    asyncio.run(gateway_module._yws_impl(websocket, "desktop"))
+
+    assert websocket.close_calls == [(1013, "room_ready_timeout")]
+    assert events == []
+    assert gateway_module._TRANSPORT_STATE["yws"]["active_connections"] == 0
+    assert gateway_module._ACTIVE_YWS_CONNECTIONS == {}
+    assert gateway_module._ACTIVE_YWS_CLIENTS == {}
+
+
+def test_yws_impl_cleans_up_after_first_message_timeout(monkeypatch) -> None:
+    gateway_module._TRANSPORT_STATE["yws"].update(
+        {
+            "active_connections": 0,
+            "open_total": 0,
+            "close_total": 0,
+            "last_open_at": 0.0,
+            "last_close_at": 0.0,
+        }
+    )
+    gateway_module._ACTIVE_YWS_CONNECTIONS.clear()
+    gateway_module._ACTIVE_YWS_CLIENTS.clear()
+    monkeypatch.setattr(gateway_module, "_YWS_ROOM_READY_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(gateway_module, "_YWS_FIRST_MESSAGE_TIMEOUT_S", 0.01)
+    events: list[tuple[str, dict[str, object] | None]] = []
+
+    class _FakeWebSocket:
+        query_params = {"dev": "dev-first-timeout"}
+        close_code = None
+
+        async def accept(self) -> None:
+            return None
+
+        async def send_bytes(self, _message: bytes) -> None:
+            return None
+
+        async def receive(self) -> dict[str, object]:
+            await asyncio.sleep(0.05)
+            return {"type": "websocket.receive", "bytes": b""}
+
+    class _FakeRoom:
+        async def serve(self, websocket) -> None:
+            async for _message in websocket:
+                raise AssertionError("the adapter should stop iteration before yielding a message")
+
+    async def _fake_start_y_server() -> None:
+        return None
+
+    async def _fake_get_room(_name: str) -> object:
+        return _FakeRoom()
+
+    monkeypatch.setattr(gateway_module, "start_y_server", _fake_start_y_server)
+    monkeypatch.setattr(gateway_module, "_publish_runtime_event", lambda topic, payload=None, source="yjs.gateway": events.append((topic, payload)))
+    monkeypatch.setattr(gateway_module.y_server, "get_room", _fake_get_room)
+
+    asyncio.run(gateway_module._yws_impl(_FakeWebSocket(), "desktop"))
+
+    assert [topic for topic, _payload in events] == [
+        "browser.session.changed",
+        "browser.session.changed",
+    ]
+    assert events[0][1]["connection_state"] == "connected"
+    assert events[1][1]["connection_state"] == "closed"
+    assert gateway_module._TRANSPORT_STATE["yws"]["active_connections"] == 0
+    assert gateway_module._TRANSPORT_STATE["yws"]["open_total"] == 1
+    assert gateway_module._TRANSPORT_STATE["yws"]["close_total"] == 1
+    assert gateway_module._ACTIVE_YWS_CONNECTIONS == {}
+    assert gateway_module._ACTIVE_YWS_CLIENTS == {}
 
 
 def test_register_ws_event_subscriptions_installs_forwarder_once(monkeypatch) -> None:

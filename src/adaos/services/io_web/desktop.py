@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from adaos.services.agent_context import AgentContext, get_ctx
-from adaos.services.yjs.doc import async_get_ydoc, get_ydoc, mutate_live_room
+from adaos.services.yjs.doc import async_get_ydoc, async_read_ydoc, get_ydoc, mutate_live_room
 from adaos.services.yjs.store import ystore_write_metadata, ystore_write_metadata_sync
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.services.workspaces import index as workspace_index
@@ -554,7 +554,7 @@ class WebDesktopService:
         icon_order = await self.get_icon_order_async(webspace)
         widget_order = await self.get_widget_order_async(webspace)
         try:
-            async with async_get_ydoc(webspace) as ydoc:
+            async with async_read_ydoc(webspace) as ydoc:
                 return self._read_materialized_snapshot_from_doc(
                     ydoc,
                     installed=installed,

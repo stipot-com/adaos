@@ -187,9 +187,15 @@ def test_member_snapshot_changed_rebuilds_shared_workspaces_with_rate_limit(monk
         return {"accepted": True}
 
     monkeypatch.setattr(webspace_runtime_module, "rebuild_webspace_from_sources", _fake_rebuild)
+    webspace_runtime_module._MEMBER_SNAPSHOT_REBUILD_TASKS.clear()
 
-    asyncio.run(webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"}))
-    asyncio.run(webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"}))
+    async def _exercise() -> None:
+        await webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"})
+        await asyncio.sleep(0)
+        await webspace_runtime_module._on_subnet_member_snapshot_changed({"node_id": "member-1"})
+        await asyncio.sleep(0)
+
+    asyncio.run(_exercise())
 
     assert calls == [("desktop", "subnet_member_snapshot_sync", "member_runtime_snapshot")]
 

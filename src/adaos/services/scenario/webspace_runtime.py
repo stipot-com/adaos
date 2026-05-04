@@ -44,6 +44,7 @@ _SCENARIO_SWITCH_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _WEBSPACE_REBUILD_STATUS: dict[str, Dict[str, Any]] = {}
 _WEBUI_DECL_CACHE: dict[str, tuple[tuple[str, int, int], Dict[str, Any]]] = {}
 _MEMBER_SNAPSHOT_REBUILD_AT: dict[str, float] = {}
+_MEMBER_SNAPSHOT_REBUILD_TASKS: dict[str, asyncio.Task[Any]] = {}
 _RESOLVED_WEBSPACE_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _RESOLVED_WEBSPACE_CACHE_LIMIT = 64
 _EFFECTIVE_BRANCH_PATHS = (
@@ -4096,11 +4097,53 @@ async def _on_subnet_member_snapshot_changed(evt: Any) -> None:
         if interval_s > 0 and last_at > 0 and now - last_at < interval_s:
             continue
         _MEMBER_SNAPSHOT_REBUILD_AT[key] = now
-        await rebuild_webspace_from_sources(
-            webspace_id,
-            action="subnet_member_snapshot_sync",
-            source_of_truth="member_runtime_snapshot",
-        )
+        _schedule_member_snapshot_rebuild(webspace_id=webspace_id, node_id=node_id)
+
+
+def _schedule_member_snapshot_rebuild(*, webspace_id: str, node_id: str) -> None:
+    task_key = f"{str(node_id or '').strip()}\0{str(webspace_id or '').strip()}"
+    existing = _MEMBER_SNAPSHOT_REBUILD_TASKS.get(task_key)
+    if existing and not existing.done():
+        return
+
+    async def _runner() -> None:
+        try:
+            _log.info(
+                "starting member snapshot rebuild webspace=%s node_id=%s",
+                webspace_id,
+                node_id,
+            )
+            result = await rebuild_webspace_from_sources(
+                webspace_id,
+                action="subnet_member_snapshot_sync",
+                source_of_truth="member_runtime_snapshot",
+            )
+            _log.info(
+                "completed member snapshot rebuild webspace=%s node_id=%s accepted=%s error=%s",
+                webspace_id,
+                node_id,
+                bool(result.get("accepted")),
+                str(result.get("error") or "").strip() or None,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.warning(
+                "member snapshot rebuild failed webspace=%s node_id=%s",
+                webspace_id,
+                node_id,
+                exc_info=True,
+            )
+        finally:
+            current = _MEMBER_SNAPSHOT_REBUILD_TASKS.get(task_key)
+            if current is task:
+                _MEMBER_SNAPSHOT_REBUILD_TASKS.pop(task_key, None)
+
+    task = asyncio.create_task(
+        _runner(),
+        name=f"member-snapshot-rebuild:{webspace_id}:{node_id}",
+    )
+    _MEMBER_SNAPSHOT_REBUILD_TASKS[task_key] = task
 
 
 @subscribe("desktop.webspace.create")
